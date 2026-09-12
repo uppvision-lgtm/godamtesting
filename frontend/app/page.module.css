@@ -20,6 +20,12 @@
   color: #7fe0a0;
 }
 
+.headRight {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .headStatus {
   font-size: 12px;
   text-transform: uppercase;

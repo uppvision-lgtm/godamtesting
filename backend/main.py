@@ -23,6 +23,7 @@ from live_session import router as live_login_router
 from presence import router as presence_router
 from video_api import router as video_router
 from upload_api import router as upload_router
+from auth_api import router as auth_router
 
 
 app = FastAPI(title="Instagram Auto Comment Bot API")
@@ -58,6 +59,7 @@ app.include_router(live_login_router)
 app.include_router(presence_router)
 app.include_router(video_router)
 app.include_router(upload_router)
+app.include_router(auth_router)
 
 
 class JobRequest(BaseModel):

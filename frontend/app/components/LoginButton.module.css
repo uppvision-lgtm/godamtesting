@@ -1,0 +1,160 @@
+.loginBtn {
+  border: 1px solid #3fce6f;
+  border-radius: 999px;
+  background: #7fe0a0;
+  color: #051008;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 8px 18px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.loginBtn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(63, 206, 111, 0.25);
+}
+
+.akunWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.akun {
+  font-size: 13px;
+  font-weight: 800;
+  color: #7fe0a0;
+}
+
+.keluarBtn {
+  border: 1px solid #2a3a2e;
+  border-radius: 999px;
+  background: transparent;
+  color: #8fa095;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 13px;
+  cursor: pointer;
+}
+
+.keluarBtn:hover {
+  color: #eef2ee;
+  border-color: #3fce6f;
+}
+
+/* ---------- jendela login ---------- */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(6, 10, 7, 0.62);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.panel {
+  width: min(380px, 100%);
+  border: 1px solid #2a3a2e;
+  border-radius: 16px;
+  background: #161a17;
+  padding: 26px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  text-align: left;
+}
+
+.judul {
+  font-size: 20px;
+  font-weight: 800;
+  margin: 0 0 18px;
+  color: #eef2ee;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form label > span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #9aa89f;
+}
+
+.form input {
+  width: 100%;
+  border: 1px solid #2a3a2e;
+  border-radius: 9px;
+  background: #0f1210;
+  color: #eef2ee;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 11px 12px;
+}
+
+.form input:focus {
+  outline: none;
+  border-color: #3fce6f;
+}
+
+.galat {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #ff9a9a;
+  line-height: 1.6;
+}
+
+.kirimBtn {
+  border: none;
+  border-radius: 10px;
+  background: #7fe0a0;
+  color: #051008;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 12px 18px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.kirimBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tukar {
+  margin: 18px 0 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #9aa89f;
+}
+
+/* Tautan "Daftar" sengaja biru seperti halaman login pada umumnya. */
+.tautanBiru {
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  color: #4a9bff;
+  cursor: pointer;
+}
+
+.tautanBiru:hover {
+  text-decoration: underline;
+}

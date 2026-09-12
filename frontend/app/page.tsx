@@ -2,6 +2,7 @@ import Link from "next/link";
 import styles from "./page.module.css";
 import LiveStats from "./components/LiveStats";
 import TutorialFab from "./components/TutorialFab";
+import LoginButton from "./components/LoginButton";
 
 type Tool = {
   id: string;
@@ -64,7 +65,10 @@ export default function Home() {
     <div className={styles.page}>
       <header className={styles.topbar}>
         <span className={styles.brand}>IG · TOOLS</span>
-        <span className={styles.headStatus}>Semua alat di satu tempat</span>
+        <span className={styles.headRight}>
+          <span className={styles.headStatus}>Semua alat di satu tempat</span>
+          <LoginButton />
+        </span>
       </header>
 
       <main className={styles.main}>
