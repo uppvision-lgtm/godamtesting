@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+import storage
 import video_edit as ve
 import video_tasks as vt
 
@@ -114,6 +115,14 @@ async def unggah_aset(template_id: str, file: UploadFile = File(...)) -> dict[st
     except HTTPException:
         tujuan.unlink(missing_ok=True)
         raise
+
+    if storage.enabled():
+        try:
+            storage.upload(f"templates/{ve._aman(template_id)}/assets/{nama}", tujuan)
+        except storage.StorageError as error:
+            raise HTTPException(
+                status_code=502, detail=f"Aset gagal disimpan ke Supabase: {error}"
+            ) from error
     return {"file": f"assets/{nama}", "size": ukuran}
 
 
@@ -176,6 +185,9 @@ def berkas_job(job_id: str) -> FileResponse:
         raise HTTPException(status_code=409, detail="Video belum selesai disusun")
     berkas = vt.job_path(job_id) / str(status["output"])
     if not berkas.is_file():
+        # Cache lokal sudah dibersihkan; ambil lagi dari Supabase.
+        if status.get("url"):
+            return RedirectResponse(str(status["url"]))
         raise HTTPException(status_code=404, detail="Berkas hasil sudah tidak ada")
     return FileResponse(berkas, media_type="video/mp4", filename=f"{job_id}.mp4")
 

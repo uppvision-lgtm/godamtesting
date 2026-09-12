@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import Any
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Response
@@ -230,7 +231,36 @@ class LiveSession:
         """Dipanggil dari loop FastAPI; browsernya dibuka di thread khusus."""
         await _RUNTIME.run(
             self._start_di_thread_browser(
-                username, session_id, target, comment_count, max_posts, tone
+                username,
+                session_id,
+                pesan=f"Session dipasang. Membuka @{target} ...",
+                awal=[
+                    f"Session diterima untuk akun {username}",
+                    f"Tone komentar: {tone}",
+                    f"Menuju channel @{target}",
+                ],
+                buat_job=lambda: self._run_job(
+                    username, target, comment_count, max_posts, tone
+                ),
+            )
+        )
+
+    async def start_upload(
+        self, username: str, session_id: str, berkas: str, caption: str
+    ) -> None:
+        """Ragam kedua: mengunggah satu video ke Instagram, bukan berkomentar."""
+        from pathlib import Path as _Path
+
+        await _RUNTIME.run(
+            self._start_di_thread_browser(
+                username,
+                session_id,
+                pesan="Session dipasang. Menyiapkan unggahan ...",
+                awal=[
+                    f"Session diterima untuk akun {username}",
+                    f"Berkas: {_Path(berkas).name}",
+                ],
+                buat_job=lambda: self._run_upload(username, berkas, caption),
             )
         )
 
@@ -238,10 +268,9 @@ class LiveSession:
         self,
         username: str,
         session_id: str,
-        target: str,
-        comment_count: int,
-        max_posts: int = 3,
-        tone: str = "positif",
+        pesan: str,
+        awal: list[str],
+        buat_job: Any,
     ) -> None:
         headless = os.getenv("LIVE_HEADLESS", "false").lower() == "true"
         try:
@@ -269,19 +298,16 @@ class LiveSession:
 
             await _add_session_cookie(self._page, unquote(session_id).strip())
             self.status = "running"
-            self.message = f"Session dipasang. Membuka @{target} ..."
-            self.add_log(f"Session diterima untuk akun {username}")
-            self.add_log(f"Tone komentar: {tone}")
+            self.message = pesan
+            for baris in awal:
+                self.add_log(baris)
             if self._shared:
                 self.add_log(
                     f"Mode hemat: 1 Chromium dipakai bersama "
                     f"({_POOL.users} tab terbuka)."
                 )
-            self.add_log(f"Menuju channel @{target}")
             self._capture_task = asyncio.create_task(self._capture_loop())
-            self._job_task = asyncio.create_task(
-                self._run_job(username, target, comment_count, max_posts, tone)
-            )
+            self._job_task = asyncio.create_task(buat_job())
         except Exception as exc:
             # NotImplementedError dari loop Windows datang tanpa pesan, jadi
             # nama kelasnya ikut ditampilkan supaya tidak membingungkan.
@@ -378,15 +404,47 @@ class LiveSession:
             self.message = f"Job gagal: {exc}"
             self.add_log(f"Error: {exc}")
         finally:
-            self._running = False
-            try:
-                if self._page is not None and not self._page.is_closed():
-                    self.latest_jpeg = await self._page.screenshot(type="jpeg", quality=70)
-            except Exception:
-                pass
-            # Tutup Chromium otomatis begitu job selesai (completed/error)
-            # supaya memori segera dibebaskan dan tidak menumpuk.
-            await self._shutdown_browser()
+            await self._selesaikan()
+
+    async def _run_upload(self, username: str, berkas: str, caption: str) -> None:
+        """Unggah satu video, lalu cari tautan postingan yang baru dibuat."""
+        from pathlib import Path as _Path
+
+        try:
+            from upload_ig import postingan_terbaru, upload_video
+
+            hasil = await upload_video(
+                self._page, _Path(berkas), caption, log=self.add_log
+            )
+            tautan = ""
+            if username:
+                self.add_log("Mencari tautan postingan yang baru diunggah ...")
+                try:
+                    tautan = await postingan_terbaru(self._page, username)
+                except Exception as error:
+                    self.add_log(f"Tautan postingan tidak terbaca: {error}")
+            self.result = {**hasil, "post_url": tautan}
+            self.status = "completed"
+            self.message = "Video terunggah ke Instagram."
+            self.add_log(self.message + (f" {tautan}" if tautan else ""))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.status = "error"
+            self.message = f"Unggah gagal: {exc}"
+            self.add_log(f"Error: {exc}")
+        finally:
+            await self._selesaikan()
+
+    async def _selesaikan(self) -> None:
+        """Ambil frame terakhir lalu tutup Chromium supaya memori dibebaskan."""
+        self._running = False
+        try:
+            if self._page is not None and not self._page.is_closed():
+                self.latest_jpeg = await self._page.screenshot(type="jpeg", quality=70)
+        except Exception:
+            pass
+        await self._shutdown_browser()
 
     async def _shutdown_browser(self) -> None:
         """Tutup tab milik sesi ini (browser ikut ditutup kalau tidak dipakai bersama).

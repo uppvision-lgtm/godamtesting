@@ -25,6 +25,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import storage
+
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", ".media"))
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
@@ -94,8 +96,45 @@ def template_path(template_id: str) -> Path:
     return templates_dir() / _aman(template_id)
 
 
+def _tarik_dari_storage(path_relatif: str, tujuan: Path) -> bool:
+    """Ambil satu berkas dari Supabase ke disk lokal. True kalau berhasil."""
+    if not storage.enabled():
+        return False
+    try:
+        storage.download(path_relatif, tujuan)
+        return tujuan.is_file()
+    except storage.StorageError:
+        return False
+
+
+def sinkron_template_dari_storage() -> int:
+    """Tarik template dari Supabase kalau disk lokal kosong.
+
+    Disk container bersifat sementara: setelah deploy ulang, folder template
+    lenyap sementara isinya masih aman di Supabase.
+    """
+    if not storage.enabled():
+        return 0
+    ditarik = 0
+    try:
+        for item in storage.list_prefix("templates"):
+            nama = str(item.get("name") or "")
+            if not nama:
+                continue
+            tujuan = templates_dir() / nama / "template.json"
+            if tujuan.is_file():
+                continue
+            if _tarik_dari_storage(f"templates/{nama}/template.json", tujuan):
+                ditarik += 1
+    except storage.StorageError as error:
+        logger.warning("Gagal menyinkronkan template dari Supabase: %s", error)
+    return ditarik
+
+
 def load_template(template_id: str) -> dict[str, Any]:
     berkas = template_path(template_id) / "template.json"
+    if not berkas.is_file():
+        _tarik_dari_storage(f"templates/{_aman(template_id)}/template.json", berkas)
     try:
         data = json.loads(berkas.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
@@ -107,6 +146,8 @@ def load_template(template_id: str) -> dict[str, Any]:
 
 
 def list_templates() -> list[dict[str, Any]]:
+    if not any(templates_dir().iterdir()):
+        sinkron_template_dari_storage()
     hasil = []
     for folder in sorted(templates_dir().iterdir()):
         if not folder.is_dir():
@@ -126,6 +167,15 @@ def save_template(data: dict[str, Any], template_id: str | None = None) -> dict[
     (folder / "template.json").write_text(
         json.dumps(isi, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    if storage.enabled():
+        try:
+            storage.upload(
+                f"templates/{template_id}/template.json",
+                folder / "template.json",
+                "application/json",
+            )
+        except storage.StorageError as error:
+            logger.warning("Template tersimpan lokal tapi gagal ke Supabase: %s", error)
     return isi
 
 
@@ -141,6 +191,9 @@ def _aset(template: dict[str, Any], nama: str | None) -> Path | None:
     path = (folder / str(nama)).resolve()
     if folder not in path.parents and path != folder:
         raise VideoError(f"Aset '{nama}' berada di luar folder template")
+    if not path.is_file():
+        # Cache lokal hilang (mis. container baru) — ambil lagi dari Supabase.
+        _tarik_dari_storage(f"templates/{template['id']}/{nama}", path)
     if not path.is_file():
         raise VideoError(f"Aset '{nama}' tidak ditemukan di template")
     return path

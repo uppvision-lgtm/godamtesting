@@ -506,6 +506,16 @@ async def check_page_access(page: Page) -> None:
     current_url = page.url.lower()
     if "/accounts/login" in current_url or "/login" in current_url:
         raise BotExecutionError("Instagram session is expired or invalid")
+    # Instagram kadang menampilkan formulir login tanpa mengubah URL, jadi
+    # keberadaan kolom sandi ikut diperiksa supaya pesannya tidak menyesatkan.
+    try:
+        kolom_sandi = page.locator('input[type="password"]').first
+        if await kolom_sandi.count() and await kolom_sandi.is_visible():
+            raise BotExecutionError("Instagram session is expired or invalid")
+    except BotExecutionError:
+        raise
+    except Exception:
+        pass
     body = (await page.locator("body").inner_text(timeout=PLAYWRIGHT_TIMEOUT_MS)).lower()
     if any(marker in body for marker in ("try again later", "please wait a few minutes", "coba lagi nanti")):
         raise RetryableBotError("Instagram rate limit or throttle detected")

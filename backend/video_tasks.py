@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import storage
 from celery_app import celery_app
 from video_edit import (
     MEDIA_DIR,
@@ -146,11 +147,25 @@ def render_video(
         )
         # Sumber tidak dipakai lagi; hapus supaya disk hemat.
         sumber.unlink(missing_ok=True)
+
+        # Simpan permanen ke Supabase supaya tidak ikut hilang saat container
+        # di-deploy ulang, sekaligus memberi URL yang bisa di-seek di browser.
+        url = ""
+        if storage.enabled():
+            try:
+                jalur = f"jobs/{job_id}/{hasil.name}"
+                storage.upload(jalur, hasil, "video/mp4")
+                url = storage.url_for(jalur)
+                catat("Video tersimpan di Supabase.")
+            except storage.StorageError as error:
+                catat(f"Video jadi, tapi gagal disimpan ke Supabase: {error}")
+
         tulis_status(
             job_id,
             status="done",
             progress=100,
             output=hasil.name,
+            url=url,
             size=hasil.stat().st_size,
             log="Video siap diunggah.",
         )
