@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
+import { bacaForm, simpanForm } from "../components/formStore";
 
 type LiveStatus = {
   status: string;
@@ -38,6 +39,29 @@ export default function AutoUploadPage() {
   const [galat, setGalat] = useState("");
   const [sibuk, setSibuk] = useState(false);
   const tokenRef = useRef("");
+
+  // ===== ISIAN TERSIMPAN PER AKUN (berkas video tidak bisa ikut disimpan) =====
+  useEffect(() => {
+    const tersimpan = bacaForm("auto-upload", { username: "", sessionId: "", caption: "" });
+    /* eslint-disable react-hooks/set-state-in-effect -- memulihkan isian
+       tersimpan hanya sekali saat halaman dibuka. Sengaja dilakukan setelah
+       render pertama, bukan lewat nilai awal useState, supaya HTML dari server
+       dan dari browser tetap sama (localStorage tidak ada di server). */
+    if (tersimpan.username) setUsername(tersimpan.username);
+    if (tersimpan.sessionId) setSessionId(tersimpan.sessionId);
+    if (tersimpan.caption) setCaption(tersimpan.caption);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+
+  // Disimpan saat diketik (bukan lewat useEffect) supaya isian tersimpan tidak
+  // tertimpa nilai kosong ketika halaman baru dimuat.
+  function ubahIsian(bagian: { username?: string; sessionId?: string; caption?: string }) {
+    const berikutnya = { username, sessionId, caption, ...bagian };
+    if (bagian.username !== undefined) setUsername(bagian.username);
+    if (bagian.sessionId !== undefined) setSessionId(bagian.sessionId);
+    if (bagian.caption !== undefined) setCaption(bagian.caption);
+    simpanForm("auto-upload", berikutnya);
+  }
 
   useEffect(() => {
     void (async () => {
@@ -209,7 +233,7 @@ export default function AutoUploadPage() {
               <span>Nama akun Instagram</span>
               <input
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => ubahIsian({ username: e.target.value })}
                 placeholder="mis. tokoku"
                 autoComplete="off"
               />
@@ -219,7 +243,7 @@ export default function AutoUploadPage() {
               <span>Session ID</span>
               <input
                 value={sessionId}
-                onChange={(e) => setSessionId(e.target.value)}
+                onChange={(e) => ubahIsian({ sessionId: e.target.value })}
                 placeholder="tempel sessionid cookie"
                 autoComplete="off"
               />
@@ -230,7 +254,7 @@ export default function AutoUploadPage() {
               <textarea
                 rows={4}
                 value={caption}
-                onChange={(e) => setCaption(e.target.value)}
+                onChange={(e) => ubahIsian({ caption: e.target.value })}
                 placeholder="Tulis caption di sini. Boleh pakai hashtag."
                 maxLength={2200}
               />

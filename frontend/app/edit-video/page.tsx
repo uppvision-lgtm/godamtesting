@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import styles from "./page.module.css";
+import { bacaForm, simpanForm } from "../components/formStore";
 
 type Overlay = {
   file: string;
@@ -120,6 +121,28 @@ export default function EditVideoPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void muatTemplates();
   }, [muatTemplates]);
+
+  // ===== ISIAN TERSIMPAN PER AKUN =====
+  useEffect(() => {
+    const tersimpan = bacaForm("edit-video", { link: "", sessionId: "", template: "" });
+    /* eslint-disable react-hooks/set-state-in-effect -- memulihkan isian
+       tersimpan hanya sekali saat halaman dibuka. Sengaja dilakukan setelah
+       render pertama, bukan lewat nilai awal useState, supaya HTML dari server
+       dan dari browser tetap sama (localStorage tidak ada di server). */
+    if (tersimpan.link) setLink(tersimpan.link);
+    if (tersimpan.sessionId) setSessionId(tersimpan.sessionId);
+    if (tersimpan.template) setTerpilih(tersimpan.template);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+
+  // Sama seperti halaman lain: disimpan saat diubah, bukan lewat useEffect.
+  function ubahIsian(bagian: { link?: string; sessionId?: string; template?: string }) {
+    const berikutnya = { link, sessionId, template: terpilih, ...bagian };
+    if (bagian.link !== undefined) setLink(bagian.link);
+    if (bagian.sessionId !== undefined) setSessionId(bagian.sessionId);
+    if (bagian.template !== undefined) setTerpilih(bagian.template);
+    simpanForm("edit-video", berikutnya);
+  }
 
   // ===== MUAT SATU TEMPLATE (termasuk daftar asetnya) =====
   const muatTemplate = useCallback(async (id: string) => {
@@ -275,7 +298,7 @@ export default function EditVideoPage() {
               <select
                 className={styles.select}
                 value={terpilih}
-                onChange={(e) => setTerpilih(e.target.value)}
+                onChange={(e) => ubahIsian({ template: e.target.value })}
               >
                 {templates.length === 0 && <option value="">(belum ada template)</option>}
                 {templates.map((t) => (
@@ -577,7 +600,7 @@ export default function EditVideoPage() {
               <span>Link video sumber</span>
               <input
                 value={link}
-                onChange={(e) => setLink(e.target.value)}
+                onChange={(e) => ubahIsian({ link: e.target.value })}
                 placeholder="https://www.instagram.com/reel/... atau TikTok / YouTube / link MP4"
               />
             </label>
@@ -586,7 +609,7 @@ export default function EditVideoPage() {
                 <span>Session ID (untuk link Instagram)</span>
                 <input
                   value={sessionId}
-                  onChange={(e) => setSessionId(e.target.value)}
+                  onChange={(e) => ubahIsian({ sessionId: e.target.value })}
                   placeholder="tempel sessionid cookie"
                   autoComplete="off"
                 />

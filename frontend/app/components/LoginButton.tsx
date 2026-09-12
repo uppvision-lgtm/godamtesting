@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./LoginButton.module.css";
+import { KUNCI_AKUN, bersihkanForm } from "./formStore";
 
 type Mode = "masuk" | "daftar";
 
@@ -13,11 +14,21 @@ function apiUrl(path: string): string {
   return pc ? `http://localhost:8000${path}` : path;
 }
 
-function simpanToken(token: string) {
+function simpanSesi(token: string, username: string) {
   try {
     window.localStorage.setItem(KUNCI_TOKEN, token);
+    window.localStorage.setItem(KUNCI_AKUN, username);
   } catch {
     // localStorage bisa diblokir (mode privat) — sesi jadi sebatas halaman ini.
+  }
+}
+
+function hapusSesi() {
+  try {
+    window.localStorage.removeItem(KUNCI_TOKEN);
+    window.localStorage.removeItem(KUNCI_AKUN);
+  } catch {
+    // abaikan
   }
 }
 
@@ -52,8 +63,11 @@ export default function LoginButton() {
         if (res.ok) {
           const data = await res.json();
           setAkun(data.username || "");
+          // Pastikan nama akun ikut tersimpan, supaya isian formulir yang
+          // dikunci per akun tetap terbaca setelah halaman dimuat ulang.
+          simpanSesi(token, data.username || "");
         } else {
-          simpanToken("");
+          hapusSesi();
         }
       } catch {
         // backend sedang mati; biarkan tombol Masuk seperti biasa
@@ -88,7 +102,7 @@ export default function LoginButton() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal. Coba lagi.");
-      simpanToken(data.token);
+      simpanSesi(data.token, data.username);
       setAkun(data.username);
       setTerbuka(false);
       setUsername("");
@@ -101,7 +115,10 @@ export default function LoginButton() {
   }, [mode, username, password]);
 
   function keluar() {
-    simpanToken("");
+    // Isian formulir milik akun ini ikut dibersihkan supaya tidak tertinggal
+    // di komputer bersama.
+    bersihkanForm(akun);
+    hapusSesi();
     setAkun("");
   }
 

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import styles from "./page.module.css";
+import { bacaForm, simpanForm } from "../components/formStore";
 
 type BotResult = {
   comments_posted?: number;
@@ -106,6 +107,32 @@ export default function Home() {
   const [error, setError] = useState("");
   const botsRef = useRef<BotSlot[]>(bots);
 
+  // ===== ISIAN TERSIMPAN PER AKUN =====
+  // Dimuat setelah render pertama supaya HTML server dan browser tetap sama.
+  useEffect(() => {
+    const tersimpan = bacaForm<{ botCount: number; values: FormValues[] } | null>(
+      "auto-comment",
+      null as never
+    );
+    if (!tersimpan?.values?.length) return;
+    /* eslint-disable react-hooks/set-state-in-effect -- memulihkan isian
+       tersimpan hanya sekali saat halaman dibuka. Sengaja dilakukan setelah
+       render pertama, bukan lewat nilai awal useState, supaya HTML dari server
+       dan dari browser tetap sama (localStorage tidak ada di server). */
+    setBotCount(tersimpan.botCount || tersimpan.values.length);
+    setBots(
+      tersimpan.values.map((values, i) => ({ ...createBot(i + 1), values: { ...initialValues(), ...values } }))
+    );
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+
+  // Penyimpanan sengaja dipicu dari aksi pengetikan, bukan dari useEffect:
+  // efek yang memantau state akan berjalan dengan nilai lama saat halaman baru
+  // dimuat dan justru menimpa isian tersimpan dengan nilai kosong.
+  const simpanIsian = useCallback((daftar: BotSlot[], jumlah: number) => {
+    simpanForm("auto-comment", { botCount: jumlah, values: daftar.map((b) => b.values) });
+  }, []);
+
   const runningBots = bots.filter((bot) => bot.token && !isTerminal(bot.status));
 
   // Simpan state terbaru di ref supaya polling & penutupan browser saat halaman
@@ -206,21 +233,21 @@ export default function Home() {
   // ===== UBAH JUMLAH BOT (isian bot yang sudah ada tetap dipertahankan) =====
   function changeBotCount(count: number) {
     const next = Math.min(MAX_BOTS, Math.max(1, Number(count) || 1));
+    const list = botsRef.current.slice(0, next);
+    while (list.length < next) list.push(createBot(list.length + 1));
+    const baru = list.map((bot, index) => ({ ...bot, id: index + 1 }));
     setBotCount(next);
-    setBots((current) => {
-      const list = current.slice(0, next);
-      while (list.length < next) list.push(createBot(list.length + 1));
-      return list.map((bot, index) => ({ ...bot, id: index + 1 }));
-    });
+    setBots(baru);
+    simpanIsian(baru, next);
     setError("");
   }
 
   function updateField(index: number, field: keyof FormValues, value: string | number) {
-    setBots((current) =>
-      current.map((bot, i) =>
-        i === index ? { ...bot, values: { ...bot.values, [field]: value } } : bot
-      )
+    const baru = botsRef.current.map((bot, i) =>
+      i === index ? { ...bot, values: { ...bot.values, [field]: value } } : bot
     );
+    setBots(baru);
+    simpanIsian(baru, baru.length);
   }
 
   function validate(values: FormValues): string {

@@ -27,6 +27,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 TABEL = "app_users"
+
+# Pendaftaran umum ditutup: aplikasi ini dipakai sendiri dulu. Nyalakan dengan
+# AUTH_ALLOW_REGISTER=true kalau suatu saat mau dibuka untuk orang lain.
+IZINKAN_DAFTAR = os.getenv("AUTH_ALLOW_REGISTER", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# Akun pemilik disimpan di environment server, jadi login sudah bisa dipakai
+# tanpa database. Hash-nya dibuat dengan ``python buat_akun.py``.
+AKUN_USERNAME = os.getenv("AUTH_USERNAME", "").strip().lower()
+AKUN_HASH = os.getenv("AUTH_PASSWORD_HASH", "").strip()
 POLA_USERNAME = re.compile(r"^[a-zA-Z0-9._-]{3,30}$")
 MIN_PASSWORD = 8
 TOKEN_UMUR_DETIK = int(os.getenv("AUTH_TOKEN_TTL", str(7 * 24 * 3600)))
@@ -128,12 +142,13 @@ def baca_token(token: str) -> dict[str, Any] | None:
 
 
 def _pastikan_siap() -> None:
+    """Pendaftaran butuh tabel Supabase; akun pemilik tidak bisa dibuat dari web."""
     if not db.enabled():
         raise HTTPException(
             status_code=503,
             detail=(
-                "Login belum aktif: kredensial Supabase belum diisi di server "
-                "(SUPABASE_URL & SUPABASE_SERVICE_KEY)."
+                "Pendaftaran belum bisa dipakai: kredensial Supabase belum diisi "
+                "di server (SUPABASE_URL & SUPABASE_SERVICE_KEY)."
             ),
         )
 
@@ -148,14 +163,24 @@ def _bersih(username: str) -> str:
     return username.lower()
 
 
+def _login_siap() -> bool:
+    """Login bisa dipakai kalau ada akun pemilik ATAU tabel Supabase siap."""
+    return bool(AKUN_USERNAME and AKUN_HASH) or db.enabled()
+
+
 @router.get("/config")
 def konfigurasi() -> dict[str, bool]:
-    """Dipakai frontend untuk tahu apakah tombol login layak ditampilkan."""
-    return {"enabled": db.enabled()}
+    """Dipakai frontend untuk tahu keadaan login dan pendaftaran."""
+    return {"enabled": _login_siap(), "register": IZINKAN_DAFTAR}
 
 
 @router.post("/register")
 def daftar(body: AkunBody) -> dict[str, Any]:
+    if not IZINKAN_DAFTAR:
+        raise HTTPException(
+            status_code=403,
+            detail="Pendaftaran sedang ditutup. Aplikasi ini baru dipakai oleh pemiliknya.",
+        )
     _pastikan_siap()
     username = _bersih(body.username)
     try:
@@ -175,8 +200,18 @@ def daftar(body: AkunBody) -> dict[str, Any]:
 
 @router.post("/login")
 def masuk(body: AkunBody) -> dict[str, Any]:
-    _pastikan_siap()
     username = body.username.strip().lower()
+
+    # Akun pemilik dari environment: tidak perlu database sama sekali.
+    if AKUN_USERNAME and AKUN_HASH and username == AKUN_USERNAME:
+        if not cek_password(body.password, AKUN_HASH):
+            raise HTTPException(status_code=401, detail="Username atau password salah.")
+        return {"token": buat_token("pemilik", AKUN_USERNAME), "username": AKUN_USERNAME}
+
+    if not db.enabled():
+        # Tanpa database, satu-satunya akun yang ada adalah akun pemilik.
+        raise HTTPException(status_code=401, detail="Username atau password salah.")
+
     try:
         baris = db.select(
             TABEL,

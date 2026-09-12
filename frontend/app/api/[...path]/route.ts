@@ -16,6 +16,10 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   if (contentType) headers.set("content-type", contentType);
   const accept = request.headers.get("accept");
   if (accept) headers.set("accept", accept);
+  // Wajib diteruskan: tanpa ini sesi login tidak bisa dipulihkan setelah
+  // halaman dimuat ulang, karena /api/auth/me tidak menerima tokennya.
+  const authorization = request.headers.get("authorization");
+  if (authorization) headers.set("authorization", authorization);
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
   try {
