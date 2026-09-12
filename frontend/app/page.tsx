@@ -32,6 +32,29 @@ const tools: Tool[] = [
     status: "ready",
     badge: "Tersedia",
   },
+  {
+    id: "edit",
+    icon: "🎬",
+    title: "Auto Edit Video",
+    desc: "tempel link, digabung dengan template layer-mu",
+    href: "/edit-video",
+    status: "ready",
+    badge: "Tersedia",
+  },
+  {
+    id: "upload",
+    icon: "⬆️",
+    title: "Auto Upload Instagram",
+    desc: "unggah video ke akun sendiri",
+    status: "soon",
+  },
+  {
+    id: "rantai",
+    icon: "⚡",
+    title: "Edit → Upload → Komen",
+    desc: "satu tombol untuk seluruh rantai otomatis",
+    status: "soon",
+  },
 ];
 
 export default function Home() {
