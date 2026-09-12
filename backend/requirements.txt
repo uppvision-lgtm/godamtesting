@@ -7,3 +7,5 @@ playwright
 python-multipart
 python-dotenv
 cryptography
+yt-dlp
+pillow

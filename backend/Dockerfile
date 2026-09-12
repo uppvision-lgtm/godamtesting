@@ -12,6 +12,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# ffmpeg untuk menyusun video, fonts-dejavu untuk drawtext (teks di video).
+# Tanpa font, filter drawtext gagal dengan "Cannot find a valid font".
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # Salin requirements dulu (biar caching pip lebih efisien)
 COPY requirements.txt ./
 

@@ -33,7 +33,7 @@ logging.getLogger().setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 celery_app = Celery("instagram_worker", broker=redis_url, backend=redis_url)
 celery_app.conf.update(
-    include=["tasks"],
+    include=["tasks", "video_tasks"],
     timezone="Asia/Jakarta",
     enable_utc=False,
     task_track_started=True,

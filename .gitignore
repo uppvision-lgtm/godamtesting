@@ -10,3 +10,5 @@ frontend/.next/
 backend/dump.rdb
 .DS_Store
 debug_shots/
+backend/.media/
+backend/media/

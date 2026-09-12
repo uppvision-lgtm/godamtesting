@@ -21,6 +21,7 @@ from comment_ai import normalize_tone
 from tasks import run_instagram_bot
 from live_session import router as live_login_router
 from presence import router as presence_router
+from video_api import router as video_router
 
 
 app = FastAPI(title="Instagram Auto Comment Bot API")
@@ -54,6 +55,7 @@ app.add_middleware(
 
 app.include_router(live_login_router)
 app.include_router(presence_router)
+app.include_router(video_router)
 
 
 class JobRequest(BaseModel):
