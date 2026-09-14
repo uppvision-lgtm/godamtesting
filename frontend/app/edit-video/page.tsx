@@ -42,6 +42,9 @@ type TextLayer = {
   color?: string;
   x?: number | null;
   y?: number | null;
+  align?: string;
+  stroke?: number;
+  stroke_color?: string;
   line_spacing?: number;
   start?: number | null;
   end?: number | null;
@@ -88,12 +91,14 @@ type JobStatus = {
   error?: string | null;
 };
 
-/** Nama slot yang tampil di layar, berurutan dari lapisan bawah ke atas. */
+/** Nama slot yang tampil di layar, berurutan dari lapisan bawah ke atas.
+ *  Nama diambil dari sini, bukan dari data tersimpan, supaya penggantian nama
+ *  langsung terlihat tanpa perlu membuat ulang susunan layernya. */
 const NAMA_SLOT = [
-  "Layer 3 — panel bawah",
-  "Layer 2 — kotak lower-third",
-  "Layer 4 — overlay kecil",
-  "Layer 1 — bingkai teratas",
+  "kotak monas",
+  "kotak putih 3 detik awal",
+  "boom like share",
+  "bingkai teratas",
 ];
 
 /**
@@ -102,6 +107,19 @@ const NAMA_SLOT = [
  * Layer 2, layer 3, dan ketiga baris teks memakai jendela waktu yang sama
  * (detik 0-3): kalau teks dibiarkan lebih lama, ia melayang tanpa latar.
  */
+/** Layer teks kredit pemilik video. Dipisah supaya bisa dipakai juga saat
+ *  menambal susunan lama yang dibuat sebelum fitur ini ada. */
+const TEKS_SUMBER: TextLayer = {
+  name: "sumber",
+  size: 20,
+  x: null,
+  y: 1195,
+  align: "right",
+  color: "white",
+  stroke: 3,
+  stroke_color: "black",
+};
+
 function susunanBawaan(): Susunan {
   return {
     id: ID_LAYER,
@@ -124,6 +142,10 @@ function susunanBawaan(): Susunan {
       { name: "headline", size: 27, x: 38, y: 792, color: "#d32d27", line_spacing: 26, start: 0, end: 3 },
       { name: "detail", size: 27, x: 38, y: 845, color: "black", line_spacing: 26, start: 0, end: 3 },
       { name: "message", size: 27, x: 38, y: 898, color: "black", line_spacing: 26, start: 0, end: 3 },
+      // Kredit pemilik video asli, menempel di kanan bawah sepanjang video.
+      // x sengaja null supaya align "right" yang menentukan posisinya, jadi
+      // teks sepanjang apa pun tetap rapat ke kanan.
+      TEKS_SUMBER,
     ],
     assets: [],
   };
@@ -163,7 +185,11 @@ export default function EditVideoPage() {
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
   const [galatPratinjau, setGalatPratinjau] = useState("");
 
+  // "ai"     = 3 baris disusun dari caption video sumber
+  // "manual" = diketik sendiri
+  const [modeTeks, setModeTeks] = useState<"ai" | "manual">("ai");
   const [hook, setHook] = useState<string[]>([]);
+  const [teksManual, setTeksManual] = useState<string[]>(["", "", ""]);
   const [sumberHook, setSumberHook] = useState("");
   const [membuatHook, setMembuatHook] = useState(false);
 
@@ -181,7 +207,16 @@ export default function EditVideoPage() {
     try {
       const res = await fetch(`/api/video/templates/${ID_LAYER}`, { cache: "no-store" });
       if (res.ok) {
-        setSusunan(await res.json());
+        const ada: Susunan = await res.json();
+        // Susunan yang dibuat sebelum fitur kredit sumber ada belum punya
+        // layer teksnya. Ditambal sekali di sini supaya tidak perlu membuat
+        // ulang susunan dan mengunggah lagi semua berkas layernya.
+        if (!(ada.texts || []).some((t) => t.name === "sumber")) {
+          ada.texts = [...(ada.texts || []), TEKS_SUMBER];
+          await simpanSusunan(ada);
+        } else {
+          setSusunan(ada);
+        }
         return;
       }
     } catch {
@@ -360,10 +395,14 @@ export default function EditVideoPage() {
     setGalat("");
     setMengirim(true);
     try {
+      const baris = modeTeks === "manual" ? teksManual : hook;
       const texts: Record<string, string> = {};
       ["headline", "detail", "message"].forEach((nama, i) => {
-        if (hook[i]) texts[nama] = hook[i];
+        const isi = (baris[i] || "").trim();
+        if (isi) texts[nama] = isi;
       });
+      // Kredit pemilik video asli, diambil dari link sumber.
+      if (pratinjau?.uploader) texts.sumber = `sumber: ${pratinjau.uploader}`;
       const res = await fetch("/api/video/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -409,7 +448,7 @@ export default function EditVideoPage() {
             {(susunan?.overlays || []).map((ov, i) => (
               <div key={i} className={styles.row}>
                 <label>
-                  <span>{ov.label || NAMA_SLOT[i] || `Layer ${i + 1}`}</span>
+                  <span>{NAMA_SLOT[i] || ov.label || `Layer ${i + 1}`}</span>
                   <input
                     readOnly
                     value={ov.file ? ov.file.replace("assets/", "") : "(belum ada berkas)"}
@@ -519,27 +558,90 @@ export default function EditVideoPage() {
               </div>
             )}
 
-            {(membuatHook || hook.length > 0 || sumberHook) && (
-              <div className={styles.hookBox}>
+            <div className={styles.hookBox}>
+              <div className={styles.hookHead}>
                 <span className={styles.hookJudul}>Teks di video</span>
-                {membuatHook && <p className={styles.hint}>Menyusun hook dari caption ...</p>}
-                {hook.map((baris, i) => (
-                  <p key={i} className={i === 0 ? styles.hookBaris1 : styles.hookBaris}>
-                    {baris}
-                  </p>
-                ))}
-                {sumberHook && <p className={styles.hint}>{sumberHook}</p>}
-                {pratinjau && !membuatHook && (
+                <div className={styles.pilihMode}>
                   <button
                     type="button"
-                    className={styles.ghostBtn}
-                    onClick={() => void buatHook(pratinjau)}
+                    className={modeTeks === "ai" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => setModeTeks("ai")}
                   >
-                    Buat ulang
+                    AI
                   </button>
-                )}
+                  <button
+                    type="button"
+                    className={modeTeks === "manual" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => setModeTeks("manual")}
+                  >
+                    Manual
+                  </button>
+                </div>
               </div>
-            )}
+
+              {modeTeks === "ai" ? (
+                <>
+                  {membuatHook && <p className={styles.hint}>Menyusun teks dari caption ...</p>}
+                  {hook.map((baris, i) => (
+                    <p key={i} className={i === 0 ? styles.hookBaris1 : styles.hookBaris}>
+                      {baris}
+                    </p>
+                  ))}
+                  {!membuatHook && hook.length === 0 && (
+                    <p className={styles.hint}>
+                      Tempel link video dulu — teksnya disusun dari caption video itu.
+                    </p>
+                  )}
+                  {sumberHook && <p className={styles.hint}>{sumberHook}</p>}
+                  {pratinjau && !membuatHook && (
+                    <button
+                      type="button"
+                      className={styles.ghostBtn}
+                      onClick={() => void buatHook(pratinjau)}
+                    >
+                      Buat ulang
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  {["Baris 1 (merah)", "Baris 2", "Baris 3"].map((judul, i) => (
+                    <label key={i}>
+                      <span>{judul}</span>
+                      <input
+                        value={teksManual[i]}
+                        maxLength={36}
+                        placeholder={hook[i] || "maksimal 36 karakter"}
+                        onChange={(e) => {
+                          const baru = [...teksManual];
+                          baru[i] = e.target.value;
+                          setTeksManual(baru);
+                        }}
+                      />
+                    </label>
+                  ))}
+                  <p className={styles.hint}>
+                    Lebih dari 36 karakter akan terpotong di layar. Huruf kecil otomatis
+                    dijadikan kapital saat dirender.
+                  </p>
+                  {hook.length > 0 && (
+                    <button
+                      type="button"
+                      className={styles.ghostBtn}
+                      onClick={() => setTeksManual([hook[0] || "", hook[1] || "", hook[2] || ""])}
+                    >
+                      Isi dari saran AI
+                    </button>
+                  )}
+                </>
+              )}
+
+              {pratinjau?.uploader && (
+                <p className={styles.kredit}>
+                  Kredit di kanan bawah: <strong>sumber: {pratinjau.uploader}</strong>
+                </p>
+              )}
+            </div>
 
             {galat && <p className={styles.error} role="alert">{galat}</p>}
 

@@ -461,3 +461,44 @@
 .hookBaris1 {
   color: #d32d27;
 }
+
+/* ---- Pilihan AI / manual ---- */
+.hookHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pilihMode {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.modeBtn,
+.modeAktif {
+  padding: 5px 16px;
+  border: 0;
+  font: inherit;
+  font-size: 0.85em;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+}
+
+.modeAktif {
+  background: #d32d27;
+  color: #fff;
+}
+
+.kredit {
+  margin: 4px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.85em;
+  opacity: 0.8;
+}
