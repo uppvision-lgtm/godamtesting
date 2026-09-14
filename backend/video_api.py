@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import shutil
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,11 @@ MAX_ASSET_MB = float(os.getenv("VIDEO_MAX_ASSET_MB", "200"))
 # tampil terbesar (936 px), jadi ketajamannya tidak berkurang.
 MAX_SISI_GAMBAR = int(os.getenv("VIDEO_MAX_IMAGE_SIDE", "1600"))
 JENIS_GAMBAR = {".png", ".jpg", ".jpeg", ".webp"}
+# Berlaku sama untuk video layer, intro, dan outro. Berkas 4K pada kanvas
+# 720x1280 memaksa ffmpeg membongkar frame raksasa yang langsung dibuang
+# setelah diperkecil; di container kecil itu membuat render dimatikan sistem.
+MAX_SISI_VIDEO = int(os.getenv("VIDEO_MAX_VIDEO_SIDE", "1920"))
+JENIS_VIDEO = {".mp4", ".mov", ".m4v", ".webm"}
 JENIS_ASET = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".m4v", ".webm"}
 STATUS_AKTIF = ("queued", "downloading", "rendering")
 
@@ -103,6 +109,63 @@ def _rapikan_gambar(path: Path) -> int | None:
     except Exception as error:  # berkas rusak atau format tak terduga
         logger.warning("Gambar %s tidak bisa dirapikan: %s", path.name, error)
         return None
+    return path.stat().st_size
+
+
+def _rapikan_video(path: Path) -> int | None:
+    """Perkecil video layer/outro yang resolusinya jauh di atas kanvas.
+
+    Hanya dijalankan sekali saat berkas diunggah, jadi setiap render sesudahnya
+    ikut lebih ringan. Mengembalikan ukuran berkas baru, atau None kalau tidak
+    ada yang diubah.
+    """
+    if path.suffix.lower() not in JENIS_VIDEO:
+        return None
+    try:
+        info = ve.probe(path)
+    except ve.VideoError as error:
+        logger.warning("Video %s tidak bisa dibaca: %s", path.name, error)
+        return None
+
+    lebar, tinggi = int(info.get("width") or 0), int(info.get("height") or 0)
+    if not lebar or not tinggi or max(lebar, tinggi) <= MAX_SISI_VIDEO:
+        return None
+
+    skala = MAX_SISI_VIDEO / max(lebar, tinggi)
+    # Lebar dan tinggi dibulatkan ke angka genap; encoder yuv420p menolak
+    # ukuran ganjil.
+    baru_l = max(2, int(round(lebar * skala / 2)) * 2)
+    baru_t = max(2, int(round(tinggi * skala / 2)) * 2)
+    sementara = path.with_name(path.stem + "-kecil" + path.suffix)
+    perintah = [
+        ve.FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(path),
+        "-vf", f"scale={baru_l}:{baru_t}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        # Audio disalin apa adanya kalau ada; kalau tidak, dilewati.
+        "-c:a", "copy",
+        str(sementara),
+    ]
+    try:
+        hasil = subprocess.run(perintah, capture_output=True, text=True, timeout=600)
+        if hasil.returncode != 0 or not sementara.is_file():
+            # Sebagian berkas audionya tidak bisa disalin; ulangi dengan aac.
+            perintah[perintah.index("copy")] = "aac"
+            hasil = subprocess.run(perintah, capture_output=True, text=True, timeout=600)
+        if hasil.returncode != 0 or not sementara.is_file():
+            logger.warning(
+                "Video %s gagal diperkecil: %s", path.name, (hasil.stderr or "")[:200]
+            )
+            sementara.unlink(missing_ok=True)
+            return None
+        sementara.replace(path)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        logger.warning("Video %s gagal diperkecil: %s", path.name, error)
+        sementara.unlink(missing_ok=True)
+        return None
+
+    logger.info("Video %s diperkecil %dx%d -> %dx%d", path.name, lebar, tinggi, baru_l, baru_t)
     return path.stat().st_size
 
 
@@ -213,7 +276,7 @@ async def unggah_aset(template_id: str, file: UploadFile = File(...)) -> dict[st
         tujuan.unlink(missing_ok=True)
         raise
 
-    ukuran = _rapikan_gambar(tujuan) or ukuran
+    ukuran = _rapikan_gambar(tujuan) or _rapikan_video(tujuan) or ukuran
 
     if storage.enabled():
         try:
