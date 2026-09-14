@@ -48,8 +48,14 @@ const TONES: { value: CommentTone; icon: string; label: string; hint: string }[]
   { value: "negatif", icon: "😕", label: "Negatif", hint: "Kritis & sopan, tanpa hinaan" },
 ];
 
-// Batas jumlah bot yang bisa dijalankan dari satu halaman.
-const MAX_BOTS = 5;
+// Tombol pintas jumlah bot. Angka di luar daftar ini tetap bisa diisi lewat
+// kotak angka di sebelahnya — server tidak lagi membatasi jumlah bot.
+const PILIHAN_CEPAT = [1, 2, 3, 4, 5];
+
+// Satu-satunya alasan masih ada angka maksimum di sini: setiap bot merender
+// satu form panjang beserta panel Chrome Live-nya, jadi angka ekstrem membuat
+// browser pengguna sendiri tersendat. Ini batas tampilan, bukan batas server.
+const MAX_BOTS = 50;
 const BOT_START_GAP_MS = 900;
 
 function initialValues(): FormValues {
@@ -341,21 +347,52 @@ export default function Home() {
         <section className={styles.controlPanel}>
           <div className={styles.botCountRow}>
             <span className={styles.botCountLabel}>Jumlah bot yang dijalankan</span>
-            <div className={styles.botCountOptions} role="radiogroup" aria-label="Jumlah bot">
-              {Array.from({ length: MAX_BOTS }, (_, i) => i + 1).map((count) => (
+            <div className={styles.botCountOptions}>
+              <div className={styles.botCountQuick} role="radiogroup" aria-label="Pilihan cepat jumlah bot">
+                {PILIHAN_CEPAT.map((count) => (
+                  <button
+                    key={count}
+                    type="button"
+                    role="radio"
+                    aria-checked={botCount === count}
+                    className={`${styles.botCountBtn} ${
+                      botCount === count ? styles.botCountBtnActive : ""
+                    }`}
+                    onClick={() => changeBotCount(count)}
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.botCountStepper}>
                 <button
-                  key={count}
                   type="button"
-                  role="radio"
-                  aria-checked={botCount === count}
-                  className={`${styles.botCountBtn} ${
-                    botCount === count ? styles.botCountBtnActive : ""
-                  }`}
-                  onClick={() => changeBotCount(count)}
+                  className={styles.botCountBtn}
+                  onClick={() => changeBotCount(botCount - 1)}
+                  disabled={botCount <= 1}
+                  aria-label="Kurangi satu bot"
                 >
-                  {count}
+                  −
                 </button>
-              ))}
+                <input
+                  type="number"
+                  className={styles.botCountInput}
+                  min={1}
+                  max={MAX_BOTS}
+                  value={botCount}
+                  onChange={(event) => changeBotCount(Number(event.target.value))}
+                  aria-label="Jumlah bot"
+                />
+                <button
+                  type="button"
+                  className={styles.botCountBtn}
+                  onClick={() => changeBotCount(botCount + 1)}
+                  disabled={botCount >= MAX_BOTS}
+                  aria-label="Tambah satu bot"
+                >
+                  +
+                </button>
+              </div>
             </div>
           </div>
 
@@ -364,10 +401,11 @@ export default function Home() {
             Login otomatis cukup pakai Session ID — tanpa CAPTCHA. Satu tombol Mulai untuk {" "}
             {botCount} bot sekaligus.
           </p>
-          {botCount >= 3 && (
+          {botCount > PILIHAN_CEPAT.length && (
             <p className={styles.warnNote}>
-              Semua bot berbagi <strong>1 browser</strong> (hemat memori), tetapi server tetap
-              terbatas. Kalau terasa lambat atau gagal, kurangi jumlah botnya.
+              Semua bot berbagi <strong>1 browser</strong> (hemat memori), jadi menjalankan
+              banyak bot sekaligus tidak masalah. Yang perlu diingat hanya satu: makin banyak
+              bot, makin panjang halaman ini.
             </p>
           )}
           {error && <p className={styles.error} role="alert">{error}</p>}

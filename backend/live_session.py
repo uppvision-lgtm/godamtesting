@@ -43,10 +43,11 @@ logger = logging.getLogger("live")
 router = APIRouter(prefix="/api/live", tags=["live"])
 _SESSIONS: dict[str, "LiveSession"] = {}
 
-# Batas browser yang boleh jalan bersamaan. Setiap sesi memakan satu Chromium
-# (±300MB di server), jadi di server kecil batas ini bisa diturunkan lewat env
-# LIVE_MAX_SESSIONS (mis. 2) supaya container tidak kehabisan memori.
-MAX_CONCURRENT_SESSIONS = max(1, int(os.getenv("LIVE_MAX_SESSIONS", "5")))
+# Batas browser yang boleh jalan bersamaan. Default 0 = tanpa batas: berapa pun
+# bot yang diminta akan dijalankan. Setiap sesi memakan satu Chromium (±300MB
+# di server), jadi kalau suatu saat server terasa berat, batas bisa dipasang
+# lagi lewat env LIVE_MAX_SESSIONS (mis. 5) tanpa mengubah kode.
+MAX_CONCURRENT_SESSIONS = max(0, int(os.getenv("LIVE_MAX_SESSIONS", "0")))
 
 # 1 Chromium dipakai bersama semua bot (tiap bot = 1 tab/context). Hasil ukur
 # lokal 5 bot: 5 browser terpisah 1392MB/21 proses vs 1 browser + 5 tab
@@ -537,15 +538,16 @@ async def start_live(request: StartRequest) -> dict:
         )
     tone = normalize_tone(tone_input)
 
-    aktif = active_session_count()
-    if aktif >= MAX_CONCURRENT_SESSIONS:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"Maksimal {MAX_CONCURRENT_SESSIONS} bot berjalan bersamaan. "
-                "Tunggu salah satu selesai lalu coba lagi."
-            ),
-        )
+    if MAX_CONCURRENT_SESSIONS:
+        aktif = active_session_count()
+        if aktif >= MAX_CONCURRENT_SESSIONS:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Maksimal {MAX_CONCURRENT_SESSIONS} bot berjalan bersamaan. "
+                    "Tunggu salah satu selesai lalu coba lagi."
+                ),
+            )
     token = uuid.uuid4().hex
     session = LiveSession(token)
     _SESSIONS[token] = session

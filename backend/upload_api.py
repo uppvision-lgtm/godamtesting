@@ -140,7 +140,8 @@ def _siapkan_berkas(body: StartBody) -> Path:
 async def mulai_unggah(body: StartBody) -> dict[str, object]:
     berkas = _siapkan_berkas(body)
 
-    if active_session_count() >= MAX_CONCURRENT_SESSIONS:
+    # MAX_CONCURRENT_SESSIONS bernilai 0 berarti tanpa batas.
+    if MAX_CONCURRENT_SESSIONS and active_session_count() >= MAX_CONCURRENT_SESSIONS:
         raise HTTPException(
             status_code=429,
             detail=(

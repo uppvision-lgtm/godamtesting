@@ -226,7 +226,54 @@
 
 .botCountOptions {
   display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.botCountQuick {
+  display: flex;
   gap: 6px;
+}
+
+/* Kotak angka bebas: dipakai kalau jumlah bot melebihi tombol pintas. */
+.botCountStepper {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding-left: 10px;
+  border-left: 1px solid #2c352e;
+}
+
+.botCountInput {
+  width: 58px;
+  height: 38px;
+  border: 1px solid #2c352e;
+  border-radius: 9px;
+  background: #0f1210;
+  color: #c8d2cb;
+  font: inherit;
+  font-weight: 800;
+  font-size: 14px;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.botCountInput::-webkit-outer-spin-button,
+.botCountInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.botCountInput:focus {
+  outline: none;
+  border-color: #7fe0a0;
+  color: #7fe0a0;
+}
+
+.botCountBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .botCountBtn {
