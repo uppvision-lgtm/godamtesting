@@ -196,7 +196,14 @@ function susunanBawaan(): Susunan {
       // berlaku di badan video — outro disusun terpisah, jadi layer ini
       // tidak pernah muncul di sana.
       { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
-      { label: NAMA_SLOT[3], file: "", x: 0, y: 63, w: 720, h: 1217 },
+      // Bingkai punya pinggiran transparan: 26 px di atas dan 2 px di bawah.
+      // Kalau berkasnya diskala apa adanya, isinya berhenti sedikit sebelum
+      // dasar layar sehingga bar merahnya menyisakan celah dan video sumber
+      // mengintip di dua baris terbawah. Crop membuang pinggiran itu, lalu
+      // isinya (3375x5678) diskala ke 720x1211 dan ditempel rapat ke dasar:
+      //   y = 1280 - 1211 = 69
+      { label: NAMA_SLOT[3], file: "", x: 0, y: 69, w: 720, h: 1211,
+        crop: "3375:5678:0:26" },
     ],
     texts: [TEKS_HOOK, TEKS_SUMBER],
     assets: [],
