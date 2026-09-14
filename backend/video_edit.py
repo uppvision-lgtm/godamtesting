@@ -600,13 +600,25 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
     # dipotong supaya prompt tidak membengkak.
     caption = str(data.get("description") or "").strip()
 
+    # Pemilik video untuk kredit "SUMBER: ...".
+    #
+    # "channel" adalah nama akunnya, sedangkan "uploader" adalah nama tampilan
+    # yang boleh diisi bebas oleh pemiliknya. Di Instagram keduanya sering
+    # berbeda: akun "tehojol" yang nama tampilannya "tehojol/selvi" membuat
+    # kreditnya salah kalau memakai "uploader". Jadi nama akun didahulukan.
+    pemilik = (
+        str(data.get("channel") or "").strip()
+        or str(data.get("uploader") or "").strip()
+        or str(data.get("uploader_id") or "").strip().lstrip("@")
+    )
+
     return {
         "title": data.get("title") or "(tanpa judul)",
         "description": caption[:2000],
         "view_count": data.get("view_count") or 0,
         "like_count": data.get("like_count") or 0,
         "upload_date": data.get("upload_date") or "",
-        "uploader": data.get("uploader") or data.get("channel") or "",
+        "uploader": pemilik,
         "duration": durasi,
         "thumbnail": data.get("thumbnail") or "",
         "extractor": data.get("extractor_key") or data.get("extractor") or "",
