@@ -17,10 +17,11 @@ import { bacaForm, simpanForm } from "../components/formStore";
  * 4 layer + 1 outro, sesuai skrip main.py. Pengguna hanya mengganti berkasnya.
  */
 
-// Satu susunan layer saja untuk seluruh aplikasi, jadi tidak ada daftar
-// template yang harus dipilih. Id-nya tetap supaya berkas yang sudah diunggah
-// tidak hilang saat halaman dibuka lagi.
-const ID_LAYER = "utama";
+// Set layer pertama. Id "utama" dipertahankan dari versi sebelumnya supaya
+// berkas yang sudah diunggah tidak perlu diunggah ulang; namanya kini "TV
+// Rakyat". Set berikutnya dibuat lewat tombol "Baru" dengan id sendiri.
+const ID_SET_PERTAMA = "utama";
+const NAMA_SET_PERTAMA = "TV Rakyat";
 
 const BATAS_UNGGAH_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 200);
 
@@ -163,10 +164,10 @@ const TEKS_SUMBER: TextLayer = {
   stroke_color: "black",
 };
 
-function susunanBawaan(): Susunan {
+function susunanBawaan(id: string, nama: string): Susunan {
   return {
-    id: ID_LAYER,
-    name: "Auto Edit Video",
+    id,
+    name: nama,
     width: 720,
     height: 1280,
     fps: 30,
@@ -246,6 +247,10 @@ export default function EditVideoPage() {
 
   const [link, setLink] = useState(awal.link);
   const [susunan, setSusunan] = useState<Susunan | null>(null);
+  const [daftarSet, setDaftarSet] = useState<{ id: string; name: string }[]>([]);
+  const [idSet, setIdSet] = useState(ID_SET_PERTAMA);
+  const [namaSet, setNamaSet] = useState(NAMA_SET_PERTAMA);
+  const [menyimpanNama, setMenyimpanNama] = useState(false);
   const [pesanLayer, setPesanLayer] = useState("");
 
   const [pratinjau, setPratinjau] = useState<Pratinjau | null>(null);
@@ -272,22 +277,39 @@ export default function EditVideoPage() {
     simpanForm("edit-video", { link });
   }, [link]);
 
-  // ===== SUSUNAN LAYER =====
-  const muatSusunan = useCallback(async () => {
+  // ===== SET LAYER =====
+
+  /** Ambil daftar semua set layer yang tersimpan. */
+  const muatDaftar = useCallback(async () => {
     try {
-      const res = await fetch(`/api/video/templates/${ID_LAYER}`, { cache: "no-store" });
+      const res = await fetch("/api/video/templates", { cache: "no-store" });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const daftar = (data.templates || []).map((t: Susunan) => ({ id: t.id, name: t.name }));
+      setDaftarSet(daftar);
+      return daftar;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  /** Muat satu set layer. Kalau belum ada, dibuatkan dengan susunan bawaan. */
+  const muatSet = useCallback(async (id: string, nama: string) => {
+    try {
+      const res = await fetch(`/api/video/templates/${id}`, { cache: "no-store" });
       if (res.ok) {
         const ada: Susunan = await res.json();
-        // Semua layer teks didefinisikan di kode (hook + kredit sumber), jadi
-        // susunan tersimpan selalu disamakan dengannya. Dengan begini susunan
-        // lama (mis. yang masih memakai 3 baris headline/detail/message)
-        // otomatis ikut ke bentuk baru tanpa perlu dibuat ulang dan tanpa
-        // mengunggah lagi berkas layernya.
+        // Layer teks selalu didefinisikan di kode (hook + kredit sumber), jadi
+        // set tersimpan disamakan dengannya. Dengan begini set lama otomatis
+        // ikut ke bentuk terbaru tanpa perlu dibuat ulang dan tanpa mengunggah
+        // lagi berkas layernya.
         const tetap = [TEKS_HOOK, TEKS_SUMBER];
         const perluDisimpan = JSON.stringify(ada.texts || []) !== JSON.stringify(tetap);
         ada.texts = tetap;
+        setIdSet(ada.id);
+        setNamaSet(ada.name);
         if (perluDisimpan) {
-          await simpanSusunan(ada);
+          await simpanSusunan(ada, ada.id);
         } else {
           setSusunan(ada);
         }
@@ -296,30 +318,41 @@ export default function EditVideoPage() {
     } catch {
       // lanjut ke pembuatan di bawah
     }
-    // Belum ada: buat sekali, lalu dipakai seterusnya.
     try {
-      const bawaan = susunanBawaan();
-      const res = await fetch(`/api/video/templates?template_id=${ID_LAYER}`, {
+      const res = await fetch(`/api/video/templates?template_id=${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(bawaan),
+        body: JSON.stringify(susunanBawaan(id, nama)),
       });
-      if (res.ok) setSusunan(await res.json());
+      if (res.ok) {
+        const dibuat = await res.json();
+        setSusunan(dibuat);
+        setIdSet(dibuat.id);
+        setNamaSet(dibuat.name);
+        await muatDaftar();
+      }
     } catch {
-      setPesanLayer("Tidak bisa menyiapkan susunan layer.");
+      setPesanLayer("Tidak bisa menyiapkan set layer.");
     }
-  }, []);
+    // simpanSusunan sengaja tidak masuk daftar dependensi: ia didefinisikan
+    // ulang setiap render, jadi memasukkannya membuat muatSet ikut berubah
+    // terus dan effect di bawah berjalan berulang tanpa henti.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [muatDaftar]);
 
   useEffect(() => {
-    // Perubahan state terjadi setelah fetch selesai, bukan saat effect jalan.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void muatSusunan();
-  }, [muatSusunan]);
+    void (async () => {
+      const daftar = await muatDaftar();
+      const pertama = daftar[0];
+      await muatSet(pertama?.id || ID_SET_PERTAMA, pertama?.name || NAMA_SET_PERTAMA);
+    })();
+  }, [muatDaftar, muatSet]);
 
-  /** Simpan perubahan susunan (dipanggil setelah berkas layer diganti). */
-  async function simpanSusunan(baru: Susunan) {
+  /** Simpan set layer (dipanggil setelah berkas diganti atau nama diubah). */
+  async function simpanSusunan(baru: Susunan, id?: string) {
+    const sasaran = id || idSet;
     setSusunan(baru);
-    await fetch(`/api/video/templates?template_id=${ID_LAYER}`, {
+    await fetch(`/api/video/templates?template_id=${sasaran}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -335,6 +368,41 @@ export default function EditVideoPage() {
     });
   }
 
+  /** Simpan nama set yang sedang dibuka. */
+  async function simpanNama() {
+    if (!susunan) return;
+    const nama = namaSet.trim();
+    if (!nama) {
+      setPesanLayer("Nama set layer tidak boleh kosong.");
+      return;
+    }
+    setMenyimpanNama(true);
+    setPesanLayer("Menyimpan ...");
+    try {
+      await simpanSusunan({ ...susunan, name: nama });
+      await muatDaftar();
+      setPesanLayer(`Set layer "${nama}" tersimpan.`);
+    } catch {
+      setPesanLayer("Gagal menyimpan set layer.");
+    } finally {
+      setMenyimpanNama(false);
+    }
+  }
+
+  /** Buat set layer baru yang kosong. */
+  async function buatSetBaru() {
+    const nama = (window.prompt("Nama set layer baru:", "") || "").trim();
+    if (!nama) return;
+    // Id dibuat dari namanya supaya mudah dikenali di penyimpanan, dengan
+    // akhiran acak agar dua set bernama mirip tidak saling menimpa.
+    const id =
+      nama.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) +
+      "-" +
+      Math.random().toString(36).slice(2, 6);
+    await muatSet(id, nama);
+    setPesanLayer(`Set layer "${nama}" dibuat. Unggah berkas tiap layernya.`);
+  }
+
   /** Unggah satu berkas, kembalikan namanya ("assets/xxx.png"). */
   async function unggah(file: File): Promise<string | null> {
     if (file.size > BATAS_UNGGAH_MB * 1_048_576) {
@@ -347,7 +415,7 @@ export default function EditVideoPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`/api/video/templates/${ID_LAYER}/assets`, {
+      const res = await fetch(`/api/video/templates/${idSet}/assets`, {
         method: "POST",
         body: form,
       });
@@ -488,7 +556,7 @@ export default function EditVideoPage() {
       const res = await fetch("/api/video/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: link.trim(), template_id: ID_LAYER, texts }),
+        body: JSON.stringify({ url: link.trim(), template_id: idSet, texts }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal memulai.");
@@ -522,9 +590,51 @@ export default function EditVideoPage() {
           </div>
 
           <div className={styles.form}>
+            <div className={styles.row}>
+              <label>
+                <span>Set layer</span>
+                <select
+                  className={styles.select}
+                  value={idSet}
+                  onChange={(e) => {
+                    const dipilih = daftarSet.find((d) => d.id === e.target.value);
+                    if (dipilih) void muatSet(dipilih.id, dipilih.name);
+                  }}
+                >
+                  {daftarSet.length === 0 && <option value={idSet}>{namaSet}</option>}
+                  {daftarSet.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className={styles.ghostBtn} onClick={buatSetBaru}>
+                + Baru
+              </button>
+            </div>
+
+            <div className={styles.row}>
+              <label>
+                <span>Nama set</span>
+                <input
+                  value={namaSet}
+                  maxLength={60}
+                  onChange={(e) => setNamaSet(e.target.value)}
+                  placeholder="mis. TV Rakyat"
+                />
+              </label>
+              <button
+                type="button"
+                className={styles.simpanBtn}
+                onClick={simpanNama}
+                disabled={menyimpanNama}
+              >
+                {menyimpanNama ? "Menyimpan..." : "Simpan"}
+              </button>
+            </div>
+
             <p className={styles.hint}>
               Empat layer dan satu outro, susunannya tetap. Kamu cukup mengganti berkasnya —
-              posisi dan waktu tampilnya sudah diatur.
+              posisi dan waktu tampilnya sudah diatur. Berkas tersimpan per set layer.
             </p>
 
             {(susunan?.overlays || []).map((ov, i) => (
