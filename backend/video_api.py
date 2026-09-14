@@ -45,6 +45,13 @@ class JobBody(BaseModel):
     session_id: str = ""
 
 
+class PreviewBody(BaseModel):
+    """Link video yang mau dilihat isinya sebelum diproses."""
+
+    url: str = Field(min_length=5, max_length=2000)
+    session_id: str = ""
+
+
 class HookBody(BaseModel):
     """Naskah mentah dari pengguna yang mau dirapikan jadi 3 baris hook."""
 
@@ -53,6 +60,20 @@ class HookBody(BaseModel):
 
 def _tangani(error: ve.VideoError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(error))
+
+
+# ============================================================
+#  PRATINJAU LINK
+# ============================================================
+
+
+@router.post("/preview")
+def pratinjau_link(body: PreviewBody) -> dict[str, Any]:
+    """Tampilkan isi link (judul, durasi, sampul) tanpa mengunduh videonya."""
+    try:
+        return ve.preview_source(body.url, body.session_id or None)
+    except ve.VideoError as error:
+        raise _tangani(error)
 
 
 # ============================================================

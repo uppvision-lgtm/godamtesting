@@ -11,6 +11,22 @@ type Overlay = {
   y: number | null;
   w?: number | null;
   h?: number | null;
+  crop?: string | null;
+  start?: number | null;
+  end?: number | null;
+  label?: string;
+};
+
+type Pratinjau = {
+  title: string;
+  uploader: string;
+  duration: number | null;
+  thumbnail: string;
+  extractor: string;
+  width: number;
+  height: number;
+  too_long: boolean;
+  max_seconds: number;
 };
 
 type TextLayer = {
@@ -22,6 +38,9 @@ type TextLayer = {
   y?: number | null;
   box?: boolean;
   stroke?: number;
+  line_spacing?: number;
+  start?: number | null;
+  end?: number | null;
 };
 
 type Template = {
@@ -58,6 +77,50 @@ function apiUrl(path: string): string {
   return path;
 }
 
+/** Susunan 4 layer + outro persis seperti skrip main.py (kanvas 720x1280).
+ *  Angka posisi diambil dari perintah ffmpeg di skrip itu, jadi hasilnya sama.
+ *  Berkas tiap layer dikosongkan — diisi lewat tombol Unggah di barisnya. */
+function formatDurasi(detik: number): string {
+  const total = Math.round(detik);
+  const m = Math.floor(total / 60);
+  const d = total % 60;
+  return `${m}:${String(d).padStart(2, "0")}`;
+}
+
+function templateCapcut(): Template {
+  return {
+    id: "",
+    name: "CapCut AI (4 layer + outro)",
+    width: 720,
+    height: 1280,
+    fps: 30,
+    intro: null,
+    outro: null,
+    max_duration: null,
+    overlays: [
+      // Urutan array = urutan menumpuk, dari paling bawah ke paling atas.
+      { label: "Layer 3 — panel bawah", file: "", x: 0, y: 851, w: 720, h: 429,
+        crop: "2880:1197:40:0", start: 0, end: 3 },
+      { label: "Layer 2 — kotak lower-third", file: "", x: 10, y: 710, w: 700, h: 283,
+        start: 0, end: 3 },
+      { label: "Layer 4 — overlay kecil", file: "", x: 45, y: 55, w: 280, h: 158 },
+      { label: "Layer 1 — bingkai teratas", file: "", x: 0, y: 63, w: 720, h: 1217 },
+    ],
+    texts: [
+      // Posisi = titik teks di dalam kotak lower-third (10,710) + offset (28,82).
+      // start/end wajib sama dengan layer 2 dan 3: teks hook harus ikut hilang
+      // saat kotak latarnya hilang, kalau tidak ia melayang di atas video.
+      { name: "headline", size: 27, x: 38, y: 792, color: "#d32d27", line_spacing: 26,
+        start: 0, end: 3 },
+      { name: "detail", size: 27, x: 38, y: 845, color: "black", line_spacing: 26,
+        start: 0, end: 3 },
+      { name: "message", size: 27, x: 38, y: 898, color: "black", line_spacing: 26,
+        start: 0, end: 3 },
+    ],
+    assets: [],
+  };
+}
+
 function templateKosong(nama: string): Template {
   return {
     id: "",
@@ -88,6 +151,9 @@ export default function EditVideoPage() {
   const [sessionId, setSessionId] = useState("");
   const [isiTeks, setIsiTeks] = useState<Record<string, string>>({});
   const [naskah, setNaskah] = useState("");
+  const [pratinjau, setPratinjau] = useState<Pratinjau | null>(null);
+  const [memuatPratinjau, setMemuatPratinjau] = useState(false);
+  const [galatPratinjau, setGalatPratinjau] = useState("");
   const [membuatHook, setMembuatHook] = useState(false);
   const [pesanHook, setPesanHook] = useState("");
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -297,6 +363,93 @@ export default function EditVideoPage() {
     }
   }
 
+  /** Unggah berkas lalu kembalikan nama asetnya ("assets/xxx.png"). */
+  async function unggahDanAmbilNama(file: File): Promise<string | null> {
+    if (!template?.id) {
+      setPesanTemplate("Simpan template dulu sebelum mengunggah berkas layer.");
+      return null;
+    }
+    if (file.size > BATAS_UNGGAH_MB * 1_048_576) {
+      setPesanTemplate(
+        `Berkas ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar (batas ${BATAS_UNGGAH_MB} MB).`
+      );
+      return null;
+    }
+    setPesanTemplate(`Mengunggah ${file.name} ...`);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(apiUrl(`/api/video/templates/${template.id}/assets`), {
+        method: "POST",
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Gagal mengunggah.");
+      setPesanTemplate(`${data.file} terunggah.`);
+      return data.file as string;
+    } catch (err) {
+      setPesanTemplate(err instanceof Error ? err.message : "Gagal mengunggah.");
+      return null;
+    }
+  }
+
+  /** Unggah berkas untuk satu baris layer, lalu pasang ke layer itu juga. */
+  async function unggahUntukLayer(index: number, file: File) {
+    const nama = await unggahDanAmbilNama(file);
+    if (!nama || !template) return;
+    const baru = [...template.overlays];
+    baru[index] = { ...baru[index], file: nama };
+    ubahTemplate({ overlays: baru });
+    if (template.id) await muatTemplate(template.id);
+  }
+
+  /** Unggah berkas untuk intro atau outro sekaligus memasangnya. */
+  async function unggahUntukKlip(posisi: "intro" | "outro", file: File) {
+    const nama = await unggahDanAmbilNama(file);
+    if (!nama) return;
+    ubahTemplate({ [posisi]: nama } as Partial<Template>);
+    if (template?.id) await muatTemplate(template.id);
+  }
+
+  /** Baca isi link (judul, durasi, sampul) tanpa mengunduh videonya. */
+  const bacaPratinjau = useCallback(
+    async (tautan: string, sesi: string) => {
+      if (!tautan.toLowerCase().startsWith("http")) {
+        setPratinjau(null);
+        setGalatPratinjau("");
+        return;
+      }
+      setMemuatPratinjau(true);
+      setGalatPratinjau("");
+      try {
+        const res = await fetch(apiUrl("/api/video/preview"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: tautan, session_id: sesi }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Tidak bisa membaca link.");
+        setPratinjau(data as Pratinjau);
+      } catch (err) {
+        setPratinjau(null);
+        setGalatPratinjau(err instanceof Error ? err.message : "Tidak bisa membaca link.");
+      } finally {
+        setMemuatPratinjau(false);
+      }
+    },
+    []
+  );
+
+  // Baca link otomatis, ditunda sebentar supaya tidak memanggil server
+  // setiap kali satu huruf diketik.
+  useEffect(() => {
+    // Pembersihan state ditangani di dalam bacaPratinjau (link kosong atau
+    // bukan http akan mengosongkan kartu), supaya effect ini tidak memanggil
+    // setState secara langsung.
+    const timer = setTimeout(() => void bacaPratinjau(link.trim(), sessionId), 700);
+    return () => clearTimeout(timer);
+  }, [link, sessionId, bacaPratinjau]);
+
   async function mulaiRender() {
     setGalat("");
     if (!terpilih) return setGalat("Pilih template dulu.");
@@ -361,6 +514,17 @@ export default function EditVideoPage() {
                 }}
               >
                 + Baru
+              </button>
+              <button
+                type="button"
+                className={styles.ghostBtn}
+                title="Susunan 4 layer + outro seperti skrip main.py"
+                onClick={() => {
+                  setTemplate(templateCapcut());
+                  setTerpilih("");
+                }}
+              >
+                + 4 Layer + Outro
               </button>
             </div>
           </div>
@@ -460,6 +624,18 @@ export default function EditVideoPage() {
                     ))}
                   </select>
                 </label>
+                <label className={styles.uploadBtn}>
+                  Unggah outro
+                  <input
+                    type="file"
+                    accept=".mp4,.mov,.m4v,.webm"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void unggahUntukKlip("outro", f);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
                 <label className={styles.kecil}>
                   <span>Durasi maks (detik)</span>
                   <input
@@ -496,7 +672,7 @@ export default function EditVideoPage() {
                 {template.overlays.map((ov, i) => (
                   <div key={i} className={styles.row}>
                     <label>
-                      <span>Berkas</span>
+                      <span>{ov.label || `Layer ${i + 1}`}</span>
                       <select
                         value={ov.file}
                         onChange={(e) => {
@@ -505,10 +681,23 @@ export default function EditVideoPage() {
                           ubahTemplate({ overlays: baru });
                         }}
                       >
-                        {asetGambar.map((a) => (
+                        <option value="">(belum ada berkas)</option>
+                        {aset.map((a) => (
                           <option key={a} value={`assets/${a}`}>{a}</option>
                         ))}
                       </select>
+                    </label>
+                    <label className={styles.uploadBtn}>
+                      Unggah
+                      <input
+                        type="file"
+                        accept=".png,.jpg,.jpeg,.webp,.mp4,.mov,.m4v,.webm"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) void unggahUntukLayer(i, f);
+                          e.target.value = "";
+                        }}
+                      />
                     </label>
                     <label className={styles.kecil}>
                       <span>X</span>
@@ -662,6 +851,44 @@ export default function EditVideoPage() {
                   autoComplete="off"
                 />
               </label>
+            )}
+
+            {(memuatPratinjau || pratinjau || galatPratinjau) && (
+              <div className={styles.pratinjauBox}>
+                {memuatPratinjau && <p className={styles.hint}>Membaca isi link ...</p>}
+                {galatPratinjau && <p className={styles.error}>{galatPratinjau}</p>}
+                {pratinjau && (
+                  <div className={styles.pratinjauIsi}>
+                    {pratinjau.thumbnail && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        className={styles.pratinjauGambar}
+                        src={pratinjau.thumbnail}
+                        alt="Sampul video"
+                      />
+                    )}
+                    <div className={styles.pratinjauTeks}>
+                      <strong>{pratinjau.title}</strong>
+                      <span>
+                        {[
+                          pratinjau.uploader,
+                          pratinjau.duration ? formatDurasi(pratinjau.duration) : "",
+                          pratinjau.width ? `${pratinjau.width}x${pratinjau.height}` : "",
+                          pratinjau.extractor,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                      {pratinjau.too_long && (
+                        <span className={styles.peringatan}>
+                          Video lebih panjang dari batas {Math.round(pratinjau.max_seconds / 60)} menit —
+                          hanya bagian awalnya yang dipakai.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             {(template?.texts || []).length > 0 && (

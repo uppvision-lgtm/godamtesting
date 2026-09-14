@@ -20,6 +20,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -41,6 +43,12 @@ VIDEO_THREADS = os.getenv("VIDEO_THREADS", "0")
 MAX_SOURCE_SECONDS = float(os.getenv("VIDEO_MAX_SOURCE_SECONDS", "300"))
 RENDER_TIMEOUT_SECONDS = float(os.getenv("VIDEO_RENDER_TIMEOUT", "1800"))
 DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "600"))
+PREVIEW_TIMEOUT_SECONDS = float(os.getenv("VIDEO_PREVIEW_TIMEOUT", "45"))
+
+# yt-dlp dipasang sebagai paket Python. Di image Docker ia ada di PATH, tapi
+# saat dijalankan dari virtualenv (mode lokal) sering tidak. Jadi dicari dulu,
+# dan kalau tetap tidak ketemu dipanggil sebagai modul: "python -m yt_dlp".
+YTDLP_BIN = os.getenv("YTDLP_BIN", "").strip()
 
 # Kandidat font untuk drawtext: Debian (image Docker) lalu macOS (mode via PC).
 FONT_CANDIDATES = (
@@ -348,6 +356,17 @@ def _escape_filter(nilai: str) -> str:
 # ============================================================
 
 
+def _perintah_ytdlp() -> list[str]:
+    """Kembalikan cara memanggil yt-dlp yang pasti jalan di lingkungan ini."""
+    if YTDLP_BIN:
+        return [YTDLP_BIN]
+    ditemukan = shutil.which("yt-dlp")
+    if ditemukan:
+        return [ditemukan]
+    # Cadangan terakhir: paket ada di virtualenv yang sedang jalan.
+    return [sys.executable, "-m", "yt_dlp"]
+
+
 def download_source(
     url: str,
     tujuan: Path,
@@ -361,8 +380,7 @@ def download_source(
     tujuan.mkdir(parents=True, exist_ok=True)
     keluaran = tujuan / "source.%(ext)s"
 
-    perintah = [
-        "yt-dlp",
+    perintah = _perintah_ytdlp() + [
         "--no-playlist",
         "--no-progress",
         "--retries", "3",
@@ -412,6 +430,79 @@ def download_source(
         ukuran = berkas[0].stat().st_size / 1_048_576
         log(f"Video terunduh ({ukuran:.1f} MB)")
     return berkas[0]
+
+
+def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
+    """Ambil keterangan video dari sebuah link TANPA mengunduh berkasnya.
+
+    Dipakai halaman Auto Edit Video untuk menampilkan isi link begitu
+    ditempel: judul, pembuat, durasi, dan gambar sampul. Hanya metadata yang
+    diambil, jadi jauh lebih ringan daripada mengunduh videonya.
+    """
+    url = str(url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise VideoError("Link video harus diawali http:// atau https://")
+
+    perintah = _perintah_ytdlp() + [
+        "--no-playlist",
+        "--no-warnings",
+        "--no-progress",
+        "--skip-download",
+        "--dump-single-json",
+        "--retries", "2",
+    ]
+
+    berkas_cookie: Path | None = None
+    if session_id and "instagram.com" in url.lower():
+        # Sama seperti download_source: Instagram menolak pembaca anonim.
+        berkas_cookie = Path(tempfile.mkdtemp(prefix="godam-cookie-")) / "cookies.txt"
+        kedaluwarsa = int(time.time()) + 86400 * 30
+        berkas_cookie.write_text(
+            "# Netscape HTTP Cookie File\n"
+            f".instagram.com\tTRUE\t/\tTRUE\t{kedaluwarsa}\tsessionid\t{session_id.strip()}\n",
+            encoding="utf-8",
+        )
+        perintah += ["--cookies", str(berkas_cookie)]
+
+    try:
+        hasil = subprocess.run(
+            perintah + [url], capture_output=True, text=True, timeout=PREVIEW_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as error:
+        raise VideoError("Pratinjau link melewati batas waktu") from error
+    finally:
+        if berkas_cookie is not None:
+            shutil.rmtree(berkas_cookie.parent, ignore_errors=True)
+
+    if hasil.returncode != 0:
+        pesan = (hasil.stderr or hasil.stdout or "").strip().splitlines()
+        detail = pesan[-1] if pesan else "penyebab tidak diketahui"
+        raise VideoError(f"Tidak bisa membaca link: {detail[:300]}")
+
+    try:
+        data = json.loads(hasil.stdout or "{}")
+    except json.JSONDecodeError as error:
+        raise VideoError("Balasan yt-dlp tidak bisa dibaca") from error
+
+    durasi = data.get("duration")
+    try:
+        durasi = float(durasi) if durasi is not None else None
+    except (TypeError, ValueError):
+        durasi = None
+
+    return {
+        "title": data.get("title") or "(tanpa judul)",
+        "uploader": data.get("uploader") or data.get("channel") or "",
+        "duration": durasi,
+        "thumbnail": data.get("thumbnail") or "",
+        "extractor": data.get("extractor_key") or data.get("extractor") or "",
+        "width": data.get("width") or 0,
+        "height": data.get("height") or 0,
+        "webpage_url": data.get("webpage_url") or url,
+        # Peringatan kalau videonya lebih panjang dari batas render.
+        "too_long": bool(durasi and durasi > MAX_SOURCE_SECONDS),
+        "max_seconds": MAX_SOURCE_SECONDS,
+    }
 
 
 # ============================================================
@@ -488,10 +579,17 @@ def _bangun_perintah(
         inputs += ["-i", str(item["path"])]
         sumber_ov = f"{idx}:v"
         w, h = item.get("w"), item.get("h")
+        # "crop" opsional, formatnya sama seperti ffmpeg: "lebar:tinggi:x:y".
+        # Dipakai kalau aset perlu dipotong dulu sebelum diskala, misalnya
+        # panel lebar yang hanya sebagian isinya dipakai.
+        potong = str(item.get("crop") or "").strip()
+        rantai: list[str] = []
+        if potong:
+            rantai.append(f"crop={potong}")
         if w or h:
-            filters.append(
-                f"[{sumber_ov}]scale={int(w) if w else -1}:{int(h) if h else -1}[ov{nomor}]"
-            )
+            rantai.append(f"scale={int(w) if w else -1}:{int(h) if h else -1}")
+        if rantai:
+            filters.append(f"[{sumber_ov}]{','.join(rantai)}[ov{nomor}]")
             sumber_ov = f"ov{nomor}"
         x, y = item.get("x"), item.get("y")
         posisi_x = str(int(x)) if x is not None else "(W-w)/2"
