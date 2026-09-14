@@ -139,8 +139,12 @@ function susunanBawaan(): Susunan {
     outro: null,
     max_duration: null,
     overlays: [
-      { label: NAMA_SLOT[0], file: "", x: 0, y: 851, w: 720, h: 429,
-        crop: "2880:1197:40:0", start: 0, end: 3 },
+      // Panel bawah dipakai utuh dan seimbang. Berkasnya 3888x2529 dengan
+      // pinggiran transparan di kanan; isinya sendiri 3473x2529 (rasio 1,373),
+      // jadi pada lebar 720 tingginya 524 dan gambarnya tidak gepeng.
+      // Crop di sini hanya membuang pinggiran transparan itu.
+      { label: NAMA_SLOT[0], file: "", x: 0, y: 756, w: 720, h: 524,
+        crop: "3473:2529:0:0", start: 0, end: 3 },
       { label: NAMA_SLOT[1], file: "", x: 10, y: 710, w: 700, h: 283, start: 0, end: 3 },
       { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158 },
       { label: NAMA_SLOT[3], file: "", x: 0, y: 63, w: 720, h: 1217 },
