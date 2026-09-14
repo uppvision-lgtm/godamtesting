@@ -111,16 +111,20 @@ const NAMA_SLOT = [
  *  menambal susunan lama yang dibuat sebelum fitur ini ada. */
 const TEKS_SUMBER: TextLayer = {
   name: "sumber",
-  size: 20,
+  size: 10,
   x: null,
   // Duduk di dalam bar merah bawah milik layer "bingkai teratas", sebaris
   // dengan ikon media sosial. Bar itu ada di y 1239..1279 pada kanvas
-  // 720x1280, dan tinta teks jatuh 7 px di bawah nilai y ini — jadi 1246
-  // membuat teksnya terpusat rapi di dalam bar.
-  y: 1246,
+  // 720x1280. Nilai y adalah puncak baris teks, bukan puncak hurufnya:
+  // pada ukuran ini tinta jatuh sekitar 1..12 px di bawahnya tergantung
+  // karakternya (garis miring menjulur paling tinggi), sehingga 1253
+  // menempatkan semua kemungkinan nama tetap terpusat di dalam bar.
+  y: 1253,
   align: "right",
   color: "white",
-  stroke: 3,
+  // Garis tepi ikut dikecilkan: 3 px pada huruf setinggi 7 px akan menutupi
+  // hurufnya sendiri.
+  stroke: 1,
   stroke_color: "black",
 };
 
