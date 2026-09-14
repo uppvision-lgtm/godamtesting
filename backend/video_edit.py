@@ -275,6 +275,102 @@ def _warna(nilai: Any, bawaan: str = "white") -> tuple[int, int, int, int]:
     return r, g, b, int(alpha * 255)
 
 
+def _bungkus_kata(gambar: Any, kata: list[str], font: Any, batas: int) -> list[list[str]]:
+    """Bagi daftar kata jadi baris-baris yang lebarnya tidak melewati ``batas``."""
+    baris: list[list[str]] = []
+    sekarang: list[str] = []
+    for k in kata:
+        calon = " ".join(sekarang + [k])
+        if not sekarang or gambar.textlength(calon, font=font) <= batas:
+            sekarang.append(k)
+        else:
+            baris.append(sekarang)
+            sekarang = [k]
+    if sekarang:
+        baris.append(sekarang)
+    return baris
+
+
+def _gambar_teks_berita(
+    teks: dict[str, Any], isi: str, lebar: int, tinggi: int, tujuan: Path
+) -> Path:
+    """Paragraf gaya lower-third berita: rata kiri-kanan, kata pertama berwarna.
+
+    Bentuk yang ditiru: "VIRAL! KONTROVERSI KARNAVAL DI PEKALONGAN ..." —
+    kata pembuka merah, sisanya hitam, mengalir di baris yang sama, setiap
+    baris (kecuali yang terakhir) diratakan ke kiri dan kanan.
+
+    Kalau paragrafnya tidak muat dalam ``max_lines`` baris, ukuran font
+    diturunkan setahap demi setahap sampai ``min_size``. Dengan begitu teks
+    yang agak panjang tetap masuk kotak, bukan terpotong.
+
+    Kunci yang dipakai dari ``teks``: size, min_size, max_lines, x, y, width,
+    line_height (kelipatan ukuran font), color, kicker_color.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    kanvas = Image.new("RGBA", (lebar, tinggi), (0, 0, 0, 0))
+    gambar = ImageDraw.Draw(kanvas)
+    jalur_font = _font()
+
+    kata = isi.split()
+    if not kata:
+        kanvas.save(tujuan)
+        return tujuan
+
+    ukuran_awal = int(teks.get("size") or 38)
+    ukuran_min = max(8, int(teks.get("min_size") or 22))
+    maks_baris = max(1, int(teks.get("max_lines") or 4))
+    kiri = int(teks.get("x") or 0)
+    batas = int(teks.get("width") or (lebar - 2 * kiri))
+    batas = max(50, min(batas, lebar - kiri))
+
+    # Susutkan font sampai paragrafnya muat.
+    ukuran = ukuran_awal
+    font = ImageFont.truetype(jalur_font, ukuran)
+    baris = _bungkus_kata(gambar, kata, font, batas)
+    while len(baris) > maks_baris and ukuran > ukuran_min:
+        ukuran -= 1
+        font = ImageFont.truetype(jalur_font, ukuran)
+        baris = _bungkus_kata(gambar, kata, font, batas)
+    if len(baris) > maks_baris:
+        logger.warning(
+            "Teks '%s' tetap %d baris pada ukuran %d; sisanya dibuang",
+            teks.get("name"), len(baris), ukuran,
+        )
+        baris = baris[:maks_baris]
+
+    try:
+        kelipatan = float(teks.get("line_height") or 1.15)
+    except (TypeError, ValueError):
+        kelipatan = 1.15
+    tinggi_baris = int(round(ukuran * kelipatan))
+    atas = int(teks["y"]) if teks.get("y") is not None else (tinggi - tinggi_baris * len(baris)) // 2
+
+    warna_isi = _warna(teks.get("color"), "black")
+    warna_pembuka = _warna(teks.get("kicker_color"), "#d32d27")
+    lebar_spasi = gambar.textlength(" ", font=font)
+
+    for nomor, kata_baris in enumerate(baris):
+        y = atas + nomor * tinggi_baris
+        lebar_kata = [gambar.textlength(k, font=font) for k in kata_baris]
+        terakhir = nomor == len(baris) - 1
+        # Baris terakhir dan baris satu kata tidak diregangkan (gaya justify
+        # pada umumnya), selebihnya sisa lebar dibagi rata ke sela kata.
+        if terakhir or len(kata_baris) < 2:
+            sela = lebar_spasi
+        else:
+            sela = (batas - sum(lebar_kata)) / (len(kata_baris) - 1)
+        x = float(kiri)
+        for urutan, (k, w) in enumerate(zip(kata_baris, lebar_kata)):
+            warna = warna_pembuka if (nomor == 0 and urutan == 0) else warna_isi
+            gambar.text((x, y), k, font=font, fill=warna)
+            x += w + sela
+
+    kanvas.save(tujuan)
+    return tujuan
+
+
 def _gambar_teks(
     teks: dict[str, Any], isi: str, lebar: int, tinggi: int, tujuan: Path
 ) -> Path:
@@ -285,6 +381,9 @@ def _gambar_teks(
     Cara ini juga memberi pemenggalan baris otomatis dan garis tepi.
     """
     from PIL import Image, ImageDraw, ImageFont
+
+    if str(teks.get("style") or "").lower() == "berita":
+        return _gambar_teks_berita(teks, isi, lebar, tinggi, tujuan)
 
     ukuran = int(teks.get("size") or 56)
     font = ImageFont.truetype(_font(), ukuran)

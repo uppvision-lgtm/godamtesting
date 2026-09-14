@@ -89,7 +89,7 @@ async def buat_hook(body: HookBody) -> dict[str, Any]:
     tersedia, dipakai ringkasan sederhana dari naskah itu sendiri.
     """
     hasil = await vh.buat_hook(body.naskah)
-    if not hasil["lines"]:
+    if not hasil["hook"]:
         raise HTTPException(
             status_code=400,
             detail="Naskah terlalu pendek untuk dijadikan hook.",

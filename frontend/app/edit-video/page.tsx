@@ -49,6 +49,13 @@ type TextLayer = {
   line_spacing?: number;
   start?: number | null;
   end?: number | null;
+  // Khusus style "berita": paragraf rata kiri-kanan, kata pertama berwarna.
+  style?: string;
+  width?: number;
+  min_size?: number;
+  max_lines?: number;
+  line_height?: number;
+  kicker_color?: string;
 };
 
 type Susunan = {
@@ -108,8 +115,35 @@ const NAMA_SLOT = [
  * Layer 2, layer 3, dan ketiga baris teks memakai jendela waktu yang sama
  * (detik 0-3): kalau teks dibiarkan lebih lama, ia melayang tanpa latar.
  */
-/** Layer teks kredit pemilik video. Dipisah supaya bisa dipakai juga saat
- *  menambal susunan lama yang dibuat sebelum fitur ini ada. */
+/**
+ * Paragraf hook di dalam kotak putih: "VIRAL! KONTROVERSI KARNAVAL DI ...".
+ * Kata pertama merah, sisanya hitam mengalir di baris yang sama, rata
+ * kiri-kanan, maksimal 4 baris. Kalau tidak muat, renderer menyusutkan font
+ * sedikit demi sedikit sampai min_size.
+ *
+ * Angkanya diukur dari contoh acuan: pada kotak 700x283 teks mulai 28 px dari
+ * kiri dan 83 px dari atas kotak (x = 10+28, y = 710+73 karena PIL menghitung
+ * dari puncak baris, bukan puncak huruf). Lebar 660 menyisakan 12 px di
+ * kanan — serapat contoh. Ukuran 38 dengan lebar itu memenggal kalimat contoh
+ * persis seperti acuannya.
+ */
+const TEKS_HOOK: TextLayer = {
+  name: "hook",
+  style: "berita",
+  size: 38,
+  min_size: 22,
+  max_lines: 4,
+  x: 38,
+  y: 783,
+  width: 660,
+  line_height: 1.15,
+  color: "black",
+  kicker_color: "#d32d27",
+  start: 0,
+  end: 3,
+};
+
+/** Layer teks kredit pemilik video. */
 const TEKS_SUMBER: TextLayer = {
   name: "sumber",
   size: 10,
@@ -164,18 +198,17 @@ function susunanBawaan(): Susunan {
       { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
       { label: NAMA_SLOT[3], file: "", x: 0, y: 63, w: 720, h: 1217 },
     ],
-    texts: [
-      // Titik teks = sudut kotak lower-third (10,710) + offset dalam kotak (28,82).
-      { name: "headline", size: 27, x: 38, y: 792, color: "#d32d27", line_spacing: 26, start: 0, end: 3 },
-      { name: "detail", size: 27, x: 38, y: 845, color: "black", line_spacing: 26, start: 0, end: 3 },
-      { name: "message", size: 27, x: 38, y: 898, color: "black", line_spacing: 26, start: 0, end: 3 },
-      // Kredit pemilik video asli, menempel di kanan bawah sepanjang video.
-      // x sengaja null supaya align "right" yang menentukan posisinya, jadi
-      // teks sepanjang apa pun tetap rapat ke kanan.
-      TEKS_SUMBER,
-    ],
+    texts: [TEKS_HOOK, TEKS_SUMBER],
     assets: [],
   };
+}
+
+/** Rangkai kata pembuka + isi jadi "VIRAL! ISI ..." seperti yang dirender. */
+function susunHook(kicker: string, isi: string): string {
+  const k = kicker.trim().replace(/!+$/, "").toUpperCase();
+  const i = isi.trim().toUpperCase();
+  if (!i) return "";
+  return k ? `${k}! ${i}` : i;
 }
 
 function formatDurasi(detik: number): string {
@@ -212,11 +245,14 @@ export default function EditVideoPage() {
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
   const [galatPratinjau, setGalatPratinjau] = useState("");
 
-  // "ai"     = 3 baris disusun dari caption video sumber
+  // "ai"     = disusun dari caption video sumber
   // "manual" = diketik sendiri
   const [modeTeks, setModeTeks] = useState<"ai" | "manual">("ai");
-  const [hook, setHook] = useState<string[]>([]);
-  const [teksManual, setTeksManual] = useState<string[]>(["", "", ""]);
+  // Kata pembuka (merah, diberi tanda seru) dan isi paragrafnya.
+  const [kicker, setKicker] = useState("");
+  const [isi, setIsi] = useState("");
+  const [kickerManual, setKickerManual] = useState("");
+  const [isiManual, setIsiManual] = useState("");
   const [sumberHook, setSumberHook] = useState("");
   const [membuatHook, setMembuatHook] = useState(false);
 
@@ -235,14 +271,14 @@ export default function EditVideoPage() {
       const res = await fetch(`/api/video/templates/${ID_LAYER}`, { cache: "no-store" });
       if (res.ok) {
         const ada: Susunan = await res.json();
-        // Layer kredit sumber selalu disamakan dengan definisi di kode:
-        // susunan lama mungkin belum punya layernya, atau masih memakai
-        // posisi versi sebelumnya. Dengan begini perubahan posisi langsung
-        // ikut tanpa perlu membuat ulang susunan dan mengunggah berkas lagi.
-        const lain = (ada.texts || []).filter((t) => t.name !== "sumber");
-        const lama = (ada.texts || []).find((t) => t.name === "sumber");
-        const perluDisimpan = JSON.stringify(lama) !== JSON.stringify(TEKS_SUMBER);
-        ada.texts = [...lain, TEKS_SUMBER];
+        // Semua layer teks didefinisikan di kode (hook + kredit sumber), jadi
+        // susunan tersimpan selalu disamakan dengannya. Dengan begini susunan
+        // lama (mis. yang masih memakai 3 baris headline/detail/message)
+        // otomatis ikut ke bentuk baru tanpa perlu dibuat ulang dan tanpa
+        // mengunggah lagi berkas layernya.
+        const tetap = [TEKS_HOOK, TEKS_SUMBER];
+        const perluDisimpan = JSON.stringify(ada.texts || []) !== JSON.stringify(tetap);
+        ada.texts = tetap;
         if (perluDisimpan) {
           await simpanSusunan(ada);
         } else {
@@ -340,7 +376,8 @@ export default function EditVideoPage() {
   const buatHook = useCallback(async (info: Pratinjau) => {
     const naskah = [info.title, info.description].filter(Boolean).join(". ");
     if (naskah.trim().length < 3) {
-      setHook([]);
+      setKicker("");
+      setIsi("");
       setSumberHook("Caption di link ini kosong, jadi hook tidak bisa dibuat.");
       return;
     }
@@ -353,14 +390,16 @@ export default function EditVideoPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal membuat hook.");
-      setHook(data.lines || []);
+      setKicker(data.kicker || "");
+      setIsi(data.body || "");
       setSumberHook(
         data.source === "deepseek"
           ? "Dibuat AI dari caption video."
           : "AI tidak aktif — diringkas langsung dari caption."
       );
     } catch (err) {
-      setHook([]);
+      setKicker("");
+      setIsi("");
       setSumberHook(err instanceof Error ? err.message : "Gagal membuat hook.");
     } finally {
       setMembuatHook(false);
@@ -373,7 +412,8 @@ export default function EditVideoPage() {
       if (!tautan.toLowerCase().startsWith("http")) {
         setPratinjau(null);
         setGalatPratinjau("");
-        setHook([]);
+        setKicker("");
+        setIsi("");
         setSumberHook("");
         return;
       }
@@ -391,7 +431,8 @@ export default function EditVideoPage() {
         await buatHook(data as Pratinjau);
       } catch (err) {
         setPratinjau(null);
-        setHook([]);
+        setKicker("");
+        setIsi("");
         setSumberHook("");
         setGalatPratinjau(err instanceof Error ? err.message : "Tidak bisa membaca link.");
       } finally {
@@ -426,12 +467,12 @@ export default function EditVideoPage() {
     setGalat("");
     setMengirim(true);
     try {
-      const baris = modeTeks === "manual" ? teksManual : hook;
       const texts: Record<string, string> = {};
-      ["headline", "detail", "message"].forEach((nama, i) => {
-        const isi = (baris[i] || "").trim();
-        if (isi) texts[nama] = isi;
-      });
+      const teksHook = susunHook(
+        modeTeks === "manual" ? kickerManual : kicker,
+        modeTeks === "manual" ? isiManual : isi
+      );
+      if (teksHook) texts.hook = teksHook;
       // Kredit pemilik video asli, diambil dari link sumber. Huruf kapital
       // supaya seragam dengan tulisan lain di bar merah bawah.
       if (pratinjau?.uploader) {
@@ -616,12 +657,12 @@ export default function EditVideoPage() {
               {modeTeks === "ai" ? (
                 <>
                   {membuatHook && <p className={styles.hint}>Menyusun teks dari caption ...</p>}
-                  {hook.map((baris, i) => (
-                    <p key={i} className={i === 0 ? styles.hookBaris1 : styles.hookBaris}>
-                      {baris}
+                  {isi && (
+                    <p className={styles.hookParagraf}>
+                      <span className={styles.hookKicker}>{kicker || "VIRAL"}!</span> {isi}
                     </p>
-                  ))}
-                  {!membuatHook && hook.length === 0 && (
+                  )}
+                  {!membuatHook && !isi && (
                     <p className={styles.hint}>
                       Tempel link video dulu — teksnya disusun dari caption video itu.
                     </p>
@@ -639,30 +680,46 @@ export default function EditVideoPage() {
                 </>
               ) : (
                 <>
-                  {["Baris 1 (merah)", "Baris 2", "Baris 3"].map((judul, i) => (
-                    <label key={i}>
-                      <span>{judul}</span>
-                      <input
-                        value={teksManual[i]}
-                        maxLength={36}
-                        placeholder={hook[i] || "maksimal 36 karakter"}
-                        onChange={(e) => {
-                          const baru = [...teksManual];
-                          baru[i] = e.target.value;
-                          setTeksManual(baru);
-                        }}
-                      />
-                    </label>
-                  ))}
+                  <label>
+                    <span>Kata pembuka (merah, otomatis diberi tanda seru)</span>
+                    <input
+                      value={kickerManual}
+                      maxLength={12}
+                      placeholder={kicker || "VIRAL"}
+                      onChange={(e) => setKickerManual(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>Isi berita</span>
+                    <textarea
+                      className={styles.naskah}
+                      rows={3}
+                      value={isiManual}
+                      maxLength={100}
+                      placeholder={isi || "maksimal 100 karakter, dipenggal otomatis jadi maksimal 4 baris"}
+                      onChange={(e) => setIsiManual(e.target.value)}
+                    />
+                  </label>
+                  {(kickerManual || isiManual) && (
+                    <p className={styles.hookParagraf}>
+                      <span className={styles.hookKicker}>
+                        {(kickerManual || "VIRAL").replace(/!+$/, "").toUpperCase()}!
+                      </span>{" "}
+                      {isiManual.toUpperCase()}
+                    </p>
+                  )}
                   <p className={styles.hint}>
-                    Lebih dari 36 karakter akan terpotong di layar. Huruf kecil otomatis
-                    dijadikan kapital saat dirender.
+                    Huruf kecil otomatis dijadikan kapital. Kalau terlalu panjang untuk 4 baris,
+                    ukuran hurufnya diperkecil sedikit saat dirender.
                   </p>
-                  {hook.length > 0 && (
+                  {isi && (
                     <button
                       type="button"
                       className={styles.ghostBtn}
-                      onClick={() => setTeksManual([hook[0] || "", hook[1] || "", hook[2] || ""])}
+                      onClick={() => {
+                        setKickerManual(kicker);
+                        setIsiManual(isi);
+                      }}
                     >
                       Isi dari saran AI
                     </button>

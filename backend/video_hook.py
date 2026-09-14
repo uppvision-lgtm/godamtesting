@@ -1,23 +1,24 @@
-"""Hook otomatis untuk Auto Edit Video: ubah naskah mentah jadi 3 baris lower-third.
+"""Hook otomatis untuk Auto Edit Video: ubah caption jadi satu paragraf berita.
 
-Gaya yang ditiru adalah lower-third kanal berita televisi: tiga baris pendek,
-huruf kapital semua, maksimal 36 karakter per baris supaya tidak terpotong di
-kanvas 9:16.
+Bentuk yang ditiru adalah teks lower-third kanal berita:
 
-    Baris 1  headline utama yang menarik      (dirender mencolok, mis. merah)
-    Baris 2  keterangan faktual isi video
-    Baris 3  dampak, tips, atau pesan penting
+    VIRAL! KONTROVERSI KARNAVAL DI PEKALONGAN DINILAI BERBAU SATANISME,
+    1 PESERTA MENINGGAL TAK LAMA USAI ACARA
 
-Alurnya bertingkat supaya fitur ini tidak pernah gagal total:
+Dua bagian: ``kicker`` — satu kata pembuka yang menarik perhatian (VIRAL,
+HEBOH, MIRIS, ...) yang dirender merah dan diberi tanda seru — lalu ``body``,
+isi beritanya, mengalir di baris yang sama. Semua huruf kapital. Mesin render
+sendiri yang memenggal jadi maksimal 4 baris rata kiri-kanan, jadi di sini
+hanya panjang total yang dijaga.
 
-    1. DeepSeek merapikan naskah jadi tiga baris.
+Alurnya bertingkat supaya tidak pernah gagal total:
+
+    1. DeepSeek menyusun kicker + body dari caption.
     2. Kalau DeepSeek mati / tanpa API key / balasannya tidak masuk akal,
-       dipakai ringkasan sederhana dari naskah itu sendiri (tiga kalimat
-       pertama). Hasilnya tidak sepintar AI, tapi pengguna tetap dapat hook.
+       dipakai kalimat awal caption dengan kicker bawaan.
 
-Catatan: modul ini SENGAJA tidak melakukan transkripsi audio. Whisper butuh CPU
-berat dan server ini juga melayani auto-comment.tech yang harus hidup 24 jam.
-Naskah diketik pengguna di halaman Auto Edit Video.
+Modul ini SENGAJA tidak melakukan transkripsi audio: Whisper butuh CPU berat
+dan server yang sama juga melayani auto-comment.tech yang harus hidup 24 jam.
 """
 
 from __future__ import annotations
@@ -31,79 +32,100 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Batas karakter per baris. Lebih dari ini hampir pasti terpotong di layar 9:16.
-MAX_KARAKTER = int(os.getenv("VIDEO_HOOK_MAX_CHARS", "36"))
-JUMLAH_BARIS = 3
+# Nama layer teks di template yang diisi paragraf ini.
+NAMA_LAYER = "hook"
 
-# Nama layer teks di template yang diisi otomatis, berurutan baris 1..3.
-NAMA_BARIS = ("headline", "detail", "message")
+# Batas panjang isi (tanpa kicker). Pada font 38 px dengan lebar 660 px muat
+# sekitar 28 karakter per baris; 4 baris ~ 110 karakter termasuk kicker.
+# Renderer masih bisa menyusutkan font sedikit, jadi 100 aman.
+MAX_KARAKTER_ISI = int(os.getenv("VIDEO_HOOK_MAX_CHARS", "100"))
+MAX_KARAKTER_KICKER = 12
+KICKER_BAWAAN = "VIRAL"
 
 PROMPT = (
     "Anda adalah redaktur grafis berita televisi Indonesia. "
-    "Baca naskah berikut, lalu tulis lower-third berita seperti kanal berita "
-    "televisi: singkat, tegas, informatif, dan mudah dipindai. "
-    "Jangan menyalin ucapan mentah dan jangan membuat opini atau fakta baru. "
-    "Jawab tepat 3 baris tanpa nomor, tanda kutip, bullet, atau label. "
-    "Baris 1 adalah headline utama yang menarik (4-8 kata). "
-    "Baris 2 adalah keterangan faktual tentang isi video. "
-    "Baris 3 adalah dampak, tips, atau pesan penting. "
-    f"Semua huruf kapital, maksimal {MAX_KARAKTER} karakter per baris. "
-    "Jangan menulis label seperti HEADLINE, KETERANGAN, DAMPAK, atau PESAN "
-    "dan jangan memakai markdown. "
-    "Balas hanya JSON valid dengan tiga field string: headline, detail, message."
-    "\n\nNASKAH:\n{naskah}"
+    "Baca caption video berikut, lalu tulis teks lower-third berita seperti "
+    "kanal berita televisi: singkat, tegas, informatif, mudah dipindai. "
+    "Jangan menyalin caption mentah-mentah dan jangan membuat opini atau "
+    "fakta baru. "
+    "Balas hanya JSON valid dengan dua field string: "
+    "\"kicker\" berisi SATU kata pembuka yang menarik perhatian "
+    "(contoh: VIRAL, HEBOH, MIRIS, TERUNGKAP, WASPADA, GEGER, HARU), tanpa "
+    "tanda seru; dan \"body\" berisi isi beritanya dalam satu kalimat "
+    f"padat maksimal {MAX_KARAKTER_ISI} karakter. Semua huruf kapital, "
+    "tanpa label, tanpa markdown, tanpa nomor, tanpa tanda kutip."
+    "\n\nCAPTION:\n{naskah}"
 )
 
-# Model sering tetap menempelkan label di awal baris walau sudah dilarang.
+# Model sering tetap menempelkan label di awal walau sudah dilarang.
 LABEL_AWALAN_RE = re.compile(
-    r"^(HEADLINE|KETERANGAN|DAMPAK|PESAN|UTAMA|FAKTUAL|RINGKASAN|TIPS)\s*[:\-*]*\s*",
+    r"^(HEADLINE|KETERANGAN|DAMPAK|PESAN|UTAMA|FAKTUAL|RINGKASAN|TIPS|KICKER|BODY|ISI)"
+    r"\s*[:\-*]*\s*",
     re.IGNORECASE,
 )
-# Sisa bullet / penomoran: "1. ", "- ", "* ", "2) " dan sebagainya.
-SAMPAH_AWAL_RE = re.compile(r"^[\s\-*\d.]+")
+SAMPAH_AWAL_RE = re.compile(r"^[\s\-*\d.]+")        # bullet / penomoran
 TANDA_AKHIR_RE = re.compile(r"[\s.!?]+$")
 
 
-def rapikan_baris(teks: str) -> str:
-    """Bersihkan satu baris hook jadi siap tampil di layar.
-
-    Membuang markdown, bullet, penomoran, dan label yang terbawa dari jawaban
-    model; lalu kapitalkan dan potong tepat di ``MAX_KARAKTER``.
-    """
-    teks = (teks or "").replace("**", "")
+def _bersihkan(teks: str) -> str:
+    teks = (teks or "").replace("**", "").replace('"', "").replace("“", "").replace("”", "")
     teks = SAMPAH_AWAL_RE.sub("", teks)
     teks = LABEL_AWALAN_RE.sub("", teks)
-    teks = TANDA_AKHIR_RE.sub("", teks)
-    # rstrip setelah dipotong: potongan keras di batas karakter sering menyisakan
-    # spasi di ujung yang membuat teks terlihat tidak rata saat dirender.
-    return teks.upper()[:MAX_KARAKTER].rstrip()
+    teks = re.sub(r"\s+", " ", teks).strip()
+    return TANDA_AKHIR_RE.sub("", teks).upper()
 
 
-def dari_naskah(naskah: str) -> list[str]:
-    """Cadangan tanpa AI: ambil tiga kalimat pertama naskah.
+def _potong_di_kata(teks: str, batas: int) -> str:
+    """Potong di batas karakter, mundur ke spasi terakhir supaya kata utuh."""
+    if len(teks) <= batas:
+        return teks
+    potong = teks[:batas]
+    if " " in potong:
+        potong = potong[: potong.rfind(" ")]
+    return potong.rstrip(" ,;:-")
 
-    Dipakai kalau DeepSeek tidak tersedia. Tanda baca dibuang supaya hasilnya
-    tetap rapi sebagai teks layar, bukan kalimat utuh.
-    """
+
+def rapikan_kicker(teks: str) -> str:
+    """Satu kata pembuka, kapital, tanpa tanda seru (ditambahkan saat digabung)."""
+    bersih = _bersihkan(teks)
+    kata = bersih.split()
+    if not kata:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", kata[0])[:MAX_KARAKTER_KICKER]
+
+
+def rapikan_isi(teks: str) -> str:
+    """Isi paragraf: kapital, satu spasi, dipotong di batas kata."""
+    return _potong_di_kata(_bersihkan(teks), MAX_KARAKTER_ISI)
+
+
+def gabung(kicker: str, isi: str) -> str:
+    """Rangkai jadi teks final: ``KICKER! ISI``."""
+    kicker = kicker or KICKER_BAWAAN
+    return f"{kicker}! {isi}".strip()
+
+
+def dari_naskah(naskah: str) -> tuple[str, str]:
+    """Cadangan tanpa AI: kicker bawaan + kalimat-kalimat awal caption."""
     kalimat = [k.strip() for k in re.split(r"[.!?\n]", str(naskah or "")) if k.strip()]
-    hasil: list[str] = []
-    for k in kalimat[:JUMLAH_BARIS]:
-        bersih = re.sub(r"[^A-Za-z0-9 ]", " ", k)
-        bersih = re.sub(r"\s+", " ", bersih).strip().upper()
-        if bersih:
-            hasil.append(bersih[:MAX_KARAKTER].rstrip())
-    return hasil
+    isi = ""
+    for k in kalimat:
+        calon = f"{isi} {k}".strip()
+        if len(calon) > MAX_KARAKTER_ISI and isi:
+            break
+        isi = calon
+    isi = re.sub(r"[^A-Za-z0-9 ,]", " ", isi)
+    return KICKER_BAWAAN, rapikan_isi(isi)
 
 
-def _dari_jawaban(mentah: str) -> list[str]:
-    """Ubah balasan JSON model jadi tiga baris bersih. [] kalau tidak layak."""
+def _dari_jawaban(mentah: str) -> tuple[str, str] | None:
+    """Ubah balasan JSON model jadi (kicker, isi). None kalau tidak layak."""
     if not mentah:
-        return []
+        return None
     data = None
     try:
         data = json.loads(mentah)
     except json.JSONDecodeError:
-        # Model kadang membungkus JSON dengan basa-basi atau blok markdown.
         cocok = re.search(r"\{.*\}", mentah, re.DOTALL)
         if cocok:
             try:
@@ -111,23 +133,23 @@ def _dari_jawaban(mentah: str) -> list[str]:
             except json.JSONDecodeError:
                 data = None
     if not isinstance(data, dict):
-        return []
+        return None
+    kicker = rapikan_kicker(str(data.get("kicker", "")))
+    isi = rapikan_isi(str(data.get("body", "")))
+    if not isi:
+        return None
+    return (kicker or KICKER_BAWAAN), isi
 
-    baris = [rapikan_baris(str(data.get(nama, ""))) for nama in NAMA_BARIS]
-    # Semua baris wajib terisi; kalau ada yang kosong lebih baik pakai cadangan
-    # daripada menampilkan baris bolong di video.
-    return baris if all(baris) else []
 
-
-async def buat_hook_deepseek(naskah: str, api_key: str | None = None) -> list[str]:
-    """Minta DeepSeek merapikan naskah jadi tiga baris. [] kalau gagal."""
+async def buat_hook_deepseek(naskah: str, api_key: str | None = None) -> tuple[str, str] | None:
+    """Minta DeepSeek menyusun kicker + isi. None kalau gagal."""
     naskah = re.sub(r"\s+", " ", str(naskah or "")).strip()
     if len(naskah) < 3:
-        return []
+        return None
 
     api_key = api_key or os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
-        return []
+        return None
 
     base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
@@ -161,28 +183,31 @@ async def buat_hook_deepseek(naskah: str, api_key: str | None = None) -> list[st
             )
             if resp.status_code != 200:
                 logger.warning("DeepSeek menolak permintaan hook: %s", resp.status_code)
-                return []
+                return None
             return _dari_jawaban(resp.json()["choices"][0]["message"]["content"])
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as error:
         logger.warning("Gagal membuat hook lewat DeepSeek: %s", error)
-        return []
+        return None
 
 
 async def buat_hook(naskah: str) -> dict[str, object]:
-    """Hasilkan hook tiga baris beserta keterangan sumbernya.
+    """Hasilkan hook beserta keterangan sumbernya.
 
     Selalu mengembalikan hasil selama ``naskah`` tidak kosong, karena ada
-    cadangan tanpa AI. ``sumber`` berguna untuk ditampilkan di UI supaya
+    cadangan tanpa AI. ``source`` berguna untuk ditampilkan di UI supaya
     pengguna tahu hasilnya dari AI atau dari ringkasan sederhana.
     """
-    baris = await buat_hook_deepseek(naskah)
+    hasil = await buat_hook_deepseek(naskah)
     sumber = "deepseek"
-    if not baris:
-        baris = dari_naskah(naskah)
+    if hasil is None:
+        hasil = dari_naskah(naskah)
         sumber = "cadangan"
-
+    kicker, isi = hasil
+    teks = gabung(kicker, isi) if isi else ""
     return {
-        "lines": baris,
+        "kicker": kicker if isi else "",
+        "body": isi,
+        "hook": teks,
         "source": sumber,
-        "texts": {nama: isi for nama, isi in zip(NAMA_BARIS, baris)},
+        "texts": {NAMA_LAYER: teks} if teks else {},
     }
