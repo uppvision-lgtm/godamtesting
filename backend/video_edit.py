@@ -51,8 +51,14 @@ PREVIEW_TIMEOUT_SECONDS = float(os.getenv("VIDEO_PREVIEW_TIMEOUT", "45"))
 YTDLP_BIN = os.getenv("YTDLP_BIN", "").strip()
 
 # Kandidat font untuk drawtext: Debian (image Docker) lalu macOS (mode via PC).
+# Poppins-Bold ikut dibundel supaya teks di video sama persis dengan skrip
+# main.py, di laptop maupun di container. Sisanya cuma jaring pengaman kalau
+# berkas itu hilang: Debian (image Docker) lalu macOS.
+FONT_BUNDLED = str(Path(__file__).resolve().parent / "assets" / "Poppins-Bold.ttf")
+
 FONT_CANDIDATES = (
     os.getenv("VIDEO_FONT", ""),
+    FONT_BUNDLED,
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -490,8 +496,17 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
     except (TypeError, ValueError):
         durasi = None
 
+    # Caption/keterangan unggahan. Di Instagram & TikTok isinya caption asli,
+    # di YouTube deskripsi video. Dipakai untuk membuat hook otomatis, jadi
+    # dipotong supaya prompt tidak membengkak.
+    caption = str(data.get("description") or "").strip()
+
     return {
         "title": data.get("title") or "(tanpa judul)",
+        "description": caption[:2000],
+        "view_count": data.get("view_count") or 0,
+        "like_count": data.get("like_count") or 0,
+        "upload_date": data.get("upload_date") or "",
         "uploader": data.get("uploader") or data.get("channel") or "",
         "duration": durasi,
         "thumbnail": data.get("thumbnail") or "",

@@ -84,10 +84,30 @@ def ensure_bucket() -> bool:
         return True
 
 
+# Sudahkah bucket diperiksa di proses ini. Pemeriksaan cukup sekali supaya
+# tidak menambah satu permintaan jaringan pada setiap unggahan.
+_bucket_siap = False
+
+
+def _siapkan_bucket() -> None:
+    """Pastikan bucket ada sebelum berkas pertama diunggah.
+
+    Bucket bisa saja belum pernah dibuat (mis. nama bucket baru untuk
+    lingkungan uji coba) atau terhapus. Tanpa ini unggahan gagal dengan
+    "Bucket not found" padahal tinggal dibuatkan.
+    """
+    global _bucket_siap
+    if _bucket_siap:
+        return
+    ensure_bucket()
+    _bucket_siap = True
+
+
 def upload(path: str, sumber: Path | bytes, content_type: str | None = None) -> str:
     """Simpan berkas ke Supabase. ``path`` relatif terhadap bucket."""
     if not enabled():
         raise StorageError("Supabase belum dikonfigurasi")
+    _siapkan_bucket()
     isi = sumber.read_bytes() if isinstance(sumber, Path) else sumber
     if content_type is None:
         nama = str(sumber) if isinstance(sumber, Path) else path
