@@ -591,6 +591,16 @@ def _bangun_perintah(
         )
 
     for nomor, item in enumerate(lapisan):
+        # Overlay berupa video biasanya lebih pendek dari videonya sendiri.
+        # Tanpa diulang, ffmpeg menahan frame terakhirnya sehingga animasinya
+        # terlihat membeku sampai video habis. "loop": true membuatnya diputar
+        # berulang. Hanya berlaku untuk badan video; bagian intro/outro
+        # disusun terpisah jadi overlay tidak pernah ikut ke sana.
+        if item.get("loop"):
+            # "-t" wajib menyertai pengulangan tak terbatas. Tanpa batas
+            # durasi, masukannya tidak pernah habis dan ffmpeg menggantung
+            # saat menutup berkas. Dibatasi sepanjang badan video saja.
+            inputs += ["-stream_loop", "-1", "-t", f"{durasi_badan:.3f}"]
         inputs += ["-i", str(item["path"])]
         sumber_ov = f"{idx}:v"
         w, h = item.get("w"), item.get("h")

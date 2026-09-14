@@ -33,6 +33,7 @@ type Overlay = {
   crop?: string | null;
   start?: number | null;
   end?: number | null;
+  loop?: boolean;
   label?: string;
 };
 
@@ -156,7 +157,11 @@ function susunanBawaan(): Susunan {
       { label: NAMA_SLOT[0], file: "", x: -108, y: 782, w: 936, h: 681,
         crop: "3473:2529:0:0", start: 0, end: 3 },
       { label: NAMA_SLOT[1], file: "", x: 10, y: 710, w: 700, h: 283, start: 0, end: 3 },
-      { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158 },
+      // loop: berkasnya berupa video pendek. Tanpa diulang, animasinya
+      // membeku di frame terakhir begitu videonya habis. Pengulangan hanya
+      // berlaku di badan video — outro disusun terpisah, jadi layer ini
+      // tidak pernah muncul di sana.
+      { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
       { label: NAMA_SLOT[3], file: "", x: 0, y: 63, w: 720, h: 1217 },
     ],
     texts: [
