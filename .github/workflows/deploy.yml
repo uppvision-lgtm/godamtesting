@@ -35,5 +35,15 @@ jobs:
             git fetch origin
             git checkout main
             git pull --ff-only origin main
+
+            # Database milik VPS sendiri butuh sandi. Dibuat sekali di sini
+            # supaya deploy tidak gagal di mesin yang .env-nya belum punya,
+            # dan supaya sandinya tidak pernah ada di dalam repo.
+            touch .env
+            if ! grep -q '^POSTGRES_PASSWORD=' .env; then
+              echo "POSTGRES_PASSWORD=$(openssl rand -hex 32)" >> .env
+              echo "POSTGRES_PASSWORD dibuat otomatis."
+            fi
+
             docker compose up -d --build --remove-orphans
             docker image prune -f

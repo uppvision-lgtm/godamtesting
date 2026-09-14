@@ -1,38 +1,62 @@
-"""Akses tabel Supabase lewat PostgREST memakai service key.
+"""Akses tabel lewat PostgREST.
 
-Dipakai modul login. Konfigurasinya menumpang ``storage.py`` supaya hanya ada
-satu tempat kredensial Supabase.
+Ada dua kemungkinan sumber data, ditentukan dari environment:
+
+- **Supabase** (dipakai sandbox Vercel + Railway): cukup isi ``SUPABASE_URL``
+  dan ``SUPABASE_SERVICE_KEY``. Basis REST-nya otomatis ``<url>/rest/v1``.
+- **PostgREST sendiri** (dipakai VPS yang berdiri sendiri): isi ``DB_REST_URL``
+  menunjuk langsung ke PostgREST, misalnya ``http://postgrest:3000``. Di dalam
+  jaringan Docker yang tertutup, ``DB_SERVICE_KEY`` boleh dikosongkan.
+
+Sengaja dipisah dari ``storage.py``: VPS memakai database sendiri tetapi
+menyimpan berkas di disknya sendiri, jadi ia butuh database tanpa ikut
+menyalakan Supabase Storage.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
 
-from storage import SUPABASE_SERVICE_KEY, SUPABASE_URL, enabled
+from storage import SUPABASE_SERVICE_KEY, SUPABASE_URL
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 
 __all__ = ["enabled", "select", "insert", "update", "DbError"]
 
+REST_URL = os.getenv("DB_REST_URL", "").strip().rstrip("/")
+SERVICE_KEY = os.getenv("DB_SERVICE_KEY", "").strip()
+
+# Tanpa DB_REST_URL, ikut kredensial Supabase supaya pemasangan lama tetap
+# jalan tanpa mengubah apa pun.
+if not REST_URL and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    REST_URL = f"{SUPABASE_URL}/rest/v1"
+    SERVICE_KEY = SERVICE_KEY or SUPABASE_SERVICE_KEY
+
 
 class DbError(RuntimeError):
-    """Kegagalan saat berbicara dengan database Supabase."""
+    """Kegagalan saat berbicara dengan database."""
+
+
+def enabled() -> bool:
+    return bool(REST_URL)
 
 
 def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Content-Type": "application/json"}
+    # PostgREST milik sendiri di jaringan Docker tertutup tidak memakai kunci;
+    # mengirim Authorization kosong justru ditolak sebagai JWT tidak sah.
+    if SERVICE_KEY:
+        headers["apikey"] = SERVICE_KEY
+        headers["Authorization"] = f"Bearer {SERVICE_KEY}"
     headers.update(extra or {})
     return headers
 
 
 def _url(tabel: str) -> str:
-    return f"{SUPABASE_URL}/rest/v1/{tabel}"
+    return f"{REST_URL}/{tabel}"
 
 
 def _periksa(respons: httpx.Response, aksi: str) -> Any:
