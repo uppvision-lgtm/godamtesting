@@ -25,3 +25,4 @@ auto edit video/main_compiled.bin
 
 # Dump Redis kalau redis-server dijalankan dari folder repo.
 dump.rdb
+.vercel
