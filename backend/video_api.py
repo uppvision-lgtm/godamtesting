@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -16,11 +17,20 @@ import video_edit as ve
 import video_hook as vh
 import video_tasks as vt
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/video", tags=["video"])
 
 # Render memakan CPU penuh, jadi jumlah job yang boleh menunggu dibatasi.
 MAX_ACTIVE_JOBS = max(1, int(os.getenv("VIDEO_MAX_ACTIVE_JOBS", "2")))
 MAX_ASSET_MB = float(os.getenv("VIDEO_MAX_ASSET_MB", "200"))
+# Sisi terpanjang gambar layer setelah dirapikan. Berkas desain kerap jauh
+# lebih besar dari kanvas 720x1280 — satu berkas 3375x5706 memakan 77 MB
+# begitu ffmpeg membukanya, dan beberapa layer sekaligus membuat proses render
+# dimatikan kehabisan memori di server kecil. Batas ini masih di atas ukuran
+# tampil terbesar (936 px), jadi ketajamannya tidak berkurang.
+MAX_SISI_GAMBAR = int(os.getenv("VIDEO_MAX_IMAGE_SIDE", "1600"))
+JENIS_GAMBAR = {".png", ".jpg", ".jpeg", ".webp"}
 JENIS_ASET = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".m4v", ".webm"}
 STATUS_AKTIF = ("queued", "downloading", "rendering")
 
@@ -56,6 +66,44 @@ class HookBody(BaseModel):
     """Naskah mentah dari pengguna yang mau dirapikan jadi 3 baris hook."""
 
     naskah: str = Field(min_length=3, max_length=5000)
+
+
+def _rapikan_gambar(path: Path) -> int | None:
+    """Pangkas pinggiran transparan lalu perkecil gambar layer bila kebesaran.
+
+    Dua-duanya menghemat memori saat render. Pemangkasan juga membuat template
+    tidak perlu memakai "crop" untuk membuang pinggiran kosong, sehingga
+    ukuran berkas asli tidak lagi ikut menentukan hasil.
+
+    Mengembalikan ukuran berkas baru, atau None kalau tidak ada yang diubah.
+    """
+    if path.suffix.lower() not in JENIS_GAMBAR:
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            im = im.convert("RGBA")
+            kotak = im.getbbox()
+            berubah = False
+            if kotak and kotak != (0, 0, im.width, im.height):
+                im = im.crop(kotak)
+                berubah = True
+            sisi = max(im.width, im.height)
+            if sisi > MAX_SISI_GAMBAR:
+                skala = MAX_SISI_GAMBAR / sisi
+                im = im.resize(
+                    (max(1, round(im.width * skala)), max(1, round(im.height * skala))),
+                    Image.LANCZOS,
+                )
+                berubah = True
+            if not berubah:
+                return None
+            im.save(path, format="PNG")
+    except Exception as error:  # berkas rusak atau format tak terduga
+        logger.warning("Gambar %s tidak bisa dirapikan: %s", path.name, error)
+        return None
+    return path.stat().st_size
 
 
 def _tangani(error: ve.VideoError) -> HTTPException:
@@ -164,6 +212,8 @@ async def unggah_aset(template_id: str, file: UploadFile = File(...)) -> dict[st
     except HTTPException:
         tujuan.unlink(missing_ok=True)
         raise
+
+    ukuran = _rapikan_gambar(tujuan) or ukuran
 
     if storage.enabled():
         try:

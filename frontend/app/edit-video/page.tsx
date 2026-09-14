@@ -175,11 +175,11 @@ function susunanBawaan(id: string, nama: string): Susunan {
     outro: null,
     max_duration: null,
     overlays: [
-      // Panel bawah. Berkasnya 3888x2529 dengan pinggiran transparan di kanan;
-      // isinya sendiri 3473x2529 alias berasio 1,373 — crop di sini hanya
-      // membuang pinggiran itu, bukan memotong gambar, supaya monasnya tidak
-      // gepeng. Ukuran 936x681 adalah 1,3 kali lebar layar supaya monasnya
-      // tampil besar; sisi kiri-kanan yang lewat batas layar terpotong sendiri.
+      // Panel bawah, 936x681 alias 1,3 kali lebar layar supaya monasnya tampil
+      // besar; sisi kiri-kanan yang lewat batas layar terpotong sendiri.
+      // Ukuran itu mengikuti rasio isi berkasnya (1,373) supaya tidak gepeng.
+      // Pinggiran transparan pada berkas sudah dipangkas saat diunggah, jadi
+      // tidak perlu "crop" di sini.
       //
       // Panel diturunkan 170 px (seperempat tingginya) supaya monasnya duduk
       // lebih rendah dan tidak tertutup kotak putih. Bagian bawahnya jadi
@@ -190,21 +190,19 @@ function susunanBawaan(id: string, nama: string): Susunan {
       // w dan h tetap 1,3 kali ukuran asli (936x681 dari rasio 1,373), jadi
       // menggeser ini tidak meregangkan gambarnya.
       { label: NAMA_SLOT[0], file: "", x: -108, y: 782, w: 936, h: 681,
-        crop: "3473:2529:0:0", start: 0, end: 3 },
+        start: 0, end: 3 },
       { label: NAMA_SLOT[1], file: "", x: 10, y: 710, w: 700, h: 283, start: 0, end: 3 },
       // loop: berkasnya berupa video pendek. Tanpa diulang, animasinya
       // membeku di frame terakhir begitu videonya habis. Pengulangan hanya
       // berlaku di badan video — outro disusun terpisah, jadi layer ini
       // tidak pernah muncul di sana.
       { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
-      // Bingkai punya pinggiran transparan: 26 px di atas dan 2 px di bawah.
-      // Kalau berkasnya diskala apa adanya, isinya berhenti sedikit sebelum
-      // dasar layar sehingga bar merahnya menyisakan celah dan video sumber
-      // mengintip di dua baris terbawah. Crop membuang pinggiran itu, lalu
-      // isinya (3375x5678) diskala ke 720x1211 dan ditempel rapat ke dasar:
-      //   y = 1280 - 1211 = 69
-      { label: NAMA_SLOT[3], file: "", x: 0, y: 69, w: 720, h: 1211,
-        crop: "3375:5678:0:26" },
+      // Bingkai menempel rapat ke dasar layar: y = 1280 - 1211 = 69. Kalau
+      // pinggiran transparannya tidak dipangkas, isinya berhenti sedikit
+      // sebelum dasar sehingga bar merah menyisakan celah dan video sumber
+      // mengintip di dua baris terbawah. Pemangkasan itu kini dilakukan saat
+      // berkasnya diunggah.
+      { label: NAMA_SLOT[3], file: "", x: 0, y: 69, w: 720, h: 1211 },
     ],
     texts: [TEKS_HOOK, TEKS_SUMBER],
     assets: [],
