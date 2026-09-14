@@ -9,9 +9,7 @@ type Mode = "masuk" | "daftar";
 const KUNCI_TOKEN = "ig-tools-token";
 
 function apiUrl(path: string): string {
-  if (typeof window === "undefined") return path;
-  const pc = new URLSearchParams(window.location.search).get("mode") === "pc";
-  return pc ? `http://localhost:8000${path}` : path;
+  return path;
 }
 
 function simpanSesi(token: string, username: string) {

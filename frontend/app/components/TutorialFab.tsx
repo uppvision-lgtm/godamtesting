@@ -18,16 +18,6 @@ const STEPS: Step[] = [
     ),
   },
   {
-    title: "Pilih mode: via server atau via PC",
-    body: (
-      <>
-        <b>Via server</b> — bot berjalan di server kami, tinggal pakai.{" "}
-        <b>Via PC</b> — bot berjalan di laptopmu sendiri (lebih lega &amp; tidak antre),
-        tapi laptop harus menjalankan program backend-nya lebih dulu.
-      </>
-    ),
-  },
-  {
     title: "Isi form botnya",
     body: (
       <>

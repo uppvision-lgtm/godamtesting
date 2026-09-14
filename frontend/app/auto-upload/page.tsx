@@ -18,9 +18,7 @@ type Konfigurasi = { supabase: boolean; max_video_mb: number; jenis: string[] };
 const BATAS_PROXY_MB = 4;
 
 function apiUrl(path: string): string {
-  if (typeof window === "undefined") return path;
-  const pc = new URLSearchParams(window.location.search).get("mode") === "pc";
-  return pc ? `http://localhost:8000${path}` : path;
+  return path;
 }
 
 const selesai = (status: string) => status === "completed" || status === "error";
@@ -225,7 +223,7 @@ export default function AutoUploadPage() {
               <p className={styles.warn}>
                 Video ini {(berkas.size / 1_048_576).toFixed(1)} MB, sedangkan lewat
                 website batasnya {BATAS_PROXY_MB} MB. Nyalakan penyimpanan Supabase di
-                server, atau pakai mode via PC.
+                server untuk berkas sebesar ini.
               </p>
             )}
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, simpanForm } from "../components/formStore";
 
@@ -52,19 +52,8 @@ type JobStatus = {
 // harus diunggah saat frontend berjalan lokal / mode PC.
 const BATAS_UNGGAH_MB = 4;
 
-function subscribeMode(onStoreChange: () => void) {
-  window.addEventListener("popstate", onStoreChange);
-  return () => window.removeEventListener("popstate", onStoreChange);
-}
-
-function getPcModeSnapshot() {
-  return new URLSearchParams(window.location.search).get("mode") === "pc";
-}
-
 function apiUrl(path: string): string {
-  if (typeof window === "undefined") return path;
-  const pc = new URLSearchParams(window.location.search).get("mode") === "pc";
-  return pc ? `http://localhost:8000${path}` : path;
+  return path;
 }
 
 function templateKosong(nama: string): Template {
@@ -86,7 +75,6 @@ function templateKosong(nama: string): Template {
 const selesai = (status: string) => status === "done" || status === "error";
 
 export default function EditVideoPage() {
-  const isPc = useSyncExternalStore(subscribeMode, getPcModeSnapshot, () => false);
 
   const [templates, setTemplates] = useState<Template[]>([]);
   const [terpilih, setTerpilih] = useState<string>("");
@@ -226,10 +214,10 @@ export default function EditVideoPage() {
       setPesanTemplate("Simpan template dulu sebelum mengunggah aset.");
       return;
     }
-    if (!isPc && file.size > BATAS_UNGGAH_MB * 1_048_576) {
+    if (file.size > BATAS_UNGGAH_MB * 1_048_576) {
       setPesanTemplate(
         `Berkas ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar lewat website ` +
-          `(batas ${BATAS_UNGGAH_MB} MB). Unggah lewat mode via PC untuk berkas besar.`
+          `(batas ${BATAS_UNGGAH_MB} MB).`
       );
       return;
     }
@@ -285,7 +273,7 @@ export default function EditVideoPage() {
     <div className={styles.page}>
       <header className={styles.topbar}>
         <Link href="/" className={styles.back} title="Kembali ke beranda">←</Link>
-        <span className={styles.brand}>IG · EDIT VIDEO{isPc ? " · PC" : ""}</span>
+        <span className={styles.brand}>IG · EDIT VIDEO</span>
         <span className={styles.headStatus}>{job ? job.status : "idle"}</span>
       </header>
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, simpanForm } from "../components/formStore";
 
@@ -81,26 +81,12 @@ function isTerminal(status: string): boolean {
   return status === "completed" || status === "error";
 }
 
-// Mode PC: otomatis memanggil backend yang berjalan di PC ini (localhost),
-// tanpa perlu mengisi alamat apa pun. Mode server (default) tetap lewat proxy Railway.
+// Semua permintaan lewat proxy Next (path relatif), diteruskan ke backend.
 function apiUrl(path: string): string {
-  if (typeof window === "undefined") return path;
-  const pc = new URLSearchParams(window.location.search).get("mode") === "pc";
-  if (!pc) return path; // relatif -> diproksi Next ke Railway
-  return `http://localhost:8000${path}`; // langsung ke backend PC
-}
-
-function subscribeMode(onStoreChange: () => void) {
-  window.addEventListener("popstate", onStoreChange);
-  return () => window.removeEventListener("popstate", onStoreChange);
-}
-
-function getPcModeSnapshot() {
-  return new URLSearchParams(window.location.search).get("mode") === "pc";
+  return path;
 }
 
 export default function Home() {
-  const isPc = useSyncExternalStore(subscribeMode, getPcModeSnapshot, () => false);
   const [botCount, setBotCount] = useState(1);
   const [bots, setBots] = useState<BotSlot[]>(() => [createBot(1)]);
   const [starting, setStarting] = useState(false);
@@ -344,7 +330,7 @@ export default function Home() {
     <div className={styles.page}>
       <header className={styles.topbar}>
         <Link href="/" className={styles.backHome} title="Kembali ke beranda">←</Link>
-        <span className={styles.brand}>IG · AUTO COMMENT{isPc ? " · PC" : ""}</span>
+        <span className={styles.brand}>IG · AUTO COMMENT</span>
         <span className={styles.headStatus}>
           {runningBots.length > 0 ? `${runningBots.length} bot berjalan` : "idle"}
         </span>
@@ -378,11 +364,10 @@ export default function Home() {
             Login otomatis cukup pakai Session ID — tanpa CAPTCHA. Satu tombol Mulai untuk {" "}
             {botCount} bot sekaligus.
           </p>
-          {botCount >= 3 && !isPc && (
+          {botCount >= 3 && (
             <p className={styles.warnNote}>
               Semua bot berbagi <strong>1 browser</strong> (hemat memori), tetapi server tetap
-              terbatas. Kalau terasa lambat/gagal, kurangi jumlah bot atau jalankan lewat{" "}
-              <strong>via PC</strong>.
+              terbatas. Kalau terasa lambat atau gagal, kurangi jumlah botnya.
             </p>
           )}
           {error && <p className={styles.error} role="alert">{error}</p>}
