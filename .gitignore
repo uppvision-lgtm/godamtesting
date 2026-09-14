@@ -12,3 +12,13 @@ backend/dump.rdb
 debug_shots/
 backend/.media/
 backend/media/
+
+# ---- Auto Edit Video (skrip capcut ai) ----
+# Hanya skrip dan aset kecil yang masuk git. Video sumber, hasil render, dan
+# virtualenv sengaja tidak di-commit: ukurannya ratusan MB dan GitHub menolak
+# berkas di atas 100 MB. Layer besar diunggah lewat halaman Auto Edit Video.
+auto edit video/.venv/
+auto edit video/hasil_video/
+auto edit video/*.mp4
+auto edit video/*.mov
+auto edit video/main_compiled.bin
