@@ -139,11 +139,18 @@ function susunanBawaan(): Susunan {
     outro: null,
     max_duration: null,
     overlays: [
-      // Panel bawah dipakai utuh dan seimbang. Berkasnya 3888x2529 dengan
-      // pinggiran transparan di kanan; isinya sendiri 3473x2529 (rasio 1,373),
-      // jadi pada lebar 720 tingginya 524 dan gambarnya tidak gepeng.
-      // Crop di sini hanya membuang pinggiran transparan itu.
-      { label: NAMA_SLOT[0], file: "", x: 0, y: 756, w: 720, h: 524,
+      // Panel bawah. Berkasnya 3888x2529 dengan pinggiran transparan di kanan;
+      // isinya sendiri 3473x2529 alias berasio 1,373 — crop di sini hanya
+      // membuang pinggiran itu, bukan memotong gambar, supaya monasnya tidak
+      // gepeng. Ukuran 936x681 adalah 1,3 kali lebar layar supaya monasnya
+      // tampil besar; sisi kiri-kanan yang lewat batas layar terpotong sendiri.
+      //
+      // y dihitung, bukan dikira-kira: di dalam panel ada garis kuning pemisah
+      // pada 92% tingginya, dan di bawahnya bar media sosial. Garis itu
+      // ditempatkan tepat di 1239 — awal bar milik layer "bingkai teratas" —
+      // sehingga kedua bar bertumpuk pas dan tidak terlihat dobel.
+      //   y = 1239 - 0,92 x 681 = 612
+      { label: NAMA_SLOT[0], file: "", x: -108, y: 612, w: 936, h: 681,
         crop: "3473:2529:0:0", start: 0, end: 3 },
       { label: NAMA_SLOT[1], file: "", x: 10, y: 710, w: 700, h: 283, start: 0, end: 3 },
       { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158 },
