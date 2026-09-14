@@ -1,49 +1,42 @@
-name: Deploy VPS
+# ============================================================================
+#  REPO INI ADALAH SANDBOX UJI COBA (uppvision-lgtm/godamtesting).
+#
+#  Workflow deploy SENGAJA DILUMPUHKAN.
+#
+#  Repo produksi https://github.com/uppvision-lgtm/godam yang men-deploy ke
+#  https://auto-comment.tech/ — server itu harus hidup 24 jam dan tidak boleh
+#  mati sedetik pun. Karena itu repo testing ini tidak boleh punya jalur apa
+#  pun menuju VPS tersebut.
+#
+#  Pengaman yang dipasang:
+#    1. Tidak ada trigger 'push' — hanya bisa dijalankan manual.
+#    2. Job utama di-guard 'if: false' sehingga tidak pernah berjalan.
+#    3. Tidak ada satu pun referensi ke secrets VPS_HOST / VPS_USER /
+#       VPS_SSH_KEY, jadi menambahkan secrets itu pun tidak mengaktifkan apa-apa.
+#    4. GitHub Actions di repo ini juga dimatikan di level Settings.
+#
+#  JANGAN mengembalikan isi file ini dari repo godam.
+# ============================================================================
+
+name: Deploy VPS (DIMATIKAN di repo testing)
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: SSH deploy
+  penjelasan:
+    name: Deploy dimatikan
     runs-on: ubuntu-latest
     steps:
-      - name: Skip when VPS secrets are missing
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
+      - name: Kenapa tidak ada deploy
         run: |
-          if [ -z "$VPS_HOST" ]; then
-            echo "VPS_HOST is not set; skipping remote deploy."
-            echo "skip=true" >> "$GITHUB_ENV"
-          else
-            echo "skip=false" >> "$GITHUB_ENV"
-          fi
+          echo "Repo godamtesting tidak melakukan deploy."
+          echo "Deploy ke auto-comment.tech hanya boleh dari repo godam."
+          exit 0
 
-      - name: Deploy over SSH
-        if: env.skip != 'true'
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          script: |
-            set -euo pipefail
-            cd /opt/godam
-            git fetch origin
-            git checkout main
-            git pull --ff-only origin main
-
-            # Database milik VPS sendiri butuh sandi. Dibuat sekali di sini
-            # supaya deploy tidak gagal di mesin yang .env-nya belum punya,
-            # dan supaya sandinya tidak pernah ada di dalam repo.
-            touch .env
-            if ! grep -q '^POSTGRES_PASSWORD=' .env; then
-              echo "POSTGRES_PASSWORD=$(openssl rand -hex 32)" >> .env
-              echo "POSTGRES_PASSWORD dibuat otomatis."
-            fi
-
-            docker compose up -d --build --remove-orphans
-            docker image prune -f
+  deploy:
+    name: SSH deploy (tidak pernah jalan)
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Dinonaktifkan permanen di repo testing."
