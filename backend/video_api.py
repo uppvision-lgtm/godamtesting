@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 import storage
 import video_edit as ve
+import video_hook as vh
 import video_tasks as vt
 
 router = APIRouter(prefix="/api/video", tags=["video"])
@@ -44,8 +45,35 @@ class JobBody(BaseModel):
     session_id: str = ""
 
 
+class HookBody(BaseModel):
+    """Naskah mentah dari pengguna yang mau dirapikan jadi 3 baris hook."""
+
+    naskah: str = Field(min_length=3, max_length=5000)
+
+
 def _tangani(error: ve.VideoError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(error))
+
+
+# ============================================================
+#  HOOK OTOMATIS
+# ============================================================
+
+
+@router.post("/hook")
+async def buat_hook(body: HookBody) -> dict[str, Any]:
+    """Ubah naskah mentah jadi 3 baris lower-third siap tempel ke template.
+
+    Tidak pernah melempar galat selama naskahnya terisi: kalau DeepSeek tidak
+    tersedia, dipakai ringkasan sederhana dari naskah itu sendiri.
+    """
+    hasil = await vh.buat_hook(body.naskah)
+    if not hasil["lines"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Naskah terlalu pendek untuk dijadikan hook.",
+        )
+    return hasil
 
 
 # ============================================================

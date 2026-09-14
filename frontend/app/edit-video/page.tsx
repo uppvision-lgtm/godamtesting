@@ -48,9 +48,11 @@ type JobStatus = {
   error?: string | null;
 };
 
-// Batas badan permintaan fungsi serverless Vercel. Aset lebih besar dari ini
-// harus diunggah saat frontend berjalan lokal / mode PC.
-const BATAS_UNGGAH_MB = 4;
+// Batas ukuran satu berkas layer. Standarnya mengikuti backend (200 MB) karena
+// auto-comment.tech berjalan sendiri di VPS lewat Docker + Caddy, bukan Vercel.
+// Kalau frontend dipasang di Vercel, badan permintaan serverless dibatasi ~4 MB;
+// setel NEXT_PUBLIC_MAX_UPLOAD_MB=4 di sana supaya pesannya jelas sejak awal.
+const BATAS_UNGGAH_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 200);
 
 function apiUrl(path: string): string {
   return path;
@@ -85,6 +87,9 @@ export default function EditVideoPage() {
   const [link, setLink] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [isiTeks, setIsiTeks] = useState<Record<string, string>>({});
+  const [naskah, setNaskah] = useState("");
+  const [membuatHook, setMembuatHook] = useState(false);
+  const [pesanHook, setPesanHook] = useState("");
   const [job, setJob] = useState<JobStatus | null>(null);
   const [galat, setGalat] = useState("");
   const [mengirim, setMengirim] = useState(false);
@@ -238,6 +243,60 @@ export default function EditVideoPage() {
     }
   }
 
+  /** Unggah beberapa berkas layer berurutan, satu per satu.
+   *  Sengaja tidak paralel supaya progresnya terbaca dan server tidak dibanjiri. */
+  async function unggahBanyakAset(daftar: File[]) {
+    for (let i = 0; i < daftar.length; i += 1) {
+      setPesanTemplate(`Mengunggah ${i + 1}/${daftar.length}: ${daftar[i].name} ...`);
+      await unggahAset(daftar[i]);
+    }
+    setPesanTemplate(`Selesai mengunggah ${daftar.length} berkas.`);
+  }
+
+  /** Minta backend merapikan naskah jadi 3 baris lower-third, lalu isikan ke
+   *  layer teks bernama headline/detail/message. Kalau template memakai nama
+   *  lain, tiga layer teks pertama yang diisi. */
+  async function buatHookOtomatis() {
+    if (naskah.trim().length < 3) {
+      setPesanHook("Tulis dulu naskah singkat tentang isi videonya.");
+      return;
+    }
+    setMembuatHook(true);
+    setPesanHook("Membuat hook ...");
+    try {
+      const res = await fetch(apiUrl("/api/video/hook"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ naskah }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Gagal membuat hook.");
+
+      const baris: string[] = data.lines || [];
+      const namaLayer = (template?.texts || []).map((t) => t.name);
+      const bawaan = ["headline", "detail", "message"];
+      // Pakai nama baku kalau template memang punya; kalau tidak, urutan apa adanya.
+      const sasaran = bawaan.every((n) => namaLayer.includes(n))
+        ? bawaan
+        : namaLayer.slice(0, baris.length);
+
+      const isian: Record<string, string> = { ...isiTeks };
+      sasaran.forEach((nama, i) => {
+        if (baris[i] !== undefined) isian[nama] = baris[i];
+      });
+      setIsiTeks(isian);
+      setPesanHook(
+        data.source === "deepseek"
+          ? "Hook dibuat oleh AI. Silakan sunting kalau perlu."
+          : "DeepSeek tidak aktif, dipakai ringkasan sederhana. Silakan sunting."
+      );
+    } catch (err) {
+      setPesanHook(err instanceof Error ? err.message : "Gagal membuat hook.");
+    } finally {
+      setMembuatHook(false);
+    }
+  }
+
   async function mulaiRender() {
     setGalat("");
     if (!terpilih) return setGalat("Pilih template dulu.");
@@ -352,10 +411,11 @@ export default function EditVideoPage() {
                     + Unggah berkas
                     <input
                       type="file"
+                      multiple
                       accept=".png,.jpg,.jpeg,.webp,.mp4,.mov,.m4v,.webm"
                       onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) void unggahAset(f);
+                        const daftar = Array.from(e.target.files || []);
+                        if (daftar.length) void unggahBanyakAset(daftar);
                         e.target.value = "";
                       }}
                     />
@@ -602,6 +662,30 @@ export default function EditVideoPage() {
                   autoComplete="off"
                 />
               </label>
+            )}
+
+            {(template?.texts || []).length > 0 && (
+              <div className={styles.hookBox}>
+                <label>
+                  <span>Naskah singkat (untuk hook otomatis)</span>
+                  <textarea
+                    className={styles.naskah}
+                    rows={3}
+                    value={naskah}
+                    onChange={(e) => setNaskah(e.target.value)}
+                    placeholder="Ceritakan isi videonya beberapa kalimat. AI merapikannya jadi 3 baris gaya berita."
+                  />
+                </label>
+                <button
+                  type="button"
+                  className={styles.hookBtn}
+                  onClick={buatHookOtomatis}
+                  disabled={membuatHook}
+                >
+                  {membuatHook ? "Membuat hook..." : "Buatkan hook otomatis"}
+                </button>
+                {pesanHook && <p className={styles.hint}>{pesanHook}</p>}
+              </div>
             )}
 
             {(template?.texts || []).map((t) => (

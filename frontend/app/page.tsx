@@ -29,7 +29,9 @@ const tools: Tool[] = [
     icon: "🎬",
     title: "Auto Edit Video",
     desc: "tempel link, digabung dengan template layer-mu",
-    status: "soon",
+    href: "/edit-video",
+    status: "ready",
+    badge: "Tersedia",
   },
   {
     id: "upload",
