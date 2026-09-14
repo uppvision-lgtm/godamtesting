@@ -113,7 +113,11 @@ const TEKS_SUMBER: TextLayer = {
   name: "sumber",
   size: 20,
   x: null,
-  y: 1195,
+  // Duduk di dalam bar merah bawah milik layer "bingkai teratas", sebaris
+  // dengan ikon media sosial. Bar itu ada di y 1239..1279 pada kanvas
+  // 720x1280, dan tinta teks jatuh 7 px di bawah nilai y ini — jadi 1246
+  // membuat teksnya terpusat rapi di dalam bar.
+  y: 1246,
   align: "right",
   color: "white",
   stroke: 3,
@@ -208,11 +212,15 @@ export default function EditVideoPage() {
       const res = await fetch(`/api/video/templates/${ID_LAYER}`, { cache: "no-store" });
       if (res.ok) {
         const ada: Susunan = await res.json();
-        // Susunan yang dibuat sebelum fitur kredit sumber ada belum punya
-        // layer teksnya. Ditambal sekali di sini supaya tidak perlu membuat
-        // ulang susunan dan mengunggah lagi semua berkas layernya.
-        if (!(ada.texts || []).some((t) => t.name === "sumber")) {
-          ada.texts = [...(ada.texts || []), TEKS_SUMBER];
+        // Layer kredit sumber selalu disamakan dengan definisi di kode:
+        // susunan lama mungkin belum punya layernya, atau masih memakai
+        // posisi versi sebelumnya. Dengan begini perubahan posisi langsung
+        // ikut tanpa perlu membuat ulang susunan dan mengunggah berkas lagi.
+        const lain = (ada.texts || []).filter((t) => t.name !== "sumber");
+        const lama = (ada.texts || []).find((t) => t.name === "sumber");
+        const perluDisimpan = JSON.stringify(lama) !== JSON.stringify(TEKS_SUMBER);
+        ada.texts = [...lain, TEKS_SUMBER];
+        if (perluDisimpan) {
           await simpanSusunan(ada);
         } else {
           setSusunan(ada);
@@ -401,8 +409,11 @@ export default function EditVideoPage() {
         const isi = (baris[i] || "").trim();
         if (isi) texts[nama] = isi;
       });
-      // Kredit pemilik video asli, diambil dari link sumber.
-      if (pratinjau?.uploader) texts.sumber = `sumber: ${pratinjau.uploader}`;
+      // Kredit pemilik video asli, diambil dari link sumber. Huruf kapital
+      // supaya seragam dengan tulisan lain di bar merah bawah.
+      if (pratinjau?.uploader) {
+        texts.sumber = `SUMBER: ${pratinjau.uploader.toUpperCase()}`;
+      }
       const res = await fetch("/api/video/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -638,7 +649,8 @@ export default function EditVideoPage() {
 
               {pratinjau?.uploader && (
                 <p className={styles.kredit}>
-                  Kredit di kanan bawah: <strong>sumber: {pratinjau.uploader}</strong>
+                  Kredit di bar bawah:{" "}
+                  <strong>SUMBER: {pratinjau.uploader.toUpperCase()}</strong>
                 </p>
               )}
             </div>
