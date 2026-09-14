@@ -145,12 +145,15 @@ function susunanBawaan(): Susunan {
       // gepeng. Ukuran 936x681 adalah 1,3 kali lebar layar supaya monasnya
       // tampil besar; sisi kiri-kanan yang lewat batas layar terpotong sendiri.
       //
-      // y dihitung, bukan dikira-kira: di dalam panel ada garis kuning pemisah
-      // pada 92% tingginya, dan di bawahnya bar media sosial. Garis itu
-      // ditempatkan tepat di 1239 — awal bar milik layer "bingkai teratas" —
-      // sehingga kedua bar bertumpuk pas dan tidak terlihat dobel.
-      //   y = 1239 - 0,92 x 681 = 612
-      { label: NAMA_SLOT[0], file: "", x: -108, y: 612, w: 936, h: 681,
+      // Panel diturunkan 170 px (seperempat tingginya) supaya monasnya duduk
+      // lebih rendah dan tidak tertutup kotak putih. Bagian bawahnya jadi
+      // lewat batas layar dan terpotong — itu disengaja. Bar media sosial
+      // bawaan panel ikut keluar layar, jadi yang terlihat hanya bar milik
+      // layer "bingkai teratas" dan tidak ada bar dobel.
+      //
+      // w dan h tetap 1,3 kali ukuran asli (936x681 dari rasio 1,373), jadi
+      // menggeser ini tidak meregangkan gambarnya.
+      { label: NAMA_SLOT[0], file: "", x: -108, y: 782, w: 936, h: 681,
         crop: "3473:2529:0:0", start: 0, end: 3 },
       { label: NAMA_SLOT[1], file: "", x: 10, y: 710, w: 700, h: 283, start: 0, end: 3 },
       { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158 },
