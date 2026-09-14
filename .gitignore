@@ -22,3 +22,6 @@ auto edit video/hasil_video/
 auto edit video/*.mp4
 auto edit video/*.mov
 auto edit video/main_compiled.bin
+
+# Dump Redis kalau redis-server dijalankan dari folder repo.
+dump.rdb
