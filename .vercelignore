@@ -1,0 +1,15 @@
+# Vercel hanya membangun frontend, jadi sisanya tidak perlu ikut diunggah.
+# Tanpa ini, deploy dari mesin lokal membawa serta video sumber dan
+# virtualenv sehingga melewati batas unggah 100 MB.
+node_modules
+.venv
+.next
+
+backend
+deploy
+auto edit video
+hasil_video
+
+*.mp4
+*.mov
+*.rdb
