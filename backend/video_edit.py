@@ -15,6 +15,7 @@ Template disimpan sebagai folder di ``MEDIA_DIR/templates/<id>`` berisi
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -44,6 +45,10 @@ MAX_SOURCE_SECONDS = float(os.getenv("VIDEO_MAX_SOURCE_SECONDS", "300"))
 RENDER_TIMEOUT_SECONDS = float(os.getenv("VIDEO_RENDER_TIMEOUT", "1800"))
 DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "600"))
 PREVIEW_TIMEOUT_SECONDS = float(os.getenv("VIDEO_PREVIEW_TIMEOUT", "45"))
+# Video sumber disimpan sementara per link, supaya merender satu link dengan
+# banyak template tidak mengunduhnya berulang kali (Instagram cepat membatasi
+# pengunduh yang terlalu sering).
+SOURCE_CACHE_SECONDS = float(os.getenv("VIDEO_SOURCE_CACHE_SECONDS", "21600"))
 
 # yt-dlp dipasang sebagai paket Python. Di image Docker ia ada di PATH, tapi
 # saat dijalankan dari virtualenv (mode lokal) sering tidak. Jadi dicari dulu,
@@ -78,6 +83,11 @@ TEMPLATE_CONTOH: dict[str, Any] = {
     # Kotak tempat teks hook diletakkan, dalam piksel kanvas: {x, y, w, h}.
     # Diisi lewat deteksi otomatis atau digambar pengguna di halaman.
     "text_box": None,
+    # Kotak badge kategori (NEWS / HIBURAN / SHOWBIZ) dan teksnya. Kalau
+    # kotaknya kosong, diturunkan dari text_box: menempel di atas kotak teks,
+    # rata kiri.
+    "badge_box": None,
+    "kategori": "",
 }
 
 
@@ -198,6 +208,17 @@ def save_template(data: dict[str, Any], template_id: str | None = None) -> dict[
 
 def delete_template(template_id: str) -> None:
     shutil.rmtree(template_path(template_id), ignore_errors=True)
+    # Salinan di Supabase ikut dihapus; kalau tidak, set ini muncul lagi
+    # begitu container baru menyinkronkan template dari penyimpanan.
+    if not storage.enabled():
+        return
+    awalan = f"templates/{_aman(template_id)}"
+    try:
+        for item in storage.list_prefix(f"{awalan}/assets", limit=500):
+            storage.delete(f"{awalan}/assets/{item['name']}")
+        storage.delete(f"{awalan}/template.json")
+    except storage.StorageError as error:
+        logger.warning("Set %s terhapus lokal tapi gagal dihapus dari Supabase: %s", template_id, error)
 
 
 def _aset(template: dict[str, Any], nama: str | None) -> Path | None:
@@ -407,6 +428,59 @@ def _gambar_teks_berita(
     return tujuan
 
 
+def kotak_kategori_bawaan(text_box: Any) -> dict[str, int] | None:
+    """Tempat badge kategori kalau tidak ditentukan: menempel di atas kotak
+    teks, rata kiri, seperti badge NEWS pada lower-third berita."""
+    if not isinstance(text_box, dict):
+        return None
+    try:
+        tx, ty, tw, th = (int(text_box[k]) for k in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    h = max(36, min(80, int(th * 0.26)))
+    w = max(120, int(tw * 0.41))
+    return {"x": tx + 6, "y": max(0, ty - h), "w": w, "h": h}
+
+
+def _gambar_teks_kategori(
+    teks: dict[str, Any], isi: str, lebar: int, tinggi: int, tujuan: Path
+) -> Path:
+    """Satu kata kategori (NEWS, HIBURAN, SHOWBIZ) di tengah kotak badge.
+
+    Hurufnya kapital dan dibesarkan sampai mentok tepi kotak, lalu dipusatkan
+    berdasarkan tinta sebenarnya supaya duduk rapi di tengah badge.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    kanvas = Image.new("RGBA", (lebar, tinggi), (0, 0, 0, 0))
+    gambar = ImageDraw.Draw(kanvas)
+    kotak = teks.get("box") if isinstance(teks.get("box"), dict) else None
+    isi = " ".join(isi.split()).upper()
+    if not kotak or not isi:
+        kanvas.save(tujuan)
+        return tujuan
+    kx, ky, kw, kh = (int(kotak[k]) for k in ("x", "y", "w", "h"))
+    tepi = max(6, int(kh * 0.2))
+    jalur = _font()
+    ukuran = max(10, int(teks.get("size") or kh))
+    font = ImageFont.truetype(jalur, ukuran)
+
+    def muat(f: Any) -> bool:
+        bb = gambar.textbbox((0, 0), isi, font=f)
+        return (bb[2] - bb[0]) <= kw - 2 * tepi and (bb[3] - bb[1]) <= kh - 2 * tepi
+
+    while not muat(font) and ukuran > 10:
+        ukuran -= 1
+        font = ImageFont.truetype(jalur, ukuran)
+    bb = gambar.textbbox((0, 0), isi, font=font)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    x = kx + (kw - tw) // 2 - bb[0]
+    y = ky + (kh - th) // 2 - bb[1]
+    gambar.text((x, y), isi, font=font, fill=_warna(teks.get("color"), "white"))
+    kanvas.save(tujuan)
+    return tujuan
+
+
 def _gambar_teks(
     teks: dict[str, Any], isi: str, lebar: int, tinggi: int, tujuan: Path
 ) -> Path:
@@ -418,8 +492,11 @@ def _gambar_teks(
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    if str(teks.get("style") or "").lower() == "berita":
+    gaya = str(teks.get("style") or "").lower()
+    if gaya == "berita":
         return _gambar_teks_berita(teks, isi, lebar, tinggi, tujuan)
+    if gaya == "kategori":
+        return _gambar_teks_kategori(teks, isi, lebar, tinggi, tujuan)
 
     ukuran = int(teks.get("size") or 56)
     font = ImageFont.truetype(_font(), ukuran)
@@ -521,6 +598,15 @@ def download_source(
     tujuan.mkdir(parents=True, exist_ok=True)
     keluaran = tujuan / "source.%(ext)s"
 
+    cache = MEDIA_DIR / "cache" / hashlib.sha1(url.encode("utf-8")).hexdigest()
+    for tersimpan in sorted(cache.glob("source.*")):
+        if time.time() - tersimpan.stat().st_mtime < SOURCE_CACHE_SECONDS:
+            salinan = tujuan / tersimpan.name
+            shutil.copy2(tersimpan, salinan)
+            if log:
+                log("Memakai video sumber yang baru saja diunduh (cache).")
+            return salinan
+
     perintah = _perintah_ytdlp() + [
         "--no-playlist",
         "--no-progress",
@@ -570,6 +656,11 @@ def download_source(
     if log:
         ukuran = berkas[0].stat().st_size / 1_048_576
         log(f"Video terunduh ({ukuran:.1f} MB)")
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(berkas[0], cache / berkas[0].name)
+    except OSError as error:  # cache hanya pelengkap, jangan gagalkan job
+        logger.warning("Gagal menyimpan cache sumber: %s", error)
     return berkas[0]
 
 
@@ -881,13 +972,26 @@ def _bangun_perintah(
         lapisan.append({**overlay, "path": berkas})
 
     kotak_teks = template.get("text_box") if isinstance(template.get("text_box"), dict) else None
+    kotak_badge = template.get("badge_box") if isinstance(template.get("badge_box"), dict) else None
+    if kotak_badge is None:
+        kotak_badge = kotak_kategori_bawaan(kotak_teks)
     for nomor, teks in enumerate(template.get("texts") or []):
         nama = str(teks.get("name") or f"teks{nomor}")
-        isi = str(texts.get(nama, teks.get("default") or "")).strip()
+        isi = texts.get(nama)
+        # Layer dengan "source" mengambil isinya dari field template, mis.
+        # kategori (NEWS/HIBURAN) yang memang milik set layer, bukan per video.
+        if not isi and teks.get("source"):
+            isi = template.get(str(teks["source"]))
+        isi = str(isi or teks.get("default") or "").strip()
         if not isi:
             continue
-        if kotak_teks and str(teks.get("style") or "").lower() == "berita" and not teks.get("box"):
+        gaya = str(teks.get("style") or "").lower()
+        if gaya == "berita" and kotak_teks and not teks.get("box"):
             teks = {**teks, "box": kotak_teks}
+        if gaya == "kategori" and not teks.get("box"):
+            if not kotak_badge:
+                continue  # belum ada tempatnya
+            teks = {**teks, "box": kotak_badge}
         png = _gambar_teks(teks, isi, lebar, tinggi, kerja / f"text_{nomor}.png")
         # PNG teks sudah seukuran kanvas, jadi cukup ditempel di 0,0.
         lapisan.append(

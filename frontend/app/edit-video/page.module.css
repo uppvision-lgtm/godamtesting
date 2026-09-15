@@ -554,3 +554,44 @@
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }
+
+/* ---- Kotak badge & daftar template ---- */
+.kotakBadgeLayer {
+  position: absolute;
+  border: 2px solid #fb923c;
+  background: rgba(251, 146, 60, 0.18);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.kotakBawaan {
+  border-style: dashed;
+  background: rgba(251, 146, 60, 0.08);
+}
+
+.daftarCek {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.cekItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.cekItem input {
+  width: auto;
+  margin: 0;
+}
+
+.jobDaftar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

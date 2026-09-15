@@ -58,6 +58,8 @@ type TextLayer = {
   max_lines?: number;
   line_height?: number;
   kicker_color?: string;
+  // Isi diambil dari field set layer (mis. "kategori"), bukan dari job.
+  source?: string;
 };
 
 /** Kotak tempat teks hook diletakkan, dalam piksel kanvas. */
@@ -75,6 +77,9 @@ type Susunan = {
   overlays: Overlay[];
   texts: TextLayer[];
   text_box?: KotakTeks | null;
+  badge_box?: KotakTeks | null;
+  badge_box_default?: KotakTeks | null;
+  kategori?: string;
   assets?: string[];
 };
 
@@ -103,6 +108,7 @@ type JobStatus = {
   output?: string | null;
   url?: string | null;
   error?: string | null;
+  template_id?: string;
 };
 
 /** Nama slot yang tampil di layar, berurutan dari lapisan bawah ke atas.
@@ -146,6 +152,16 @@ const TEKS_HOOK: TextLayer = {
   kicker_color: "#d32d27",
   start: 0,
   end: 3,
+};
+
+/** Badge kategori (NEWS / HIBURAN / SHOWBIZ). Isinya dari field "kategori"
+ *  set layer, posisinya dari badge_box set itu (atau tebakan di atas kotak
+ *  teks kalau belum digambar). */
+const TEKS_KATEGORI: TextLayer = {
+  name: "kategori",
+  style: "kategori",
+  source: "kategori",
+  color: "white",
 };
 
 /** Layer teks kredit pemilik video. */
@@ -197,8 +213,10 @@ function susunanBawaan(id: string, nama: string): Susunan {
       // yang membuat video sumber mengintip di baris terbawah.
       { label: NAMA_SLOT[2], file: "", x: 0, y: "main_h-h", w: 720, h: null },
     ],
-    texts: [TEKS_HOOK, TEKS_SUMBER],
+    texts: [TEKS_HOOK, TEKS_KATEGORI, TEKS_SUMBER],
     text_box: null,
+    badge_box: null,
+    kategori: "",
     assets: [],
   };
 }
@@ -251,6 +269,13 @@ export default function EditVideoPage() {
   const pratinjauRef = useRef<HTMLDivElement>(null);
   const [versiPratinjau, setVersiPratinjau] = useState(0);
   const [mendeteksi, setMendeteksi] = useState(false);
+  const [kategori, setKategori] = useState("");
+  const [badgeBox, setBadgeBox] = useState<KotakTeks | null>(null);
+  const [badgeBoxBawaan, setBadgeBoxBawaan] = useState<KotakTeks | null>(null);
+  // Kotak mana yang sedang digambar di pratinjau.
+  const [modeGambar, setModeGambar] = useState<"teks" | "kategori">("teks");
+  // Set layer yang dicentang untuk dirender sekaligus.
+  const [pilihanSet, setPilihanSet] = useState<string[]>([]);
 
   const [pratinjau, setPratinjau] = useState<Pratinjau | null>(null);
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
@@ -267,10 +292,9 @@ export default function EditVideoPage() {
   const [sumberHook, setSumberHook] = useState("");
   const [membuatHook, setMembuatHook] = useState(false);
 
-  const [job, setJob] = useState<JobStatus | null>(null);
+  const [jobs, setJobs] = useState<JobStatus[]>([]);
   const [mengirim, setMengirim] = useState(false);
   const [galat, setGalat] = useState("");
-  const jobRef = useRef<string>("");
 
   useEffect(() => {
     simpanForm("edit-video", { link });
@@ -286,6 +310,12 @@ export default function EditVideoPage() {
       const data = await res.json();
       const daftar = (data.templates || []).map((t: Susunan) => ({ id: t.id, name: t.name }));
       setDaftarSet(daftar);
+      // Buang centang untuk set yang sudah tidak ada; kalau jadi kosong,
+      // centang set pertama supaya tombol Buat video selalu punya sasaran.
+      setPilihanSet((lama) => {
+        const sah = lama.filter((id) => daftar.some((d: { id: string }) => d.id === id));
+        return sah.length ? sah : daftar[0] ? [daftar[0].id] : [];
+      });
       return daftar;
     } catch {
       return [];
@@ -302,7 +332,7 @@ export default function EditVideoPage() {
         // set tersimpan disamakan dengannya. Dengan begini set lama otomatis
         // ikut ke bentuk terbaru tanpa perlu dibuat ulang dan tanpa mengunggah
         // lagi berkas layernya.
-        const tetap = [TEKS_HOOK, TEKS_SUMBER];
+        const tetap = [TEKS_HOOK, TEKS_KATEGORI, TEKS_SUMBER];
 
         // Slot layer juga disamakan dengan susunan di kode, dan hanya berkas
         // pilihan pengguna yang dipertahankan. Set lama punya satu slot lebih
@@ -324,6 +354,9 @@ export default function EditVideoPage() {
         setIdSet(ada.id);
         setNamaSet(ada.name);
         setKotakTeks(ada.text_box || null);
+        setBadgeBox(ada.badge_box || null);
+        setBadgeBoxBawaan(ada.badge_box_default || null);
+        setKategori(ada.kategori || "");
         if (perluDisimpan) {
           await simpanSusunan(ada, ada.id);
         } else {
@@ -346,6 +379,9 @@ export default function EditVideoPage() {
         setIdSet(dibuat.id);
         setNamaSet(dibuat.name);
         setKotakTeks(null);
+        setBadgeBox(null);
+        setBadgeBoxBawaan(null);
+        setKategori("");
         await muatDaftar();
       }
     } catch {
@@ -382,10 +418,67 @@ export default function EditVideoPage() {
         overlays: baru.overlays,
         texts: baru.texts,
         text_box: baru.text_box ?? null,
+        badge_box: baru.badge_box ?? null,
+        kategori: baru.kategori ?? "",
       }),
     });
     // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
     setVersiPratinjau((v) => v + 1);
+    // Tebakan kotak badge dihitung server dari kotak teks; ambil yang terbaru.
+    try {
+      const r = await fetch(`/api/video/templates/${sasaran}`, { cache: "no-store" });
+      if (r.ok) {
+        const d: Susunan = await r.json();
+        setBadgeBoxBawaan(d.badge_box_default || null);
+      }
+    } catch {
+      // tebakan lama tetap dipakai
+    }
+  }
+
+  /** Hapus set layer yang sedang dibuka beserta berkasnya. */
+  async function hapusSet() {
+    if (!susunan) return;
+    const nama = namaSet;
+    if (!window.confirm(`Hapus set layer "${nama}"? Berkas layer di dalamnya ikut terhapus.`)) return;
+    try {
+      const res = await fetch(`/api/video/templates/${idSet}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Gagal menghapus set layer.");
+      const daftar = await muatDaftar();
+      const berikut = daftar[0];
+      await muatSet(berikut?.id || ID_SET_PERTAMA, berikut?.name || NAMA_SET_PERTAMA);
+      setPesanLayer(`Set layer "${nama}" dihapus.`);
+    } catch (err) {
+      setPesanLayer(err instanceof Error ? err.message : "Gagal menghapus set layer.");
+    }
+  }
+
+  /** Simpan teks kategori (NEWS / HIBURAN / SHOWBIZ) milik set ini. */
+  async function simpanKategori() {
+    if (!susunan) return;
+    const bersih = kategori.trim().toUpperCase();
+    if (bersih === (susunan.kategori || "")) return;
+    setKategori(bersih);
+    await simpanSusunan({ ...susunan, kategori: bersih });
+    setPesanLayer(bersih ? `Kategori "${bersih}" tersimpan.` : "Kategori dikosongkan; badge tidak ditulis.");
+  }
+
+  async function simpanBadge(kotak: KotakTeks | null) {
+    if (!susunan) return;
+    setBadgeBox(kotak);
+    await simpanSusunan({ ...susunan, badge_box: kotak });
+    setPesanLayer(kotak ? "Kotak kategori tersimpan." : "Kotak kategori dihapus; dipakai tebakan di atas kotak teks.");
+  }
+
+  function gayaKotak(k: KotakTeks): React.CSSProperties {
+    const lebar = susunan?.width || 720;
+    const tinggi = susunan?.height || 1280;
+    return {
+      left: `${(k.x / lebar) * 100}%`,
+      top: `${(k.y / tinggi) * 100}%`,
+      width: `${(k.w / lebar) * 100}%`,
+      height: `${(k.h / tinggi) * 100}%`,
+    };
   }
 
   // ===== KOTAK TEKS =====
@@ -450,7 +543,9 @@ export default function EditVideoPage() {
     seretRef.current = null;
     setKotakSementara(null);
     // Seretan terlalu kecil dianggap klik tak sengaja.
-    if (kotak && kotak.w >= 20 && kotak.h >= 20) void simpanKotak(kotak);
+    if (!kotak || kotak.w < 20 || kotak.h < 20) return;
+    if (modeGambar === "kategori") void simpanBadge(kotak);
+    else void simpanKotak(kotak);
   }
 
   /** Simpan nama set yang sedang dibuka. */
@@ -626,19 +721,37 @@ export default function EditVideoPage() {
   }, [link, bacaLink]);
 
   // ===== JOB =====
+  // Semua job yang belum selesai disegarkan bersama dalam satu putaran.
+  const kunciAktif = jobs.filter((j) => !selesai(j.status)).map((j) => j.job_id).join(",");
   useEffect(() => {
-    if (!job?.job_id || selesai(job.status)) return;
-    jobRef.current = job.job_id;
+    const aktif = kunciAktif ? kunciAktif.split(",") : [];
+    if (aktif.length === 0) return;
     const timer = window.setInterval(async () => {
-      try {
-        const res = await fetch(`/api/video/jobs/${jobRef.current}`, { cache: "no-store" });
-        if (res.ok) setJob(await res.json());
-      } catch {
-        // coba lagi putaran berikutnya
-      }
-    }, 1500);
+      const hasil = await Promise.all(
+        aktif.map(async (id) => {
+          try {
+            const r = await fetch(`/api/video/jobs/${id}`, { cache: "no-store" });
+            return r.ok ? ((await r.json()) as JobStatus) : null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      setJobs((lama) => lama.map((j) => hasil.find((h) => h && h.job_id === j.job_id) || j));
+    }, 2000);
     return () => window.clearInterval(timer);
-  }, [job?.job_id, job?.status]);
+  }, [kunciAktif]);
+
+  function namaSetDari(id?: string): string {
+    return daftarSet.find((d) => d.id === id)?.name || id || "";
+  }
+
+  /** Alamat video hasil: dari Supabase kalau sudah tersimpan, kalau tidak dari server. */
+  function berkasJob(j: JobStatus): string {
+    if (j.status !== "done") return "";
+    if (j.url && /\/jobs\/[^/]+\/output\.mp4/.test(j.url)) return j.url;
+    return j.output ? `/api/video/jobs/${j.job_id}/file` : "";
+  }
 
   async function mulaiRender() {
     setGalat("");
@@ -655,14 +768,23 @@ export default function EditVideoPage() {
       if (pratinjau?.uploader) {
         texts.sumber = `SUMBER: ${pratinjau.uploader.toUpperCase()}`;
       }
-      const res = await fetch("/api/video/jobs", {
+      const sasaran = pilihanSet.length ? pilihanSet : [idSet];
+      const res = await fetch("/api/video/jobs/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: link.trim(), template_id: idSet, texts }),
+        body: JSON.stringify({ url: link.trim(), template_ids: sasaran, texts }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal memulai.");
-      setJob({ job_id: data.job_id, status: data.status, progress: 0 });
+      const baru: JobStatus[] = (data.jobs || []).map(
+        (j: { job_id: string; template_id: string; status: string }) => ({
+          job_id: j.job_id,
+          status: j.status,
+          progress: 0,
+          template_id: j.template_id,
+        })
+      );
+      setJobs((lama) => [...baru, ...lama]);
     } catch (err) {
       setGalat(err instanceof Error ? err.message : "Gagal memulai.");
     } finally {
@@ -670,17 +792,14 @@ export default function EditVideoPage() {
     }
   }
 
-  const sedangJalan = !!job && !selesai(job.status);
-  // Hasil yang sudah diunggah ke Supabase dipakai lebih dulu supaya video tetap
-  // bisa diputar walau container backend sudah diganti.
-  const berkasVideo = job?.url || (job?.output ? `/api/video/jobs/${job.job_id}/file` : "");
+  const sedangJalan = jobs.some((j) => !selesai(j.status));
 
   return (
     <div className={styles.page}>
       <header className={styles.topbar}>
         <Link href="/" className={styles.back} title="Kembali ke beranda">←</Link>
         <span className={styles.brand}>IG · EDIT VIDEO</span>
-        <span className={styles.headStatus}>{job ? job.status : "idle"}</span>
+        <span className={styles.headStatus}>{sedangJalan ? "rendering" : "idle"}</span>
       </header>
 
       <main className={styles.main}>
@@ -711,6 +830,15 @@ export default function EditVideoPage() {
               </label>
               <button type="button" className={styles.ghostBtn} onClick={buatSetBaru}>
                 + Baru
+              </button>
+              <button
+                type="button"
+                className={styles.hapusBtn}
+                onClick={hapusSet}
+                disabled={!susunan}
+                title="Hapus set layer yang sedang dibuka"
+              >
+                Hapus
               </button>
             </div>
 
@@ -807,10 +935,46 @@ export default function EditVideoPage() {
               </label>
             </div>
 
+            <div className={styles.row}>
+              <label>
+                <span>Kategori badge (mis. NEWS, HIBURAN, SHOWBIZ)</span>
+                <input
+                  value={kategori}
+                  maxLength={30}
+                  placeholder="NEWS"
+                  onChange={(e) => setKategori(e.target.value)}
+                  onBlur={() => void simpanKategori()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  }}
+                />
+              </label>
+            </div>
+            <p className={styles.hint}>
+              Ditulis kapital di dalam kotak badge — huruf besarnya menyesuaikan kotak.
+              Kosongkan kalau template ini tidak memakai badge.
+            </p>
+
             {/* ---- KOTAK TEKS ---- */}
             <div className={styles.blok}>
               <div className={styles.blokHead}>
-                <h3>Kotak teks hook</h3>
+                <h3>Kotak teks &amp; badge</h3>
+                <div className={styles.pilihMode}>
+                  <button
+                    type="button"
+                    className={modeGambar === "teks" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => setModeGambar("teks")}
+                  >
+                    Kotak teks
+                  </button>
+                  <button
+                    type="button"
+                    className={modeGambar === "kategori" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => setModeGambar("kategori")}
+                  >
+                    Kotak badge
+                  </button>
+                </div>
                 <div className={styles.aksi}>
                   <button
                     type="button"
@@ -820,21 +984,22 @@ export default function EditVideoPage() {
                   >
                     {mendeteksi ? "Mencari..." : "Deteksi otomatis"}
                   </button>
-                  {kotakTeks && (
-                    <button
-                      type="button"
-                      className={styles.hapusBtn}
-                      onClick={() => void simpanKotak(null)}
-                    >
-                      Hapus kotak
+                  {modeGambar === "teks" && kotakTeks && (
+                    <button type="button" className={styles.hapusBtn} onClick={() => void simpanKotak(null)}>
+                      Hapus kotak teks
+                    </button>
+                  )}
+                  {modeGambar === "kategori" && badgeBox && (
+                    <button type="button" className={styles.hapusBtn} onClick={() => void simpanBadge(null)}>
+                      Pakai tebakan
                     </button>
                   )}
                 </div>
               </div>
               <p className={styles.hint}>
-                Teks hook dipasang mengisi kotak ini: lebarnya mengikuti kotak, hurufnya
-                menyusut sampai muat, dan diletakkan di tengah. Tiap set layer punya kotaknya
-                sendiri. Seret di pratinjau untuk menggambar kotak baru.
+                Hijau = kotak teks hook, oranye = kotak badge kategori (putus-putus berarti
+                masih tebakan di atas kotak teks). Pilih mode lalu seret di pratinjau untuk
+                menggambar ulang. Tiap set layer punya kotaknya sendiri.
               </p>
               {susunan && (
                 <div
@@ -851,17 +1016,24 @@ export default function EditVideoPage() {
                     alt="Pratinjau layer"
                     draggable={false}
                   />
-                  {(kotakSementara || kotakTeks) && (
-                    <div
-                      className={styles.kotakTeksLayer}
-                      style={{
-                        left: `${((kotakSementara || kotakTeks)!.x / (susunan.width || 720)) * 100}%`,
-                        top: `${((kotakSementara || kotakTeks)!.y / (susunan.height || 1280)) * 100}%`,
-                        width: `${((kotakSementara || kotakTeks)!.w / (susunan.width || 720)) * 100}%`,
-                        height: `${((kotakSementara || kotakTeks)!.h / (susunan.height || 1280)) * 100}%`,
-                      }}
-                    />
-                  )}
+                  {(() => {
+                    const teksK = modeGambar === "teks" && kotakSementara ? kotakSementara : kotakTeks;
+                    const badgeK =
+                      modeGambar === "kategori" && kotakSementara
+                        ? kotakSementara
+                        : badgeBox || badgeBoxBawaan;
+                    return (
+                      <>
+                        {teksK && <div className={styles.kotakTeksLayer} style={gayaKotak(teksK)} />}
+                        {badgeK && (
+                          <div
+                            className={`${styles.kotakBadgeLayer} ${!badgeBox && !(modeGambar === "kategori" && kotakSementara) ? styles.kotakBawaan : ""}`}
+                            style={gayaKotak(badgeK)}
+                          />
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
               {kotakTeks && (
@@ -1042,36 +1214,80 @@ export default function EditVideoPage() {
 
             {galat && <p className={styles.error} role="alert">{galat}</p>}
 
+            <div className={styles.blok}>
+              <div className={styles.blokHead}>
+                <h3>Template yang dipakai</h3>
+                <div className={styles.aksi}>
+                  <button
+                    type="button"
+                    className={styles.ghostBtn}
+                    onClick={() => setPilihanSet(daftarSet.map((d) => d.id))}
+                  >
+                    Pilih semua
+                  </button>
+                  <button type="button" className={styles.ghostBtn} onClick={() => setPilihanSet([])}>
+                    Kosongkan
+                  </button>
+                </div>
+              </div>
+              <div className={styles.daftarCek}>
+                {daftarSet.map((d) => (
+                  <label key={d.id} className={styles.cekItem}>
+                    <input
+                      type="checkbox"
+                      checked={pilihanSet.includes(d.id)}
+                      onChange={(e) =>
+                        setPilihanSet((p) =>
+                          e.target.checked ? [...p, d.id] : p.filter((x) => x !== d.id)
+                        )
+                      }
+                    />
+                    <span>{d.name}</span>
+                  </label>
+                ))}
+              </div>
+              <p className={styles.hint}>
+                Satu link dirender sekali untuk tiap template yang dicentang. Video sumbernya
+                diunduh sekali lalu dipakai ulang, dan hasilnya dikerjakan berurutan.
+              </p>
+            </div>
+
             <button
               className={styles.mulaiBtn}
               onClick={mulaiRender}
-              disabled={mengirim || sedangJalan || !pratinjau}
+              disabled={mengirim || !pratinjau || pilihanSet.length === 0}
             >
-              {sedangJalan ? "Sedang dibuat..." : "Buat video"}
+              {mengirim
+                ? "Mengirim..."
+                : `Buat ${pilihanSet.length} video`}
             </button>
 
-            {job && (
-              <div className={styles.jobBox}>
-                <div className={styles.jobHead}>
-                  <span className={`${styles.badge} ${styles[job.status] || ""}`}>{job.status}</span>
-                  <span>{job.message}</span>
-                </div>
-                <div className={styles.barWrap}>
-                  <div className={styles.bar} style={{ width: `${job.progress || 0}%` }} />
-                </div>
-                <div className={styles.logBody}>
-                  {(job.logs || []).map((baris, i) => (
-                    <p key={i}>{baris}</p>
-                  ))}
-                </div>
-                {job.status === "done" && berkasVideo && (
-                  <div className={styles.hasil}>
-                    <video className={styles.video} src={berkasVideo} controls playsInline />
-                    <a className={styles.unduhBtn} href={berkasVideo} download>
-                      Unduh MP4
-                    </a>
-                  </div>
-                )}
+            {jobs.length > 0 && (
+              <div className={styles.jobDaftar}>
+                {jobs.map((j) => {
+                  const berkas = berkasJob(j);
+                  return (
+                    <div key={j.job_id} className={styles.jobBox}>
+                      <div className={styles.jobHead}>
+                        <span className={`${styles.badge} ${styles[j.status] || ""}`}>{j.status}</span>
+                        <strong>{namaSetDari(j.template_id)}</strong>
+                        <span>{j.message}</span>
+                      </div>
+                      <div className={styles.barWrap}>
+                        <div className={styles.bar} style={{ width: `${j.progress || 0}%` }} />
+                      </div>
+                      {j.status === "error" && j.error && <p className={styles.error}>{j.error}</p>}
+                      {j.status === "done" && berkas && (
+                        <div className={styles.hasil}>
+                          <video className={styles.video} src={berkas} controls playsInline preload="metadata" />
+                          <a className={styles.unduhBtn} href={berkas} download>
+                            Unduh MP4
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

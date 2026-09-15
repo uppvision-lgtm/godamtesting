@@ -24,6 +24,10 @@ router = APIRouter(prefix="/api/video", tags=["video"])
 
 # Render memakan CPU penuh, jadi jumlah job yang boleh menunggu dibatasi.
 MAX_ACTIVE_JOBS = max(1, int(os.getenv("VIDEO_MAX_ACTIVE_JOBS", "2")))
+# Job yang mengantre tidak memakan CPU (worker mengerjakannya satu per satu),
+# jadi antreannya boleh panjang — cukup dibatasi agar tidak tanpa akhir.
+MAX_QUEUED_JOBS = max(1, int(os.getenv("VIDEO_MAX_QUEUED_JOBS", "200")))
+STATUS_BERJALAN = ("downloading", "rendering")
 MAX_ASSET_MB = float(os.getenv("VIDEO_MAX_ASSET_MB", "200"))
 # Sisi terpanjang gambar layer setelah dirapikan. Berkas desain kerap jauh
 # lebih besar dari kanvas 720x1280 — satu berkas 3375x5706 memakan 77 MB
@@ -54,6 +58,17 @@ class TemplateBody(BaseModel):
     # Kotak teks hook dalam piksel kanvas: {x, y, w, h}. None = pakai posisi
     # bawaan layer teks.
     text_box: dict[str, int] | None = None
+    badge_box: dict[str, int] | None = None
+    kategori: str = Field(default="", max_length=30)
+
+
+class BatchBody(BaseModel):
+    """Satu link dirender dengan banyak set layer sekaligus."""
+
+    url: str = Field(min_length=5, max_length=2000)
+    template_ids: list[str] = Field(min_length=1, max_length=200)
+    texts: dict[str, str] = {}
+    session_id: str = ""
 
 
 class JobBody(BaseModel):
@@ -238,7 +253,13 @@ def ambil_template(template_id: str) -> dict[str, Any]:
     aset = sorted(
         p.name for p in (ve.template_path(template_id) / "assets").glob("*") if p.is_file()
     )
-    return {**data, "assets": aset}
+    # Kotak badge yang akan dipakai kalau pengguna belum menggambarnya, supaya
+    # halaman bisa menampilkannya sebagai tebakan.
+    return {
+        **data,
+        "assets": aset,
+        "badge_box_default": ve.kotak_kategori_bawaan(data.get("text_box")),
+    }
 
 
 @router.get("/templates/{template_id}/preview.png")
@@ -339,21 +360,55 @@ def mulai_job(body: JobBody) -> dict[str, Any]:
     except ve.VideoError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
-    aktif = [j for j in vt.daftar_job(50) if j.get("status") in STATUS_AKTIF]
-    if len(aktif) >= MAX_ACTIVE_JOBS:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"Sedang ada {len(aktif)} job video berjalan (maksimal {MAX_ACTIVE_JOBS}). "
-                "Tunggu sampai selesai lalu coba lagi."
-            ),
-        )
-
+    _pastikan_antrean_muat(1)
     job_id = vt.buat_job(body.url.strip(), body.template_id, body.texts)
     vt.render_video.delay(
         job_id, body.url.strip(), body.template_id, body.texts, body.session_id.strip()
     )
     return {"job_id": job_id, "status": "queued"}
+
+
+def _pastikan_antrean_muat(tambahan: int) -> None:
+    semua = vt.daftar_job(500)
+    antre = [j for j in semua if j.get("status") == "queued"]
+    if len(antre) + tambahan > MAX_QUEUED_JOBS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Antrean penuh: {len(antre)} job menunggu (maksimal {MAX_QUEUED_JOBS}). "
+                "Tunggu sebagian selesai lalu coba lagi."
+            ),
+        )
+
+
+@router.post("/jobs/batch")
+def mulai_banyak_job(body: BatchBody) -> dict[str, Any]:
+    """Buat satu job per set layer untuk link yang sama.
+
+    Worker mengerjakannya berurutan, dan video sumbernya diunduh sekali lalu
+    dipakai ulang dari cache, jadi 100 set tidak berarti 100 unduhan.
+    """
+    ids: list[str] = []
+    for tid in body.template_ids:
+        tid = tid.strip()
+        if tid and tid not in ids:
+            ids.append(tid)
+    if not ids:
+        raise HTTPException(status_code=400, detail="Pilih minimal satu set layer.")
+    for tid in ids:
+        try:
+            ve.load_template(tid)
+        except ve.VideoError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+    _pastikan_antrean_muat(len(ids))
+
+    url = body.url.strip()
+    jobs = []
+    for tid in ids:
+        job_id = vt.buat_job(url, tid, body.texts)
+        vt.render_video.delay(job_id, url, tid, body.texts, body.session_id.strip())
+        jobs.append({"job_id": job_id, "template_id": tid, "status": "queued"})
+    return {"jobs": jobs}
 
 
 @router.get("/jobs")
