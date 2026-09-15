@@ -784,7 +784,10 @@ export default function EditVideoPage() {
           template_id: j.template_id,
         })
       );
-      setJobs((lama) => [...baru, ...lama]);
+      // Daftar diganti, bukan ditambah: yang tampil di bawah selalu persis
+      // template yang baru saja dicentang. Hasil lama tetap tersimpan di
+      // server dan Supabase, hanya tidak ikut ditampilkan lagi.
+      setJobs(baru);
     } catch (err) {
       setGalat(err instanceof Error ? err.message : "Gagal memulai.");
     } finally {
