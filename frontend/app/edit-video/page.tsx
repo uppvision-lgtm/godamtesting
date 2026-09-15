@@ -105,7 +105,6 @@ type JobStatus = {
  *  langsung terlihat tanpa perlu membuat ulang susunan layernya. */
 const NAMA_SLOT = [
   "kotak monas",
-  "kotak putih 3 detik awal",
   "boom like share",
   "bingkai teratas",
 ];
@@ -182,7 +181,7 @@ function susunanBawaan(id: string, nama: string): Susunan {
       // tidak perlu "crop" di sini.
       //
       // Panel diturunkan 170 px (seperempat tingginya) supaya monasnya duduk
-      // lebih rendah dan tidak tertutup kotak putih. Bagian bawahnya jadi
+      // lebih rendah dan apinya tidak terpotong. Bagian bawahnya jadi
       // lewat batas layar dan terpotong — itu disengaja. Bar media sosial
       // bawaan panel ikut keluar layar, jadi yang terlihat hanya bar milik
       // layer "bingkai teratas" dan tidak ada bar dobel.
@@ -191,18 +190,17 @@ function susunanBawaan(id: string, nama: string): Susunan {
       // menggeser ini tidak meregangkan gambarnya.
       { label: NAMA_SLOT[0], file: "", x: -108, y: 782, w: 936, h: 681,
         start: 0, end: 3 },
-      { label: NAMA_SLOT[1], file: "", x: 10, y: 710, w: 700, h: 283, start: 0, end: 3 },
       // loop: berkasnya berupa video pendek. Tanpa diulang, animasinya
       // membeku di frame terakhir begitu videonya habis. Pengulangan hanya
       // berlaku di badan video — outro disusun terpisah, jadi layer ini
       // tidak pernah muncul di sana.
-      { label: NAMA_SLOT[2], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
+      { label: NAMA_SLOT[1], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
       // Bingkai menempel rapat ke dasar layar: y = 1280 - 1211 = 69. Kalau
       // pinggiran transparannya tidak dipangkas, isinya berhenti sedikit
       // sebelum dasar sehingga bar merah menyisakan celah dan video sumber
       // mengintip di dua baris terbawah. Pemangkasan itu kini dilakukan saat
       // berkasnya diunggah.
-      { label: NAMA_SLOT[3], file: "", x: 0, y: 69, w: 720, h: 1211 },
+      { label: NAMA_SLOT[2], file: "", x: 0, y: 69, w: 720, h: 1211 },
     ],
     texts: [TEKS_HOOK, TEKS_SUMBER],
     assets: [],
@@ -302,8 +300,24 @@ export default function EditVideoPage() {
         // ikut ke bentuk terbaru tanpa perlu dibuat ulang dan tanpa mengunggah
         // lagi berkas layernya.
         const tetap = [TEKS_HOOK, TEKS_SUMBER];
-        const perluDisimpan = JSON.stringify(ada.texts || []) !== JSON.stringify(tetap);
+
+        // Slot layer juga disamakan dengan susunan di kode, dan hanya berkas
+        // pilihan pengguna yang dipertahankan. Set lama punya satu slot lebih
+        // banyak ("kotak putih 3 detik awal" di urutan kedua) yang kini sudah
+        // dihapus; slot itu dibuang lebih dulu supaya berkas layer sesudahnya
+        // tidak bergeser ke slot yang salah.
+        const acuan = susunanBawaan(ada.id, ada.name).overlays;
+        let lama = ada.overlays || [];
+        if (lama.length === acuan.length + 1) {
+          lama = lama.filter((_, i) => i !== 1);
+        }
+        const slot = acuan.map((a, i) => ({ ...a, file: lama[i]?.file || "" }));
+
+        const perluDisimpan =
+          JSON.stringify(ada.texts || []) !== JSON.stringify(tetap) ||
+          JSON.stringify(ada.overlays || []) !== JSON.stringify(slot);
         ada.texts = tetap;
+        ada.overlays = slot;
         setIdSet(ada.id);
         setNamaSet(ada.name);
         if (perluDisimpan) {
