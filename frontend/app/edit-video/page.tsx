@@ -436,6 +436,23 @@ export default function EditVideoPage() {
     await simpanSusunan({ ...susunan, overlays });
   }
 
+  /** Kosongkan satu slot layer. Berkasnya tetap tersimpan di set ini, hanya
+   *  tidak dipakai lagi — layer tanpa berkas dilewati saat render. */
+  async function kosongkanLayer(index: number) {
+    if (!susunan) return;
+    const overlays = [...susunan.overlays];
+    overlays[index] = { ...overlays[index], file: "" };
+    await simpanSusunan({ ...susunan, overlays });
+    setPesanLayer(`${NAMA_SLOT[index] || `Layer ${index + 1}`} dikosongkan.`);
+  }
+
+  /** Kosongkan outro. */
+  async function kosongkanOutro() {
+    if (!susunan) return;
+    await simpanSusunan({ ...susunan, outro: null });
+    setPesanLayer("Outro dikosongkan.");
+  }
+
   async function gantiOutro(file: File) {
     if (!susunan) return;
     const nama = await unggah(file);
@@ -644,6 +661,17 @@ export default function EditVideoPage() {
                     value={ov.file ? ov.file.replace("assets/", "") : "(belum ada berkas)"}
                   />
                 </label>
+                {ov.file && (
+                  <button
+                    type="button"
+                    className={styles.kosongkanBtn}
+                    title={`Kosongkan ${NAMA_SLOT[i] || `layer ${i + 1}`}`}
+                    aria-label={`Kosongkan ${NAMA_SLOT[i] || `layer ${i + 1}`}`}
+                    onClick={() => void kosongkanLayer(i)}
+                  >
+                    ×
+                  </button>
+                )}
                 <label className={styles.uploadBtn}>
                   {ov.file ? "Ganti" : "Unggah"}
                   <input
@@ -667,6 +695,17 @@ export default function EditVideoPage() {
                   value={susunan?.outro ? susunan.outro.replace("assets/", "") : "(belum ada berkas)"}
                 />
               </label>
+              {susunan?.outro && (
+                <button
+                  type="button"
+                  className={styles.kosongkanBtn}
+                  title="Kosongkan outro"
+                  aria-label="Kosongkan outro"
+                  onClick={() => void kosongkanOutro()}
+                >
+                  ×
+                </button>
+              )}
               <label className={styles.uploadBtn}>
                 {susunan?.outro ? "Ganti" : "Unggah"}
                 <input

@@ -502,3 +502,27 @@
   font-size: 0.85em;
   opacity: 0.8;
 }
+
+/* ---- Tombol kosongkan slot layer ---- */
+.kosongkanBtn {
+  flex: 0 0 auto;
+  width: 34px;
+  align-self: flex-end;
+  height: 38px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 1.2em;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.kosongkanBtn:hover {
+  border-color: #d32d27;
+  color: #d32d27;
+  opacity: 1;
+}
