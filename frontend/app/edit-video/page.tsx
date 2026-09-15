@@ -436,6 +436,30 @@ export default function EditVideoPage() {
     }
   }
 
+  /** Salin set yang sedang dibuka jadi set baru dengan nama lain. */
+  async function duplikatSet() {
+    if (!susunan) return;
+    const usul = `${namaSet} (salinan)`;
+    const nama = (window.prompt("Nama set layer salinan:", usul) || "").trim();
+    if (!nama) return;
+    setPesanLayer("Menyalin set layer ...");
+    try {
+      const res = await fetch(`/api/video/templates/${idSet}/duplicate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nama }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Gagal menyalin set layer.");
+      await muatDaftar();
+      // Langsung buka salinannya supaya bisa disunting.
+      await muatSet(data.id, data.name);
+      setPesanLayer(`Set layer "${nama}" dibuat dari salinan "${namaSet}".`);
+    } catch (err) {
+      setPesanLayer(err instanceof Error ? err.message : "Gagal menyalin set layer.");
+    }
+  }
+
   /** Hapus set layer yang sedang dibuka beserta berkasnya. */
   async function hapusSet() {
     if (!susunan) return;
@@ -833,6 +857,15 @@ export default function EditVideoPage() {
               </label>
               <button type="button" className={styles.ghostBtn} onClick={buatSetBaru}>
                 + Baru
+              </button>
+              <button
+                type="button"
+                className={styles.ghostBtn}
+                onClick={duplikatSet}
+                disabled={!susunan}
+                title="Salin set ini dengan nama baru"
+              >
+                Duplikat
               </button>
               <button
                 type="button"

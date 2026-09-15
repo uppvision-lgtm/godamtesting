@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -29,6 +30,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import storage
+
+logger = logging.getLogger(__name__)
 
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", ".media"))
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
@@ -204,6 +207,53 @@ def save_template(data: dict[str, Any], template_id: str | None = None) -> dict[
         except storage.StorageError as error:
             logger.warning("Template tersimpan lokal tapi gagal ke Supabase: %s", error)
     return isi
+
+
+def duplicate_template(sumber_id: str, nama_baru: str, id_baru: str | None = None) -> dict[str, Any]:
+    """Salin satu set layer beserta seluruh berkas asetnya.
+
+    Berkasnya benar-benar disalin, bukan dipakai bersama, supaya mengganti
+    atau menghapus layer di salinan tidak ikut mengubah set aslinya.
+
+    Aset yang hanya ada di Supabase (mis. di container yang baru dijalankan)
+    ditarik dulu, jadi hasil salinan tetap lengkap.
+    """
+    asal = load_template(sumber_id)
+    id_baru = _aman(id_baru or uuid.uuid4().hex[:12])
+    if id_baru == _aman(sumber_id):
+        raise VideoError("Set layer salinan harus memakai id yang berbeda")
+
+    folder_asal = template_path(sumber_id)
+    folder_baru = template_path(id_baru)
+    (folder_baru / "assets").mkdir(parents=True, exist_ok=True)
+
+    # Pastikan aset yang dipakai set asal ada di disk sebelum disalin.
+    dipakai = [o.get("file") for o in (asal.get("overlays") or [])]
+    dipakai += [asal.get("intro"), asal.get("outro")]
+    for nama in dipakai:
+        if nama:
+            try:
+                _aset(asal, nama)
+            except VideoError as error:
+                logger.warning("Aset %s dilewati saat menyalin: %s", nama, error)
+
+    disalin = 0
+    for berkas in sorted((folder_asal / "assets").glob("*")):
+        if not berkas.is_file():
+            continue
+        tujuan = folder_baru / "assets" / berkas.name
+        shutil.copy2(berkas, tujuan)
+        disalin += 1
+        if storage.enabled():
+            try:
+                storage.upload(f"templates/{id_baru}/assets/{berkas.name}", tujuan)
+            except storage.StorageError as error:
+                logger.warning("Aset %s gagal disalin ke Supabase: %s", berkas.name, error)
+
+    isi = {**asal, "id": id_baru, "name": nama_baru.strip() or f"{asal.get('name', 'Set')} (salinan)"}
+    hasil = save_template(isi, id_baru)
+    logger.info("Set %s disalin ke %s beserta %d berkas", sumber_id, id_baru, disalin)
+    return hasil
 
 
 def delete_template(template_id: str) -> None:

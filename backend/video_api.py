@@ -62,6 +62,12 @@ class TemplateBody(BaseModel):
     kategori: str = Field(default="", max_length=30)
 
 
+class DuplikatBody(BaseModel):
+    """Nama untuk salinan set layer."""
+
+    name: str = Field(min_length=1, max_length=100)
+
+
 class BatchBody(BaseModel):
     """Satu link dirender dengan banyak set layer sekaligus."""
 
@@ -289,6 +295,19 @@ def deteksi_kotak(template_id: str) -> dict[str, Any]:
     if kotak is None:
         raise HTTPException(status_code=404, detail="Tidak menemukan bidang polos yang cukup luas untuk kotak teks.")
     return {"text_box": kotak}
+
+
+@router.post("/templates/{template_id}/duplicate")
+def duplikat_template(template_id: str, body: DuplikatBody) -> dict[str, Any]:
+    """Buat set layer baru dengan isi yang sama, hanya namanya berbeda."""
+    try:
+        hasil = ve.duplicate_template(template_id, body.name)
+    except ve.VideoError as error:
+        raise _tangani(error)
+    aset = sorted(
+        p.name for p in (ve.template_path(hasil["id"]) / "assets").glob("*") if p.is_file()
+    )
+    return {**hasil, "assets": aset, "badge_box_default": ve.kotak_kategori_bawaan(hasil.get("text_box"))}
 
 
 @router.delete("/templates/{template_id}")
