@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import storage
 import video_edit as ve
@@ -59,8 +59,20 @@ class TemplateBody(BaseModel):
     # bawaan layer teks.
     text_box: dict[str, int] | None = None
     badge_box: dict[str, int] | None = None
-    kategori: str = Field(default="", max_length=30)
-    teks_warna: str = Field(default="white", pattern="^(black|white)$")
+    # Keduanya menerima null: set yang dibuat sebelum field ini ada menyimpan
+    # nilai kosong, dan membacanya lalu menyimpannya kembali harus tetap bisa.
+    kategori: str | None = Field(default="", max_length=30)
+    teks_warna: str | None = "white"
+
+    @field_validator("kategori")
+    @classmethod
+    def _kategori_bersih(cls, v: str | None) -> str:
+        return " ".join(str(v or "").split())
+
+    @field_validator("teks_warna")
+    @classmethod
+    def _warna_sah(cls, v: str | None) -> str:
+        return v if v in ("black", "white") else "white"
 
 
 class DuplikatBody(BaseModel):

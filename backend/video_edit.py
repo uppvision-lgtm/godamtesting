@@ -201,11 +201,56 @@ def list_templates() -> list[dict[str, Any]]:
     return hasil
 
 
+def _nama_set_terpakai(nama: str, kecuali_id: str = "") -> str | None:
+    """Kembalikan id set lain yang sudah memakai nama ini, kalau ada.
+
+    Perbandingannya mengabaikan besar-kecil huruf dan spasi berlebih, supaya
+    "TV Rakyat" dan "tv  rakyat" tidak dianggap dua nama berbeda. Membaca
+    berkas lokal langsung, bukan lewat list_templates(), karena fungsi itu
+    ikut menghubungi Supabase — terlalu berat untuk dijalankan tiap menyimpan.
+    """
+    target = " ".join(str(nama or "").split()).casefold()
+    if not target:
+        return None
+    kecuali = _aman(kecuali_id) if kecuali_id else ""
+    for folder in templates_dir().iterdir():
+        if not folder.is_dir() or folder.name == kecuali:
+            continue
+        berkas = folder / "template.json"
+        if not berkas.is_file():
+            continue
+        try:
+            lain = json.loads(berkas.read_text(encoding="utf-8")).get("name")
+        except (OSError, json.JSONDecodeError):
+            continue
+        if " ".join(str(lain or "").split()).casefold() == target:
+            return folder.name
+    return None
+
+
+def nama_set_unik(nama: str, kecuali_id: str = "") -> str:
+    """Tambahkan nomor di belakang nama sampai tidak ada yang memakainya."""
+    dasar = " ".join(str(nama or "").split()) or "Set layer"
+    calon = dasar
+    urut = 2
+    while _nama_set_terpakai(calon, kecuali_id):
+        calon = f"{dasar} {urut}"
+        urut += 1
+    return calon
+
+
 def save_template(data: dict[str, Any], template_id: str | None = None) -> dict[str, Any]:
     template_id = _aman(template_id or data.get("id") or uuid.uuid4().hex[:12])
     folder = template_path(template_id)
     (folder / "assets").mkdir(parents=True, exist_ok=True)
-    isi = {**TEMPLATE_CONTOH, **data, "id": template_id}
+    nama = " ".join(str(data.get("name") or "").split())
+    bentrok = _nama_set_terpakai(nama, template_id)
+    if bentrok:
+        raise VideoError(
+            f"Nama set layer \"{nama}\" sudah dipakai. Pilih nama lain supaya "
+            "tidak tertukar di daftar."
+        )
+    isi = {**TEMPLATE_CONTOH, **data, "id": template_id, "name": nama}
     (folder / "template.json").write_text(
         json.dumps(isi, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -262,7 +307,10 @@ def duplicate_template(sumber_id: str, nama_baru: str, id_baru: str | None = Non
             except storage.StorageError as error:
                 logger.warning("Aset %s gagal disalin ke Supabase: %s", berkas.name, error)
 
-    isi = {**asal, "id": id_baru, "name": nama_baru.strip() or f"{asal.get('name', 'Set')} (salinan)"}
+    # Nama salinan diberi nomor otomatis kalau sudah ada yang memakainya,
+    # jadi menyalin berkali-kali tidak menghasilkan nama kembar.
+    diminta = nama_baru.strip() or f"{asal.get('name', 'Set')} (salinan)"
+    isi = {**asal, "id": id_baru, "name": nama_set_unik(diminta, id_baru)}
     hasil = save_template(isi, id_baru)
     logger.info("Set %s disalin ke %s beserta %d berkas", sumber_id, id_baru, disalin)
     return hasil

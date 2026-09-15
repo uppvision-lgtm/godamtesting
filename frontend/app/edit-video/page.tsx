@@ -366,7 +366,15 @@ export default function EditVideoPage() {
         setKategori(ada.kategori || "");
         setTeksWarna(ada.teks_warna === "black" ? "black" : "white");
         if (perluDisimpan) {
-          await simpanSusunan(ada, ada.id);
+          // Penyelarasan ini berjalan sendiri saat set dibuka. Kalau gagal
+          // (mis. namanya kembar dengan set lain), setnya tetap ditampilkan
+          // supaya masih bisa diperbaiki — hanya penyelarasannya yang tertunda.
+          try {
+            await simpanSusunan(ada, ada.id);
+          } catch (err) {
+            setSusunan(ada);
+            setPesanLayer(err instanceof Error ? err.message : "Set layer belum tersimpan.");
+          }
         } else {
           setSusunan(ada);
         }
@@ -414,7 +422,7 @@ export default function EditVideoPage() {
   async function simpanSusunan(baru: Susunan, id?: string) {
     const sasaran = id || idSet;
     setSusunan(baru);
-    await fetch(`/api/video/templates?template_id=${sasaran}`, {
+    const res = await fetch(`/api/video/templates?template_id=${sasaran}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -432,6 +440,11 @@ export default function EditVideoPage() {
         teks_warna: baru.teks_warna ?? "white",
       }),
     });
+    if (!res.ok) {
+      // Pesan dari server dipakai apa adanya — mis. saat namanya bentrok.
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || "Gagal menyimpan set layer.");
+    }
     // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
     setVersiPratinjau((v) => v + 1);
     // Tebakan kotak badge dihitung server dari kotak teks; ambil yang terbaru.
@@ -619,8 +632,11 @@ export default function EditVideoPage() {
       await simpanSusunan({ ...susunan, name: nama });
       await muatDaftar();
       setPesanLayer(`Set layer "${nama}" tersimpan.`);
-    } catch {
-      setPesanLayer("Gagal menyimpan set layer.");
+    } catch (err) {
+      // Nama yang sudah dipakai set lain ditolak server; kembalikan isian ke
+      // nama tersimpan supaya tidak tampak seolah perubahannya berhasil.
+      setNamaSet(susunan.name);
+      setPesanLayer(err instanceof Error ? err.message : "Gagal menyimpan set layer.");
     } finally {
       setMenyimpanNama(false);
     }
