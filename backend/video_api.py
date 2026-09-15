@@ -60,6 +60,7 @@ class TemplateBody(BaseModel):
     text_box: dict[str, int] | None = None
     badge_box: dict[str, int] | None = None
     kategori: str = Field(default="", max_length=30)
+    teks_warna: str = Field(default="black", pattern="^(black|white)$")
 
 
 class DuplikatBody(BaseModel):
@@ -460,7 +461,33 @@ def berkas_job(job_id: str) -> FileResponse:
     return FileResponse(berkas, media_type="video/mp4", filename=f"{job_id}.mp4")
 
 
+class BersihkanBody(BaseModel):
+    """Daftar job yang hasil videonya sudah tidak dipakai."""
+
+    job_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
 @router.delete("/jobs/{job_id}")
 def hapus_job(job_id: str) -> dict[str, bool]:
+    ve.hapus_hasil_job(job_id)
     shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
     return {"ok": True}
+
+
+@router.post("/jobs/cleanup")
+def bersihkan_job(body: BersihkanBody) -> dict[str, int]:
+    """Buang hasil render yang sudah tidak ditampilkan lagi.
+
+    Dipakai halaman saat memulai render baru atau saat ditinggalkan. Memakai
+    POST, bukan DELETE, supaya bisa dikirim lewat sendBeacon ketika tab
+    ditutup — permintaan biasa sering keburu dibatalkan peramban.
+    """
+    dihapus = 0
+    for job_id in body.job_ids[:500]:
+        job_id = str(job_id).strip()
+        if not job_id:
+            continue
+        ve.hapus_hasil_job(job_id)
+        shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
+        dihapus += 1
+    return {"dihapus": dihapus}

@@ -66,3 +66,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
 
 export const GET = proxy;
 export const POST = proxy;
+// Tanpa ini, permintaan DELETE ditolak 405 sebelum sampai ke backend —
+// itulah sebabnya tombol hapus set layer selalu gagal.
+export const DELETE = proxy;
+export const PUT = proxy;
+export const PATCH = proxy;

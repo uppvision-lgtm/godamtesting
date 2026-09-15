@@ -80,6 +80,7 @@ type Susunan = {
   badge_box?: KotakTeks | null;
   badge_box_default?: KotakTeks | null;
   kategori?: string;
+  teks_warna?: string;
   assets?: string[];
 };
 
@@ -162,6 +163,10 @@ const TEKS_KATEGORI: TextLayer = {
   style: "kategori",
   source: "kategori",
   color: "white",
+  // Ikut jendela waktu kotak bawah: badge menempel pada kotak itu, jadi
+  // kalau dibiarkan sampai akhir ia melayang setelah kotaknya hilang.
+  start: 0,
+  end: 3,
 };
 
 /** Layer teks kredit pemilik video. */
@@ -270,6 +275,7 @@ export default function EditVideoPage() {
   const [versiPratinjau, setVersiPratinjau] = useState(0);
   const [mendeteksi, setMendeteksi] = useState(false);
   const [kategori, setKategori] = useState("");
+  const [teksWarna, setTeksWarna] = useState<"black" | "white">("black");
   const [badgeBox, setBadgeBox] = useState<KotakTeks | null>(null);
   const [badgeBoxBawaan, setBadgeBoxBawaan] = useState<KotakTeks | null>(null);
   // Kotak mana yang sedang digambar di pratinjau.
@@ -357,6 +363,7 @@ export default function EditVideoPage() {
         setBadgeBox(ada.badge_box || null);
         setBadgeBoxBawaan(ada.badge_box_default || null);
         setKategori(ada.kategori || "");
+        setTeksWarna(ada.teks_warna === "white" ? "white" : "black");
         if (perluDisimpan) {
           await simpanSusunan(ada, ada.id);
         } else {
@@ -382,6 +389,7 @@ export default function EditVideoPage() {
         setBadgeBox(null);
         setBadgeBoxBawaan(null);
         setKategori("");
+        setTeksWarna("black");
         await muatDaftar();
       }
     } catch {
@@ -420,6 +428,7 @@ export default function EditVideoPage() {
         text_box: baru.text_box ?? null,
         badge_box: baru.badge_box ?? null,
         kategori: baru.kategori ?? "",
+        teks_warna: baru.teks_warna ?? "black",
       }),
     });
     // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
@@ -433,6 +442,22 @@ export default function EditVideoPage() {
       }
     } catch {
       // tebakan lama tetap dipakai
+    }
+  }
+
+  /** Buang hasil render yang tidak ditampilkan lagi, supaya tidak menumpuk
+   *  di penyimpanan. Dipakai saat memulai render baru dan saat halaman
+   *  ditinggalkan. */
+  async function bersihkanHasil(ids: string[]) {
+    if (ids.length === 0) return;
+    try {
+      await fetch("/api/video/jobs/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_ids: ids }),
+      });
+    } catch {
+      // kalau gagal, pembersihan berkala di server yang menanganinya
     }
   }
 
@@ -485,6 +510,13 @@ export default function EditVideoPage() {
     setKategori(bersih);
     await simpanSusunan({ ...susunan, kategori: bersih });
     setPesanLayer(bersih ? `Kategori "${bersih}" tersimpan.` : "Kategori dikosongkan; badge tidak ditulis.");
+  }
+
+  async function simpanWarnaTeks(warna: "black" | "white") {
+    if (!susunan) return;
+    setTeksWarna(warna);
+    await simpanSusunan({ ...susunan, teks_warna: warna });
+    setPesanLayer(`Warna tulisan diubah jadi ${warna === "black" ? "hitam" : "putih"}.`);
   }
 
   async function simpanBadge(kotak: KotakTeks | null) {
@@ -766,6 +798,31 @@ export default function EditVideoPage() {
     return () => window.clearInterval(timer);
   }, [kunciAktif]);
 
+  // Saat tab ditutup atau berpindah halaman, hasil yang masih tampil ikut
+  // dibuang. sendBeacon dipakai karena permintaan biasa sering dibatalkan
+  // peramban begitu halaman ditinggalkan.
+  const jobsRef = useRef<JobStatus[]>([]);
+  jobsRef.current = jobs;
+  useEffect(() => {
+    const saatKeluar = () => {
+      const ids = jobsRef.current.map((j) => j.job_id);
+      if (ids.length === 0) return;
+      try {
+        navigator.sendBeacon(
+          "/api/video/jobs/cleanup",
+          new Blob([JSON.stringify({ job_ids: ids })], { type: "application/json" })
+        );
+      } catch {
+        // tidak apa-apa; pembersihan berkala di server tetap jalan
+      }
+    };
+    window.addEventListener("pagehide", saatKeluar);
+    return () => {
+      window.removeEventListener("pagehide", saatKeluar);
+      saatKeluar();
+    };
+  }, []);
+
   function namaSetDari(id?: string): string {
     return daftarSet.find((d) => d.id === id)?.name || id || "";
   }
@@ -808,9 +865,9 @@ export default function EditVideoPage() {
           template_id: j.template_id,
         })
       );
-      // Daftar diganti, bukan ditambah: yang tampil di bawah selalu persis
-      // template yang baru saja dicentang. Hasil lama tetap tersimpan di
-      // server dan Supabase, hanya tidak ikut ditampilkan lagi.
+      // Hasil dari klik sebelumnya tidak ditampilkan lagi, jadi videonya
+      // langsung dibuang dari penyimpanan supaya tidak menumpuk.
+      void bersihkanHasil(jobs.map((j) => j.job_id));
       setJobs(baru);
     } catch (err) {
       setGalat(err instanceof Error ? err.message : "Gagal memulai.");
@@ -988,7 +1045,34 @@ export default function EditVideoPage() {
             </div>
             <p className={styles.hint}>
               Ditulis kapital di dalam kotak badge — huruf besarnya menyesuaikan kotak.
-              Kosongkan kalau template ini tidak memakai badge.
+              Muncul bersamaan dengan kotak bawah, lalu ikut hilang. Kosongkan kalau
+              template ini tidak memakai badge.
+            </p>
+
+            <div className={styles.row}>
+              <label>
+                <span>Warna tulisan berita</span>
+                <div className={styles.pilihMode}>
+                  <button
+                    type="button"
+                    className={teksWarna === "black" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => void simpanWarnaTeks("black")}
+                  >
+                    Hitam
+                  </button>
+                  <button
+                    type="button"
+                    className={teksWarna === "white" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => void simpanWarnaTeks("white")}
+                  >
+                    Putih
+                  </button>
+                </div>
+              </label>
+            </div>
+            <p className={styles.hint}>
+              Pilih hitam untuk kotak terang, putih untuk kotak gelap. Kata pembukanya
+              tetap merah karena terbaca di keduanya.
             </p>
 
             {/* ---- KOTAK TEKS ---- */}

@@ -22,6 +22,7 @@ from video_edit import (
     MEDIA_DIR,
     VideoError,
     download_source,
+    hapus_hasil_job,
     jobs_dir,
     load_template,
     render,
@@ -97,6 +98,9 @@ def bersihkan_job_lama() -> int:
         except VideoError:
             dibuat = folder.stat().st_mtime
         if dibuat < batas:
+            # Salinan di Supabase ikut dibuang, kalau tidak hasil render lama
+            # menumpuk di sana selamanya walau folder lokalnya sudah hilang.
+            hapus_hasil_job(folder.name)
             shutil.rmtree(folder, ignore_errors=True)
             dihapus += 1
     return dihapus

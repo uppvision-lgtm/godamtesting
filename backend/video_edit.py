@@ -48,6 +48,8 @@ MAX_SOURCE_SECONDS = float(os.getenv("VIDEO_MAX_SOURCE_SECONDS", "300"))
 RENDER_TIMEOUT_SECONDS = float(os.getenv("VIDEO_RENDER_TIMEOUT", "1800"))
 DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "600"))
 PREVIEW_TIMEOUT_SECONDS = float(os.getenv("VIDEO_PREVIEW_TIMEOUT", "45"))
+# Jeda minimal antar penyelarasan daftar set layer dengan Supabase.
+SINKRON_JEDA_DETIK = float(os.getenv("VIDEO_TEMPLATE_SYNC_SECONDS", "20"))
 # Video sumber disimpan sementara per link, supaya merender satu link dengan
 # banyak template tidak mengunduhnya berulang kali (Instagram cepat membatasi
 # pengunduh yang terlalu sering).
@@ -91,6 +93,8 @@ TEMPLATE_CONTOH: dict[str, Any] = {
     # rata kiri.
     "badge_box": None,
     "kategori": "",
+    # Warna tulisan isi hook: "black" untuk kotak terang, "white" untuk gelap.
+    "teks_warna": "black",
 }
 
 
@@ -137,14 +141,23 @@ def _tarik_dari_storage(path_relatif: str, tujuan: Path) -> bool:
         return False
 
 
-def sinkron_template_dari_storage() -> int:
-    """Tarik template dari Supabase kalau disk lokal kosong.
+_sinkron_terakhir = 0.0
 
-    Disk container bersifat sementara: setelah deploy ulang, folder template
-    lenyap sementara isinya masih aman di Supabase.
+
+def sinkron_template_dari_storage(paksa: bool = False) -> int:
+    """Tarik set layer yang ada di Supabase tapi belum ada di disk ini.
+
+    Dijalankan tiap kali daftar set dibuka, bukan hanya saat disk kosong:
+    set yang dibuat dari perangkat atau container lain tersimpan di Supabase,
+    dan tanpa ini tidak pernah muncul di sini. Diberi jeda supaya membuka
+    daftar berkali-kali tidak membanjiri Supabase dengan permintaan.
     """
+    global _sinkron_terakhir
     if not storage.enabled():
         return 0
+    if not paksa and time.time() - _sinkron_terakhir < SINKRON_JEDA_DETIK:
+        return 0
+    _sinkron_terakhir = time.time()
     ditarik = 0
     try:
         for item in storage.list_prefix("templates"):
@@ -176,8 +189,7 @@ def load_template(template_id: str) -> dict[str, Any]:
 
 
 def list_templates() -> list[dict[str, Any]]:
-    if not any(templates_dir().iterdir()):
-        sinkron_template_dari_storage()
+    sinkron_template_dari_storage(paksa=not any(templates_dir().iterdir()))
     hasil = []
     for folder in sorted(templates_dir().iterdir()):
         if not folder.is_dir():
@@ -254,6 +266,25 @@ def duplicate_template(sumber_id: str, nama_baru: str, id_baru: str | None = Non
     hasil = save_template(isi, id_baru)
     logger.info("Set %s disalin ke %s beserta %d berkas", sumber_id, id_baru, disalin)
     return hasil
+
+
+def hapus_hasil_job(job_id: str) -> None:
+    """Buang video hasil render milik satu job dari Supabase.
+
+    Hasil render menumpuk cepat — satu link yang dirender ke banyak template
+    menghasilkan sebanyak itu pula berkas. Yang disimpan permanen cukup aset
+    layernya; videonya dibuang setelah tidak ditampilkan lagi.
+    """
+    if not storage.enabled():
+        return
+    awalan = f"jobs/{_aman(job_id)}"
+    try:
+        for item in storage.list_prefix(awalan, limit=50):
+            nama = str(item.get("name") or "")
+            if nama:
+                storage.delete(f"{awalan}/{nama}")
+    except storage.StorageError as error:
+        logger.warning("Hasil job %s gagal dihapus dari Supabase: %s", job_id, error)
 
 
 def delete_template(template_id: str) -> None:
@@ -1036,8 +1067,15 @@ def _bangun_perintah(
         if not isi:
             continue
         gaya = str(teks.get("style") or "").lower()
-        if gaya == "berita" and kotak_teks and not teks.get("box"):
-            teks = {**teks, "box": kotak_teks}
+        if gaya == "berita":
+            # Warna isi mengikuti set layer supaya cocok dengan kotaknya:
+            # hitam di kotak terang, putih di kotak gelap. Kata pembuka tetap
+            # merah karena kontras di keduanya.
+            warna = str(template.get("teks_warna") or "").strip().lower()
+            if warna in ("black", "white"):
+                teks = {**teks, "color": warna}
+            if kotak_teks and not teks.get("box"):
+                teks = {**teks, "box": kotak_teks}
         if gaya == "kategori" and not teks.get("box"):
             if not kotak_badge:
                 continue  # belum ada tempatnya
