@@ -75,6 +75,9 @@ TEMPLATE_CONTOH: dict[str, Any] = {
     "outro": None,
     "overlays": [],
     "texts": [],
+    # Kotak tempat teks hook diletakkan, dalam piksel kanvas: {x, y, w, h}.
+    # Diisi lewat deteksi otomatis atau digambar pengguna di halaman.
+    "text_box": None,
 }
 
 
@@ -321,15 +324,46 @@ def _gambar_teks_berita(
     ukuran_awal = int(teks.get("size") or 38)
     ukuran_min = max(8, int(teks.get("min_size") or 22))
     maks_baris = max(1, int(teks.get("max_lines") or 4))
-    kiri = int(teks.get("x") or 0)
-    batas = int(teks.get("width") or (lebar - 2 * kiri))
-    batas = max(50, min(batas, lebar - kiri))
+    try:
+        kelipatan = float(teks.get("line_height") or 1.15)
+    except (TypeError, ValueError):
+        kelipatan = 1.15
 
-    # Susutkan font sampai paragrafnya muat.
+    # Kalau template punya kotak teks, geometri diambil dari kotak itu: teks
+    # mengisi lebar kotak dikurangi tepi, dan tingginya dibatasi tinggi kotak.
+    # Dengan begitu satu layer teks yang sama cocok untuk template apa pun,
+    # cukup dengan menentukan kotaknya.
+    kotak = teks.get("box") if isinstance(teks.get("box"), dict) else None
+    tinggi_maks: int | None = None
+    if kotak:
+        try:
+            kx, ky = int(kotak["x"]), int(kotak["y"])
+            kw, kh = int(kotak["w"]), int(kotak["h"])
+        except (KeyError, TypeError, ValueError):
+            kotak = None
+    if kotak:
+        tepi = max(12, int(kw * 0.05))
+        kiri = kx + tepi
+        batas = max(50, kw - 2 * tepi)
+        tinggi_maks = max(20, kh - 2 * tepi)
+    else:
+        kiri = int(teks.get("x") or 0)
+        batas = int(teks.get("width") or (lebar - 2 * kiri))
+        batas = max(50, min(batas, lebar - kiri))
+
+    def tinggi_blok(uk: int, jumlah_baris: int) -> int:
+        return int(round(uk * kelipatan)) * jumlah_baris
+
+    # Susutkan font sampai paragrafnya muat, baik jumlah barisnya maupun —
+    # kalau ada kotak — tinggi keseluruhannya.
     ukuran = ukuran_awal
     font = ImageFont.truetype(jalur_font, ukuran)
     baris = _bungkus_kata(gambar, kata, font, batas)
-    while len(baris) > maks_baris and ukuran > ukuran_min:
+    def belum_muat() -> bool:
+        if len(baris) > maks_baris:
+            return True
+        return tinggi_maks is not None and tinggi_blok(ukuran, len(baris)) > tinggi_maks
+    while belum_muat() and ukuran > ukuran_min:
         ukuran -= 1
         font = ImageFont.truetype(jalur_font, ukuran)
         baris = _bungkus_kata(gambar, kata, font, batas)
@@ -340,12 +374,14 @@ def _gambar_teks_berita(
         )
         baris = baris[:maks_baris]
 
-    try:
-        kelipatan = float(teks.get("line_height") or 1.15)
-    except (TypeError, ValueError):
-        kelipatan = 1.15
     tinggi_baris = int(round(ukuran * kelipatan))
-    atas = int(teks["y"]) if teks.get("y") is not None else (tinggi - tinggi_baris * len(baris)) // 2
+    if kotak:
+        # Blok teks diletakkan di tengah kotak secara vertikal.
+        atas = ky + max(0, (kh - tinggi_baris * len(baris)) // 2)
+    elif teks.get("y") is not None:
+        atas = int(teks["y"])
+    else:
+        atas = (tinggi - tinggi_baris * len(baris)) // 2
 
     warna_isi = _warna(teks.get("color"), "black")
     warna_pembuka = _warna(teks.get("kicker_color"), "#d32d27")
@@ -632,6 +668,136 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
 
 
 # ============================================================
+#  PRATINJAU STATIS & DETEKSI KOTAK TEKS
+# ============================================================
+
+
+def _angka_posisi(nilai: Any, ukuran_kanvas: int, ukuran_layer: int) -> int:
+    """Versi PIL dari rumus posisi overlay ffmpeg (untuk pratinjau)."""
+    if nilai is None:
+        return (ukuran_kanvas - ukuran_layer) // 2
+    if isinstance(nilai, str):
+        t = nilai.strip()
+        if t in ("main_w-w", "main_h-h", "W-w", "H-h"):
+            return ukuran_kanvas - ukuran_layer
+        if t in ("(main_w-w)/2", "(main_h-h)/2", "(W-w)/2", "(H-h)/2"):
+            return (ukuran_kanvas - ukuran_layer) // 2
+        try:
+            return int(float(t))
+        except ValueError:
+            return 0
+    return int(nilai)
+
+
+def komposit_statis(template: dict[str, Any]) -> Any:
+    """Susun layer gambar template di atas kanvas gelap, tanpa video.
+
+    Dipakai halaman untuk menggambar kotak teks di atas tampilan sebenarnya,
+    dan oleh deteksi otomatis. Layer video dilewati.
+    """
+    from PIL import Image
+
+    lebar = int(template.get("width") or 1080)
+    tinggi = int(template.get("height") or 1920)
+    kanvas = Image.new("RGBA", (lebar, tinggi), (24, 24, 24, 255))
+    for overlay in template.get("overlays") or []:
+        nama = str(overlay.get("file") or "")
+        if Path(nama).suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+            continue
+        try:
+            berkas = _aset(template, nama)
+        except VideoError:
+            continue
+        if berkas is None:
+            continue
+        with Image.open(berkas) as sumber:
+            im = sumber.convert("RGBA")
+        w, h = overlay.get("w"), overlay.get("h")
+        if w or h:
+            tw = int(w) if w else max(1, round(im.width * int(h) / im.height))
+            th = int(h) if h else max(1, round(im.height * int(w) / im.width))
+            im = im.resize((tw, th), Image.LANCZOS)
+        x = _angka_posisi(overlay.get("x"), lebar, im.width)
+        y = _angka_posisi(overlay.get("y"), tinggi, im.height)
+        # Potong bagian yang keluar kanvas; alpha_composite menolak itu.
+        kiri, atas = max(0, -x), max(0, -y)
+        kanan = min(im.width, lebar - x)
+        bawah = min(im.height, tinggi - y)
+        if kanan <= kiri or bawah <= atas:
+            continue
+        potongan = im.crop((kiri, atas, kanan, bawah))
+        kanvas.alpha_composite(potongan, (x + kiri, y + atas))
+    return kanvas
+
+
+def deteksi_kotak_teks(kanvas: Any) -> dict[str, int] | None:
+    """Tebak kotak teks: daerah terang yang rata dan paling luas di kanvas.
+
+    Kotak lower-third pada umumnya berupa bidang polos berwarna terang (putih,
+    biru muda) yang jauh lebih luas dari elemen lain. Gambar diperkecil dulu
+    supaya pencarian komponen terhubung cepat, lalu hasilnya dikembalikan ke
+    ukuran kanvas dan disisipkan sedikit ke dalam.
+    """
+    from PIL import Image, ImageFilter
+
+    faktor = 4
+    kecil = kanvas.convert("RGB").resize(
+        (max(1, kanvas.width // faktor), max(1, kanvas.height // faktor)), Image.BOX
+    )
+    terang = kecil.convert("L")
+    tepi = terang.filter(ImageFilter.FIND_EDGES)
+    w, h = kecil.size
+    pt, pe = terang.load(), tepi.load()
+    warna = kecil.load()
+
+    def kandidat(x: int, y: int) -> bool:
+        r, g, b = warna[x, y]
+        # Terang dan cukup polos (bukan tepian). Kejenuhan warna diberi
+        # kelonggaran agar kotak berwarna muda dengan gradasi (mis. biru muda)
+        # tetap terhitung utuh, sementara bidang latar yang pekat tersaring
+        # oleh ambang terangnya.
+        return pt[x, y] > 140 and pe[x, y] < 16 and (max(r, g, b) - min(r, g, b)) < 160
+
+    dikunjungi = bytearray(w * h)
+    terbaik: tuple[int, tuple[int, int, int, int]] | None = None
+    for y0 in range(h):
+        for x0 in range(w):
+            if dikunjungi[y0 * w + x0] or not kandidat(x0, y0):
+                continue
+            # BFS komponen terhubung
+            antrean = [(x0, y0)]
+            dikunjungi[y0 * w + x0] = 1
+            jumlah = 0
+            minx = maxx = x0
+            miny = maxy = y0
+            while antrean:
+                x, y = antrean.pop()
+                jumlah += 1
+                minx, maxx = min(minx, x), max(maxx, x)
+                miny, maxy = min(miny, y), max(maxy, y)
+                for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if 0 <= nx < w and 0 <= ny < h and not dikunjungi[ny * w + nx] and kandidat(nx, ny):
+                        dikunjungi[ny * w + nx] = 1
+                        antrean.append((nx, ny))
+            luas_kotak = (maxx - minx + 1) * (maxy - miny + 1)
+            # Harus cukup besar dan cukup "persegi" (bukan garis tipis)
+            if jumlah < (w * h) * 0.01 or jumlah / luas_kotak < 0.55:
+                continue
+            if (maxy - miny + 1) < 6 or (maxx - minx + 1) < 12:
+                continue
+            if terbaik is None or jumlah > terbaik[0]:
+                terbaik = (jumlah, (minx, miny, maxx, maxy))
+    if terbaik is None:
+        return None
+    minx, miny, maxx, maxy = terbaik[1]
+    x, y = minx * faktor, miny * faktor
+    bw, bh = (maxx - minx + 1) * faktor, (maxy - miny + 1) * faktor
+    # sisipkan sedikit ke dalam supaya tidak menempel tepi kotak
+    sisip = max(4, int(min(bw, bh) * 0.03))
+    return {"x": x + sisip, "y": y + sisip, "w": max(20, bw - 2 * sisip), "h": max(20, bh - 2 * sisip)}
+
+
+# ============================================================
 #  SUSUN PERINTAH FFMPEG
 # ============================================================
 
@@ -714,11 +880,14 @@ def _bangun_perintah(
             continue
         lapisan.append({**overlay, "path": berkas})
 
+    kotak_teks = template.get("text_box") if isinstance(template.get("text_box"), dict) else None
     for nomor, teks in enumerate(template.get("texts") or []):
         nama = str(teks.get("name") or f"teks{nomor}")
         isi = str(texts.get(nama, teks.get("default") or "")).strip()
         if not isi:
             continue
+        if kotak_teks and str(teks.get("style") or "").lower() == "berita" and not teks.get("box"):
+            teks = {**teks, "box": kotak_teks}
         png = _gambar_teks(teks, isi, lebar, tinggi, kerja / f"text_{nomor}.png")
         # PNG teks sudah seukuran kanvas, jadi cukup ditempel di 0,0.
         lapisan.append(

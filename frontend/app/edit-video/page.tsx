@@ -60,6 +60,9 @@ type TextLayer = {
   kicker_color?: string;
 };
 
+/** Kotak tempat teks hook diletakkan, dalam piksel kanvas. */
+type KotakTeks = { x: number; y: number; w: number; h: number };
+
 type Susunan = {
   id: string;
   name: string;
@@ -71,6 +74,7 @@ type Susunan = {
   max_duration: number | null;
   overlays: Overlay[];
   texts: TextLayer[];
+  text_box?: KotakTeks | null;
   assets?: string[];
 };
 
@@ -194,6 +198,7 @@ function susunanBawaan(id: string, nama: string): Susunan {
       { label: NAMA_SLOT[2], file: "", x: 0, y: "main_h-h", w: 720, h: null },
     ],
     texts: [TEKS_HOOK, TEKS_SUMBER],
+    text_box: null,
     assets: [],
   };
 }
@@ -239,6 +244,13 @@ export default function EditVideoPage() {
   const [namaSet, setNamaSet] = useState(NAMA_SET_PERTAMA);
   const [menyimpanNama, setMenyimpanNama] = useState(false);
   const [pesanLayer, setPesanLayer] = useState("");
+  // Kotak teks set yang sedang dibuka, plus keadaan saat pengguna menggambar.
+  const [kotakTeks, setKotakTeks] = useState<KotakTeks | null>(null);
+  const [kotakSementara, setKotakSementara] = useState<KotakTeks | null>(null);
+  const seretRef = useRef<{ x: number; y: number } | null>(null);
+  const pratinjauRef = useRef<HTMLDivElement>(null);
+  const [versiPratinjau, setVersiPratinjau] = useState(0);
+  const [mendeteksi, setMendeteksi] = useState(false);
 
   const [pratinjau, setPratinjau] = useState<Pratinjau | null>(null);
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
@@ -311,6 +323,7 @@ export default function EditVideoPage() {
         ada.overlays = slot;
         setIdSet(ada.id);
         setNamaSet(ada.name);
+        setKotakTeks(ada.text_box || null);
         if (perluDisimpan) {
           await simpanSusunan(ada, ada.id);
         } else {
@@ -332,6 +345,7 @@ export default function EditVideoPage() {
         setSusunan(dibuat);
         setIdSet(dibuat.id);
         setNamaSet(dibuat.name);
+        setKotakTeks(null);
         await muatDaftar();
       }
     } catch {
@@ -367,8 +381,76 @@ export default function EditVideoPage() {
         max_duration: baru.max_duration,
         overlays: baru.overlays,
         texts: baru.texts,
+        text_box: baru.text_box ?? null,
       }),
     });
+    // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
+    setVersiPratinjau((v) => v + 1);
+  }
+
+  // ===== KOTAK TEKS =====
+
+  async function simpanKotak(kotak: KotakTeks | null) {
+    if (!susunan) return;
+    setKotakTeks(kotak);
+    await simpanSusunan({ ...susunan, text_box: kotak });
+    setPesanLayer(kotak ? "Kotak teks tersimpan." : "Kotak teks dihapus; teks memakai posisi bawaan.");
+  }
+
+  /** Minta server menebak kotak teks dari gambar layer. */
+  async function deteksiKotak() {
+    setMendeteksi(true);
+    setPesanLayer("Mencari kotak teks di layer ...");
+    try {
+      const res = await fetch(`/api/video/templates/${idSet}/detect-box`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Tidak menemukan kotak teks.");
+      await simpanKotak(data.text_box as KotakTeks);
+      setPesanLayer("Kotak teks ditemukan. Kalau meleset, gambar ulang dengan menyeret di pratinjau.");
+    } catch (err) {
+      setPesanLayer(err instanceof Error ? err.message : "Tidak menemukan kotak teks.");
+    } finally {
+      setMendeteksi(false);
+    }
+  }
+
+  /** Ubah posisi pointer di pratinjau jadi koordinat kanvas. */
+  function titikKanvas(e: React.PointerEvent<HTMLDivElement>): { x: number; y: number } {
+    const el = pratinjauRef.current;
+    const lebar = susunan?.width || 720;
+    const tinggi = susunan?.height || 1280;
+    if (!el) return { x: 0, y: 0 };
+    const r = el.getBoundingClientRect();
+    const x = Math.round(((e.clientX - r.left) / r.width) * lebar);
+    const y = Math.round(((e.clientY - r.top) / r.height) * tinggi);
+    return { x: Math.max(0, Math.min(lebar, x)), y: Math.max(0, Math.min(tinggi, y)) };
+  }
+
+  function mulaiSeret(e: React.PointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = titikKanvas(e);
+    seretRef.current = p;
+    setKotakSementara({ x: p.x, y: p.y, w: 0, h: 0 });
+  }
+
+  function gerakSeret(e: React.PointerEvent<HTMLDivElement>) {
+    const awal = seretRef.current;
+    if (!awal) return;
+    const p = titikKanvas(e);
+    setKotakSementara({
+      x: Math.min(awal.x, p.x),
+      y: Math.min(awal.y, p.y),
+      w: Math.abs(p.x - awal.x),
+      h: Math.abs(p.y - awal.y),
+    });
+  }
+
+  function selesaiSeret() {
+    const kotak = kotakSementara;
+    seretRef.current = null;
+    setKotakSementara(null);
+    // Seretan terlalu kecil dianggap klik tak sengaja.
+    if (kotak && kotak.w >= 20 && kotak.h >= 20) void simpanKotak(kotak);
   }
 
   /** Simpan nama set yang sedang dibuka. */
@@ -723,6 +805,70 @@ export default function EditVideoPage() {
                   }}
                 />
               </label>
+            </div>
+
+            {/* ---- KOTAK TEKS ---- */}
+            <div className={styles.blok}>
+              <div className={styles.blokHead}>
+                <h3>Kotak teks hook</h3>
+                <div className={styles.aksi}>
+                  <button
+                    type="button"
+                    className={styles.ghostBtn}
+                    onClick={deteksiKotak}
+                    disabled={mendeteksi || !susunan}
+                  >
+                    {mendeteksi ? "Mencari..." : "Deteksi otomatis"}
+                  </button>
+                  {kotakTeks && (
+                    <button
+                      type="button"
+                      className={styles.hapusBtn}
+                      onClick={() => void simpanKotak(null)}
+                    >
+                      Hapus kotak
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className={styles.hint}>
+                Teks hook dipasang mengisi kotak ini: lebarnya mengikuti kotak, hurufnya
+                menyusut sampai muat, dan diletakkan di tengah. Tiap set layer punya kotaknya
+                sendiri. Seret di pratinjau untuk menggambar kotak baru.
+              </p>
+              {susunan && (
+                <div
+                  ref={pratinjauRef}
+                  className={styles.pratinjauKotak}
+                  onPointerDown={mulaiSeret}
+                  onPointerMove={gerakSeret}
+                  onPointerUp={selesaiSeret}
+                  onPointerCancel={selesaiSeret}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`/api/video/templates/${idSet}/preview.png?v=${versiPratinjau}`}
+                    alt="Pratinjau layer"
+                    draggable={false}
+                  />
+                  {(kotakSementara || kotakTeks) && (
+                    <div
+                      className={styles.kotakTeksLayer}
+                      style={{
+                        left: `${((kotakSementara || kotakTeks)!.x / (susunan.width || 720)) * 100}%`,
+                        top: `${((kotakSementara || kotakTeks)!.y / (susunan.height || 1280)) * 100}%`,
+                        width: `${((kotakSementara || kotakTeks)!.w / (susunan.width || 720)) * 100}%`,
+                        height: `${((kotakSementara || kotakTeks)!.h / (susunan.height || 1280)) * 100}%`,
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+              {kotakTeks && (
+                <p className={styles.hint}>
+                  Kotak: x {kotakTeks.x}, y {kotakTeks.y}, lebar {kotakTeks.w}, tinggi {kotakTeks.h}
+                </p>
+              )}
             </div>
 
             {pesanLayer && <p className={styles.pesan}>{pesanLayer}</p>}

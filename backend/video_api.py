@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 import storage
@@ -51,6 +51,9 @@ class TemplateBody(BaseModel):
     max_duration: float | None = Field(default=None, ge=1, le=600)
     overlays: list[dict[str, Any]] = []
     texts: list[dict[str, Any]] = []
+    # Kotak teks hook dalam piksel kanvas: {x, y, w, h}. None = pakai posisi
+    # bawaan layer teks.
+    text_box: dict[str, int] | None = None
 
 
 class JobBody(BaseModel):
@@ -236,6 +239,35 @@ def ambil_template(template_id: str) -> dict[str, Any]:
         p.name for p in (ve.template_path(template_id) / "assets").glob("*") if p.is_file()
     )
     return {**data, "assets": aset}
+
+
+@router.get("/templates/{template_id}/preview.png")
+def pratinjau_template(template_id: str) -> Response:
+    """Gambar komposit layer statis template (tanpa video), untuk halaman."""
+    import io
+
+    try:
+        template = ve.load_template(template_id)
+        kanvas = ve.komposit_statis(template)
+    except ve.VideoError as error:
+        raise _tangani(error)
+    buf = io.BytesIO()
+    kanvas.convert("RGB").save(buf, format="PNG", optimize=True)
+    return Response(content=buf.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
+
+
+@router.post("/templates/{template_id}/detect-box")
+def deteksi_kotak(template_id: str) -> dict[str, Any]:
+    """Tebak posisi kotak teks dari layer gambar template."""
+    try:
+        template = ve.load_template(template_id)
+        kotak = ve.deteksi_kotak_teks(ve.komposit_statis(template))
+    except ve.VideoError as error:
+        raise _tangani(error)
+    if kotak is None:
+        raise HTTPException(status_code=404, detail="Tidak menemukan bidang polos yang cukup luas untuk kotak teks.")
+    return {"text_box": kotak}
 
 
 @router.delete("/templates/{template_id}")
