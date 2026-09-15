@@ -595,3 +595,21 @@
   flex-direction: column;
   gap: 12px;
 }
+
+/* ---- Warna pratinjau teks berita ----
+   Latarnya ikut dibalik supaya warna yang dipilih terlihat apa adanya dan
+   tetap terbaca: tulisan hitam di atas latar terang, putih di atas gelap —
+   sama seperti nanti di dalam kotak template. */
+.isiHitam {
+  color: #111;
+  background: #f4f4f4;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.isiPutih {
+  color: #fff;
+  background: #1c1c1c;
+  padding: 10px 12px;
+  border-radius: 8px;
+}

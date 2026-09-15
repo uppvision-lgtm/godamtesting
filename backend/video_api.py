@@ -60,7 +60,7 @@ class TemplateBody(BaseModel):
     text_box: dict[str, int] | None = None
     badge_box: dict[str, int] | None = None
     kategori: str = Field(default="", max_length=30)
-    teks_warna: str = Field(default="black", pattern="^(black|white)$")
+    teks_warna: str = Field(default="white", pattern="^(black|white)$")
 
 
 class DuplikatBody(BaseModel):

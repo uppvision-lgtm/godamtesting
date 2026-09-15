@@ -93,8 +93,8 @@ TEMPLATE_CONTOH: dict[str, Any] = {
     # rata kiri.
     "badge_box": None,
     "kategori": "",
-    # Warna tulisan isi hook: "black" untuk kotak terang, "white" untuk gelap.
-    "teks_warna": "black",
+    # Warna tulisan isi hook: "white" untuk kotak gelap, "black" untuk terang.
+    "teks_warna": "white",
 }
 
 

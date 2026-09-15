@@ -222,6 +222,7 @@ function susunanBawaan(id: string, nama: string): Susunan {
     text_box: null,
     badge_box: null,
     kategori: "",
+    teks_warna: "white",
     assets: [],
   };
 }
@@ -275,7 +276,7 @@ export default function EditVideoPage() {
   const [versiPratinjau, setVersiPratinjau] = useState(0);
   const [mendeteksi, setMendeteksi] = useState(false);
   const [kategori, setKategori] = useState("");
-  const [teksWarna, setTeksWarna] = useState<"black" | "white">("black");
+  const [teksWarna, setTeksWarna] = useState<"black" | "white">("white");
   const [badgeBox, setBadgeBox] = useState<KotakTeks | null>(null);
   const [badgeBoxBawaan, setBadgeBoxBawaan] = useState<KotakTeks | null>(null);
   // Kotak mana yang sedang digambar di pratinjau.
@@ -363,7 +364,7 @@ export default function EditVideoPage() {
         setBadgeBox(ada.badge_box || null);
         setBadgeBoxBawaan(ada.badge_box_default || null);
         setKategori(ada.kategori || "");
-        setTeksWarna(ada.teks_warna === "white" ? "white" : "black");
+        setTeksWarna(ada.teks_warna === "black" ? "black" : "white");
         if (perluDisimpan) {
           await simpanSusunan(ada, ada.id);
         } else {
@@ -389,7 +390,7 @@ export default function EditVideoPage() {
         setBadgeBox(null);
         setBadgeBoxBawaan(null);
         setKategori("");
-        setTeksWarna("black");
+        setTeksWarna("white");
         await muatDaftar();
       }
     } catch {
@@ -428,7 +429,7 @@ export default function EditVideoPage() {
         text_box: baru.text_box ?? null,
         badge_box: baru.badge_box ?? null,
         kategori: baru.kategori ?? "",
-        teks_warna: baru.teks_warna ?? "black",
+        teks_warna: baru.teks_warna ?? "white",
       }),
     });
     // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
@@ -1049,31 +1050,7 @@ export default function EditVideoPage() {
               template ini tidak memakai badge.
             </p>
 
-            <div className={styles.row}>
-              <label>
-                <span>Warna tulisan berita</span>
-                <div className={styles.pilihMode}>
-                  <button
-                    type="button"
-                    className={teksWarna === "black" ? styles.modeAktif : styles.modeBtn}
-                    onClick={() => void simpanWarnaTeks("black")}
-                  >
-                    Hitam
-                  </button>
-                  <button
-                    type="button"
-                    className={teksWarna === "white" ? styles.modeAktif : styles.modeBtn}
-                    onClick={() => void simpanWarnaTeks("white")}
-                  >
-                    Putih
-                  </button>
-                </div>
-              </label>
-            </div>
-            <p className={styles.hint}>
-              Pilih hitam untuk kotak terang, putih untuk kotak gelap. Kata pembukanya
-              tetap merah karena terbaca di keduanya.
-            </p>
+
 
             {/* ---- KOTAK TEKS ---- */}
             <div className={styles.blok}>
@@ -1233,6 +1210,22 @@ export default function EditVideoPage() {
             <div className={styles.hookBox}>
               <div className={styles.hookHead}>
                 <span className={styles.hookJudul}>Teks di video</span>
+                <div className={styles.pilihMode} title="Warna tulisan isi berita">
+                  <button
+                    type="button"
+                    className={teksWarna === "black" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => void simpanWarnaTeks("black")}
+                  >
+                    Hitam
+                  </button>
+                  <button
+                    type="button"
+                    className={teksWarna === "white" ? styles.modeAktif : styles.modeBtn}
+                    onClick={() => void simpanWarnaTeks("white")}
+                  >
+                    Putih
+                  </button>
+                </div>
                 <div className={styles.pilihMode}>
                   <button
                     type="button"
@@ -1255,7 +1248,7 @@ export default function EditVideoPage() {
                 <>
                   {membuatHook && <p className={styles.hint}>Menyusun teks dari caption ...</p>}
                   {isi && (
-                    <p className={styles.hookParagraf}>
+                    <p className={`${styles.hookParagraf} ${teksWarna === "white" ? styles.isiPutih : styles.isiHitam}`}>
                       <span className={styles.hookKicker}>{kicker || "VIRAL"}!</span> {isi}
                     </p>
                   )}
@@ -1265,6 +1258,10 @@ export default function EditVideoPage() {
                     </p>
                   )}
                   {sumberHook && <p className={styles.hint}>{sumberHook}</p>}
+                  <p className={styles.hint}>
+                    Warnanya mengikuti pilihan Hitam/Putih di atas — pilih yang kontras dengan
+                    kotak template. Kata pembukanya tetap merah.
+                  </p>
                   {pratinjau && !membuatHook && (
                     <button
                       type="button"
@@ -1298,7 +1295,7 @@ export default function EditVideoPage() {
                     />
                   </label>
                   {(kickerManual || isiManual) && (
-                    <p className={styles.hookParagraf}>
+                    <p className={`${styles.hookParagraf} ${teksWarna === "white" ? styles.isiPutih : styles.isiHitam}`}>
                       <span className={styles.hookKicker}>
                         {(kickerManual || "VIRAL").replace(/!+$/, "").toUpperCase()}!
                       </span>{" "}
