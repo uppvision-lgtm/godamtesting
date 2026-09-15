@@ -27,8 +27,9 @@ const BATAS_UNGGAH_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 200);
 
 type Overlay = {
   file: string;
-  x: number | null;
-  y: number | null;
+  // Boleh angka atau rumus ffmpeg seperti "main_h-h" (tempel ke dasar layar).
+  x: number | string | null;
+  y: number | string | null;
   w?: number | null;
   h?: number | null;
   crop?: string | null;
@@ -174,33 +175,23 @@ function susunanBawaan(id: string, nama: string): Susunan {
     outro: null,
     max_duration: null,
     overlays: [
-      // Panel bawah, 936x681 alias 1,3 kali lebar layar supaya monasnya tampil
-      // besar; sisi kiri-kanan yang lewat batas layar terpotong sendiri.
-      // Ukuran itu mengikuti rasio isi berkasnya (1,373) supaya tidak gepeng.
-      // Pinggiran transparan pada berkas sudah dipangkas saat diunggah, jadi
-      // tidak perlu "crop" di sini.
-      //
-      // Panel diturunkan 170 px (seperempat tingginya) supaya monasnya duduk
-      // lebih rendah dan apinya tidak terpotong. Bagian bawahnya jadi
-      // lewat batas layar dan terpotong — itu disengaja. Bar media sosial
-      // bawaan panel ikut keluar layar, jadi yang terlihat hanya bar milik
-      // layer "bingkai teratas" dan tidak ada bar dobel.
-      //
-      // w dan h tetap 1,3 kali ukuran asli (936x681 dari rasio 1,373), jadi
-      // menggeser ini tidak meregangkan gambarnya.
-      { label: NAMA_SLOT[0], file: "", x: -108, y: 782, w: 936, h: 681,
+      // Panel bawah: selebar layar penuh, tidak ada yang terpotong kiri-kanan.
+      // Tingginya sengaja dikosongkan supaya dihitung sendiri dari rasio
+      // berkasnya, dan "main_h-h" menempelkannya ke dasar layar. Dengan
+      // begitu berkas desain apa pun tampil utuh dan tidak gepeng, tanpa
+      // perlu menyetel ulang angkanya tiap kali berkasnya diganti.
+      { label: NAMA_SLOT[0], file: "", x: 0, y: "main_h-h", w: 720, h: null,
         start: 0, end: 3 },
       // loop: berkasnya berupa video pendek. Tanpa diulang, animasinya
       // membeku di frame terakhir begitu videonya habis. Pengulangan hanya
       // berlaku di badan video — outro disusun terpisah, jadi layer ini
       // tidak pernah muncul di sana.
       { label: NAMA_SLOT[1], file: "", x: 45, y: 55, w: 280, h: 158, loop: true },
-      // Bingkai menempel rapat ke dasar layar: y = 1280 - 1211 = 69. Kalau
-      // pinggiran transparannya tidak dipangkas, isinya berhenti sedikit
-      // sebelum dasar sehingga bar merah menyisakan celah dan video sumber
-      // mengintip di dua baris terbawah. Pemangkasan itu kini dilakukan saat
-      // berkasnya diunggah.
-      { label: NAMA_SLOT[2], file: "", x: 0, y: 69, w: 720, h: 1211 },
+      // Bingkai juga selebar layar dan menempel ke dasar, tingginya mengikuti
+      // rasio berkasnya. Pinggiran transparan sudah dipangkas saat diunggah,
+      // jadi isinya benar-benar rapat ke dasar dan tidak menyisakan celah
+      // yang membuat video sumber mengintip di baris terbawah.
+      { label: NAMA_SLOT[2], file: "", x: 0, y: "main_h-h", w: 720, h: null },
     ],
     texts: [TEKS_HOOK, TEKS_SUMBER],
     assets: [],

@@ -636,6 +636,30 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
 # ============================================================
 
 
+# Rumus posisi yang boleh dipakai template. Sengaja dibatasi: nilai ini masuk
+# ke perintah ffmpeg, jadi hanya bentuk yang dikenali yang diteruskan.
+POSISI_RUMUS = {
+    "main_w-w", "main_h-h", "(main_w-w)/2", "(main_h-h)/2",
+    "W-w", "H-h", "(W-w)/2", "(H-h)/2", "0",
+}
+
+
+def _posisi(nilai: Any, bawaan: str) -> str:
+    """Ubah x/y template jadi nilai posisi untuk filter overlay."""
+    if nilai is None:
+        return bawaan
+    if isinstance(nilai, str):
+        teks = nilai.strip()
+        if teks in POSISI_RUMUS:
+            return teks
+        try:
+            return str(int(float(teks)))
+        except ValueError:
+            logger.warning("Posisi '%s' tidak dikenali, dipakai %s", teks, bawaan)
+            return bawaan
+    return str(int(nilai))
+
+
 def _klip(path: Path, lebar: int, tinggi: int, fps: int, idx: int, nama: str) -> tuple[list[str], str]:
     """Filter untuk menyeragamkan satu klip (intro/outro) ke ukuran kanvas."""
     return (
@@ -723,13 +747,19 @@ def _bangun_perintah(
         if potong:
             rantai.append(f"crop={potong}")
         if w or h:
-            rantai.append(f"scale={int(w) if w else -1}:{int(h) if h else -1}")
+            # -2 dan bukan -1: sisi yang dihitung otomatis dibulatkan ke angka
+            # genap, karena encoder yuv420p menolak ukuran ganjil.
+            rantai.append(f"scale={int(w) if w else -2}:{int(h) if h else -2}")
         if rantai:
             filters.append(f"[{sumber_ov}]{','.join(rantai)}[ov{nomor}]")
             sumber_ov = f"ov{nomor}"
+        # x dan y boleh angka atau rumus ffmpeg seperti "main_h-h" (tempel ke
+        # dasar) dan "main_w-w" (tempel ke kanan). Rumus dipakai kalau tinggi
+        # layer dihitung otomatis dari rasio berkasnya, sehingga posisinya
+        # ikut menyesuaikan berapa pun ukuran berkas yang dipasang pengguna.
         x, y = item.get("x"), item.get("y")
-        posisi_x = str(int(x)) if x is not None else "(W-w)/2"
-        posisi_y = str(int(y)) if y is not None else "(H-h)/2"
+        posisi_x = _posisi(x, "(W-w)/2")
+        posisi_y = _posisi(y, "(H-h)/2")
         opsi = f"overlay={posisi_x}:{posisi_y}"
         mulai, selesai = item.get("start"), item.get("end")
         if mulai is not None or selesai is not None:
