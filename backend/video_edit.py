@@ -728,13 +728,54 @@ def download_source(
     keluaran = tujuan / "source.%(ext)s"
 
     cache = MEDIA_DIR / "cache" / hashlib.sha1(url.encode("utf-8")).hexdigest()
-    for tersimpan in sorted(cache.glob("source.*")):
-        if time.time() - tersimpan.stat().st_mtime < SOURCE_CACHE_SECONDS:
-            salinan = tujuan / tersimpan.name
-            shutil.copy2(tersimpan, salinan)
+
+    def dari_cache() -> Path | None:
+        for tersimpan in sorted(cache.glob("source.*")):
+            if time.time() - tersimpan.stat().st_mtime < SOURCE_CACHE_SECONDS:
+                salinan = tujuan / tersimpan.name
+                shutil.copy2(tersimpan, salinan)
+                return salinan
+        return None
+
+    siap = dari_cache()
+    if siap is not None:
+        if log:
+            log("Memakai video sumber yang baru saja diunduh (cache).")
+        return siap
+
+    # Beberapa render dari link yang sama bisa berjalan bersamaan. Tanpa kunci
+    # ini semuanya mengunduh sendiri-sendiri, dan Instagram cepat membatasi
+    # pengunduh yang beruntun. Yang lebih dulu memegang kunci yang mengunduh;
+    # sisanya menunggu lalu memakai hasilnya.
+    kunci = cache.with_name(cache.name + ".lock")
+    kunci.parent.mkdir(parents=True, exist_ok=True)
+    pemegang = False
+    try:
+        kunci.mkdir()
+        pemegang = True
+    except FileExistsError:
+        # Kunci yang ditinggalkan proses mati tidak boleh menahan selamanya.
+        try:
+            if time.time() - kunci.stat().st_mtime > DOWNLOAD_TIMEOUT_SECONDS:
+                shutil.rmtree(kunci, ignore_errors=True)
+        except OSError:
+            pass
+    if not pemegang:
+        if log:
+            log("Menunggu unduhan video sumber yang sedang berjalan ...")
+        batas = time.time() + DOWNLOAD_TIMEOUT_SECONDS
+        while time.time() < batas and kunci.exists():
+            time.sleep(1.0)
+            siap = dari_cache()
+            if siap is not None:
+                if log:
+                    log("Memakai video sumber yang baru saja diunduh (cache).")
+                return siap
+        siap = dari_cache()
+        if siap is not None:
             if log:
                 log("Memakai video sumber yang baru saja diunduh (cache).")
-            return salinan
+            return siap
 
     perintah = _perintah_ytdlp() + [
         "--no-playlist",
@@ -775,6 +816,8 @@ def download_source(
             berkas_cookie.unlink(missing_ok=True)
 
     if hasil.returncode != 0:
+        if pemegang:
+            shutil.rmtree(kunci, ignore_errors=True)
         pesan = (hasil.stderr or hasil.stdout or "").strip().splitlines()
         detail = pesan[-1] if pesan else "penyebab tidak diketahui"
         raise VideoError(f"Gagal mengunduh video: {detail[:300]}")
@@ -790,6 +833,9 @@ def download_source(
         shutil.copy2(berkas[0], cache / berkas[0].name)
     except OSError as error:  # cache hanya pelengkap, jangan gagalkan job
         logger.warning("Gagal menyimpan cache sumber: %s", error)
+    finally:
+        if pemegang:
+            shutil.rmtree(kunci, ignore_errors=True)
     return berkas[0]
 
 

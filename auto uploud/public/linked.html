@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="id">
+<head><meta charset="utf-8" /><title>Akun tertaut</title><link rel="stylesheet" href="/styles.css" /></head>
+<body class="center">
+  <div class="card narrow">
+    <h2>✅ Selesai</h2>
+    <p class="hint">Akun sosialmu sudah diperbarui. Tab ini akan tertutup otomatis…</p>
+  </div>
+  <script>
+    if (window.opener) window.opener.postMessage({ type: 'social-linked' }, '*');
+    setTimeout(() => window.close(), 1200);
+  </script>
+</body>
+</html>

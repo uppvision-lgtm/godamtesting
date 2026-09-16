@@ -23,11 +23,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/video", tags=["video"])
 
 # Render memakan CPU penuh, jadi jumlah job yang boleh menunggu dibatasi.
-MAX_ACTIVE_JOBS = max(1, int(os.getenv("VIDEO_MAX_ACTIVE_JOBS", "2")))
-# Job yang mengantre tidak memakan CPU (worker mengerjakannya satu per satu),
-# jadi antreannya boleh panjang — cukup dibatasi agar tidak tanpa akhir.
+# Berapa render yang benar-benar berjalan bersamaan ditentukan CELERY_CONCURRENCY
+# pada worker. Di sini cukup dibatasi panjang antreannya supaya tidak tanpa akhir.
 MAX_QUEUED_JOBS = max(1, int(os.getenv("VIDEO_MAX_QUEUED_JOBS", "200")))
-STATUS_BERJALAN = ("downloading", "rendering")
 MAX_ASSET_MB = float(os.getenv("VIDEO_MAX_ASSET_MB", "200"))
 # Sisi terpanjang gambar layer setelah dirapikan. Berkas desain kerap jauh
 # lebih besar dari kanvas 720x1280 — satu berkas 3375x5706 memakan 77 MB

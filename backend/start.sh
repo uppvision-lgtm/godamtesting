@@ -16,7 +16,11 @@ export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 PORT="${PORT:-8000}"
 
 echo "==> Menjalankan Celery worker..."
-celery -A celery_app.celery_app worker --loglevel="$LOG_LEVEL" --pool=solo &
+# Pool "solo" hanya mengerjakan satu tugas pada satu waktu, berapa pun
+# concurrency-nya — render banyak template jadi selalu berurutan. Prefork
+# menjalankan sebanyak CELERY_CONCURRENCY proses sekaligus.
+celery -A celery_app.celery_app worker --loglevel="$LOG_LEVEL" \
+  --pool=prefork --concurrency="$CELERY_CONCURRENCY" &
 CELERY_PID=$!
 
 echo "==> Menjalankan FastAPI di port $PORT ..."

@@ -1,0 +1,203 @@
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel2: #1c2128;
+  --line: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #2f81f7;
+  --ok: #3fb950;
+  --err: #f85149;
+  --warn: #d29922;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+header { border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #161b22, #0d1117); }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 20px; flex-wrap: wrap; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.sub { margin: 4px 0 0; color: var(--muted); }
+main { padding: 24px 0 64px; display: flex; flex-direction: column; gap: 16px; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; }
+.hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.muted { color: var(--muted); }
+code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+.badge { padding: 6px 10px; border-radius: 999px; font-size: 12px; border: 1px solid; }
+.badge.warn { color: var(--warn); border-color: #6b4a0f; background: #2b2109; }
+.badge.ok { color: var(--ok); border-color: #1f5c2b; background: #0d2b14; }
+
+.accounts { display: grid; gap: 10px; }
+.acct {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; flex-wrap: wrap;
+}
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.acct .info { flex: 1; min-width: 160px; }
+.acct .info b { display: block; }
+.acct .info span { color: var(--muted); font-size: 12px; }
+.acct select { max-width: 240px; }
+
+button, select, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); padding: 8px 14px; }
+button:hover { border-color: #57606a; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.ghost { background: transparent; }
+.small { padding: 4px 10px; font-size: 12px; }
+.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; width: 100%; padding: 12px; }
+.primary:hover:not(:disabled) { background: #4d94ff; }
+.danger { color: var(--err); border-color: #5a1e1b; }
+
+input[type=text], textarea, select {
+  width: 100%; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+}
+textarea { resize: vertical; }
+.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px; }
+.grid2 label { font-size: 12px; color: var(--muted); }
+
+.drop {
+  display: grid; place-items: center; text-align: center; gap: 6px;
+  border: 2px dashed var(--line); border-radius: 12px; padding: 32px 20px;
+  cursor: pointer; transition: .15s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: #10203a; }
+.drop-icon { font-size: 26px; }
+.drop span { color: var(--muted); font-size: 13px; }
+.filebox { display: flex; gap: 16px; align-items: center; text-align: left; flex-wrap: wrap; }
+.filebox video { width: 120px; border-radius: 8px; background: #000; }
+.filebox span { display: block; font-size: 12px; margin-bottom: 8px; }
+
+.targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.chip {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel2);
+  cursor: pointer; user-select: none; font-size: 13px;
+}
+.chip.on { border-color: var(--accent); background: #10203a; }
+.chip.off { opacity: .45; cursor: not-allowed; }
+.chip input { width: auto; margin: 0; }
+
+.row { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.row-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--panel2); }
+.row-head b { flex: 1; }
+.status { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); }
+.status.running { color: var(--accent); border-color: #12334f; }
+.status.success { color: var(--ok); border-color: #1f5c2b; }
+.status.error { color: var(--err); border-color: #5a1e1b; }
+.bar { height: 3px; background: #21262d; }
+.bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+.logs { margin: 0; padding: 10px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--muted); white-space: pre-wrap; max-height: 150px; overflow: auto; }
+.logs a { color: var(--accent); }
+
+/* ── Tambahan untuk versi multi-user + provider ───────────────────────── */
+body.center { display: grid; place-items: center; min-height: 100vh; padding: 24px; }
+.narrow { max-width: 420px; margin: 0 auto; width: 100%; }
+.userbox { display: flex; align-items: center; gap: 10px; }
+.err { color: var(--err); font-size: 13px; }
+
+.tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+.tab { flex: 1; background: transparent; border-color: transparent; color: var(--muted); }
+.tab.on { background: var(--panel2); border-color: var(--line); color: var(--text); }
+
+.social-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.social {
+  display: flex; align-items: center; gap: 10px; padding: 11px 13px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--panel2); opacity: .55;
+}
+.social.on { opacity: 1; border-color: #2a3f2f; }
+.social div { min-width: 0; }
+.social b { display: block; font-size: 13px; }
+.social span { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.mediabar { margin-bottom: 14px; }
+.mediabar-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+#jobLogs { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; max-height: 130px; }
+.row-head .detail { font-size: 12px; color: var(--muted); }
+.row-head .detail a { color: var(--accent); }
+
+/* Kartu akun sosial kini punya tombol + dropdown target, jadi ikut melebar. */
+.social { flex-wrap: wrap; }
+.social-info { flex: 1; min-width: 0; }
+.social button { flex: none; }
+.target-select {
+  width: 100%; margin: 6px 0 0; padding: 6px 8px; font-size: 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+}
+.danger { color: var(--err); border-color: #5a1e1b; }
+
+/* Peringatan tunnel untuk Instagram & Threads. */
+.notice {
+  border: 1px solid #6b4a0f; background: #2b2109; color: #e3c07b;
+  border-radius: 8px; padding: 10px 12px; font-size: 12.5px; line-height: 1.6;
+  margin-bottom: 12px;
+}
+.notice code { background: #3a2c0c; color: #f0d9a0; }
+
+/* Tombol "Hubungkan" harus tetap terang walau kartunya belum tertaut. */
+.social { opacity: 1; }
+.social:not(.on) .social-info { opacity: .6; }
+
+/* Halaman legal (privasi, syarat, penghapusan data). */
+.legal { padding: 32px 20px 64px; max-width: 720px; line-height: 1.7; }
+.legal h1 { font-size: 24px; margin: 0 0 4px; }
+.legal h2 { font-size: 15px; margin: 28px 0 8px; }
+.legal ul, .legal ol { padding-left: 20px; color: var(--text); }
+.legal li { margin-bottom: 6px; }
+.legal a { color: var(--accent); }
+.ok-notice { border-color: #1f5c2b; background: #0d2b14; color: #7ee787; }
+
+/* Footer tautan legal. */
+.foot {
+  display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+  padding: 20px; border-top: 1px solid var(--line); font-size: 12.5px;
+}
+.foot a { color: var(--muted); text-decoration: none; }
+.foot a:hover { color: var(--text); }
+.linkish {
+  background: none; border: none; padding: 0; color: var(--err);
+  font-size: 12.5px; cursor: pointer; margin-left: auto;
+}
+.linkish:hover { text-decoration: underline; }
+
+/* ── Jendela tempel cookie (mode sesi) ────────────────────────────────── */
+
+.modal {
+  position: fixed; inset: 0; z-index: 50; overflow: auto;
+  display: grid; place-items: center; padding: 20px;
+  background: rgba(1, 4, 9, .74);
+}
+.modal-box {
+  width: 100%; max-width: 560px; max-height: 88vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 20px;
+}
+.modal-box .card-head { margin-bottom: 10px; }
+.modal-box .card-head h2 { margin: 0; }
+
+.steps { color: var(--muted); font-size: 12.5px; padding-left: 20px; margin: 0 0 16px; }
+.steps li { margin-bottom: 5px; }
+
+.field { display: block; margin-bottom: 10px; }
+.field > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.field input {
+  width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.field input:focus { outline: none; border-color: var(--accent); }
+
+.show-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+.show-toggle input { width: auto; margin: 0; }
+
+/* Kartu dengan sesi yang perlu dicek ulang. */
+.social .social-info span { white-space: normal; }
