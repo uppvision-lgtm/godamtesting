@@ -21,6 +21,7 @@ from celery_app import celery_app
 from video_edit import (
     MEDIA_DIR,
     VideoError,
+    bersihkan_unggahan_lama,
     download_source,
     hapus_hasil_job,
     jobs_dir,
@@ -90,6 +91,11 @@ def bersihkan_job_lama() -> int:
     """Hapus folder job yang lebih tua dari batas simpan."""
     batas = time.time() - JOB_RETENTION_HOURS * 3600
     dihapus = 0
+    # Video sumber unggahan ikut kedaluwarsa bersama job-nya.
+    try:
+        bersihkan_unggahan_lama(JOB_RETENTION_HOURS * 3600)
+    except OSError as error:
+        logger.warning("Gagal membersihkan unggahan lama: %s", error)
     for folder in jobs_dir().iterdir():
         if not folder.is_dir():
             continue

@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -409,6 +410,53 @@ def _pastikan_antrean_muat(tambahan: int) -> None:
                 "Tunggu sebagian selesai lalu coba lagi."
             ),
         )
+
+
+@router.post("/sources")
+async def unggah_sumber(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Terima video sumber dari komputer pengguna.
+
+    Mengembalikan alamat "upload://<id>" yang dipakai persis seperti link:
+    dikirim ke jobs/batch, lalu tiap job menyalinnya sebagai video sumber.
+    """
+    nama = ve._aman(Path(file.filename or "video").name)
+    if Path(nama).suffix.lower() not in JENIS_VIDEO:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Jenis berkas tidak didukung. Pakai: {', '.join(sorted(JENIS_VIDEO))}",
+        )
+    id_unggahan = uuid.uuid4().hex[:12]
+    folder = ve.uploads_dir() / id_unggahan
+    folder.mkdir(parents=True, exist_ok=True)
+    tujuan = folder / f"source{Path(nama).suffix.lower()}"
+    batas = int(ve.MAX_SOURCE_UPLOAD_MB * 1_048_576)
+    ukuran = 0
+    try:
+        with tujuan.open("wb") as keluar:
+            while potongan := await file.read(1_048_576):
+                ukuran += len(potongan)
+                if ukuran > batas:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Video sumber melebihi {ve.MAX_SOURCE_UPLOAD_MB:.0f} MB.",
+                    )
+                keluar.write(potongan)
+    except HTTPException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    try:
+        info = ve.probe(tujuan)
+    except ve.VideoError as error:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(status_code=415, detail=f"Berkas bukan video yang bisa dibaca: {error}")
+    return {
+        "url": f"{ve.AWALAN_UNGGAHAN}{id_unggahan}",
+        "name": nama,
+        "size": ukuran,
+        "duration": info.get("duration"),
+        "width": info.get("width"),
+        "height": info.get("height"),
+    }
 
 
 @router.post("/jobs/batch")

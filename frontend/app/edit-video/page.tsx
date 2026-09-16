@@ -24,6 +24,16 @@ const ID_SET_PERTAMA = "utama";
 const NAMA_SET_PERTAMA = "TV Rakyat";
 
 const BATAS_UNGGAH_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 200);
+// Video sumber dari komputer. Lebih kecil dari batas aset karena diproses utuh.
+const BATAS_SUMBER_MB = 100;
+
+// Unggahan besar dikirim langsung ke backend, bukan lewat proxy halaman:
+// fungsi serverless Vercel membatasi badan permintaan sekitar 4 MB. Kalau
+// NEXT_PUBLIC_API_URL tidak diisi (mode lokal), tetap lewat proxy.
+const API_LANGSUNG = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+function urlUnggah(path: string): string {
+  return API_LANGSUNG ? `${API_LANGSUNG}${path}` : path;
+}
 
 type Overlay = {
   file: string;
@@ -98,6 +108,13 @@ type Pratinjau = {
   upload_date: string;
   too_long: boolean;
   max_seconds: number;
+};
+
+type BerkasSumber = {
+  url: string;
+  name: string;
+  size: number;
+  duration: number | null;
 };
 
 type JobStatus = {
@@ -284,6 +301,12 @@ export default function EditVideoPage() {
   // Set layer yang dicentang untuk dirender sekaligus.
   const [pilihanSet, setPilihanSet] = useState<string[]>([]);
 
+  // Sumber video: tempel link, atau unggah berkas dari komputer.
+  const [modeSumber, setModeSumber] = useState<"link" | "file">("link");
+  const [berkasSumber, setBerkasSumber] = useState<BerkasSumber | null>(null);
+  const [mengunggahSumber, setMengunggahSumber] = useState(false);
+  const [captionManual, setCaptionManual] = useState("");
+  const [sumberManual, setSumberManual] = useState("");
   const [pratinjau, setPratinjau] = useState<Pratinjau | null>(null);
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
   const [galatPratinjau, setGalatPratinjau] = useState("");
@@ -668,7 +691,7 @@ export default function EditVideoPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`/api/video/templates/${idSet}/assets`, {
+      const res = await fetch(urlUnggah(`/api/video/templates/${idSet}/assets`), {
         method: "POST",
         body: form,
       });
@@ -718,12 +741,11 @@ export default function EditVideoPage() {
   // ===== BACA LINK & BUAT HOOK =====
 
   /** Ubah caption jadi 3 baris lower-third lewat backend. */
-  const buatHook = useCallback(async (info: Pratinjau) => {
-    const naskah = [info.title, info.description].filter(Boolean).join(". ");
+  const buatHook = useCallback(async (naskah: string) => {
     if (naskah.trim().length < 3) {
       setKicker("");
       setIsi("");
-      setSumberHook("Caption di link ini kosong, jadi hook tidak bisa dibuat.");
+      setSumberHook("Caption masih kosong, jadi teksnya belum bisa dibuat.");
       return;
     }
     setMembuatHook(true);
@@ -773,7 +795,7 @@ export default function EditVideoPage() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Tidak bisa membaca link.");
         setPratinjau(data as Pratinjau);
-        await buatHook(data as Pratinjau);
+        await buatHook(naskahDariPratinjau(data as Pratinjau));
       } catch (err) {
         setPratinjau(null);
         setKicker("");
@@ -787,11 +809,58 @@ export default function EditVideoPage() {
     [buatHook]
   );
 
+  function naskahDariPratinjau(info: Pratinjau | null): string {
+    if (!info) return "";
+    return [info.title, info.description].filter(Boolean).join(". ");
+  }
+
+  /** Naskah yang jadi bahan teks hook, sesuai mode sumber yang dipilih. */
+  function naskahAktif(): string {
+    return modeSumber === "file" ? captionManual : naskahDariPratinjau(pratinjau);
+  }
+
+  /** Nama pemilik untuk kredit "SUMBER: ..." di bar bawah. */
+  const namaSumber = modeSumber === "file" ? sumberManual.trim() : pratinjau?.uploader || "";
+
   // Ditunda sebentar supaya server tidak dipanggil tiap satu huruf diketik.
   useEffect(() => {
+    if (modeSumber !== "link") return;
     const timer = setTimeout(() => void bacaLink(link.trim()), 700);
     return () => clearTimeout(timer);
-  }, [link, bacaLink]);
+  }, [link, bacaLink, modeSumber]);
+
+  // Mode berkas: caption diketik sendiri, lalu teks hook disusun darinya.
+  useEffect(() => {
+    if (modeSumber !== "file") return;
+    const timer = setTimeout(() => void buatHook(captionManual.trim()), 900);
+    return () => clearTimeout(timer);
+  }, [captionManual, buatHook, modeSumber]);
+
+  /** Unggah video sumber dari komputer; hasilnya alamat "upload://..." */
+  async function unggahSumber(file: File) {
+    if (file.size > BATAS_SUMBER_MB * 1_048_576) {
+      setBerkasSumber(null);
+      setGalatPratinjau(
+        `Video ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar — maksimal ${BATAS_SUMBER_MB} MB.`
+      );
+      return;
+    }
+    setMengunggahSumber(true);
+    setGalatPratinjau("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(urlUnggah("/api/video/sources"), { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Gagal mengunggah video.");
+      setBerkasSumber({ url: data.url, name: data.name, size: data.size, duration: data.duration });
+    } catch (err) {
+      setBerkasSumber(null);
+      setGalatPratinjau(err instanceof Error ? err.message : "Gagal mengunggah video.");
+    } finally {
+      setMengunggahSumber(false);
+    }
+  }
 
   // ===== JOB =====
   // Semua job yang belum selesai disegarkan bersama dalam satu putaran.
@@ -863,14 +932,20 @@ export default function EditVideoPage() {
       if (teksHook) texts.hook = teksHook;
       // Kredit pemilik video asli, diambil dari link sumber. Huruf kapital
       // supaya seragam dengan tulisan lain di bar merah bawah.
-      if (pratinjau?.uploader) {
-        texts.sumber = `SUMBER: ${pratinjau.uploader.toUpperCase()}`;
+      if (namaSumber) {
+        texts.sumber = `SUMBER: ${namaSumber.toUpperCase()}`;
+      }
+      const sumberUrl = modeSumber === "file" ? berkasSumber?.url || "" : link.trim();
+      if (!sumberUrl) {
+        throw new Error(
+          modeSumber === "file" ? "Unggah dulu video dari komputer." : "Tempel dulu link videonya."
+        );
       }
       const sasaran = pilihanSet.length ? pilihanSet : [idSet];
       const res = await fetch("/api/video/jobs/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: link.trim(), template_ids: sasaran, texts }),
+        body: JSON.stringify({ url: sumberUrl, template_ids: sasaran, texts }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal memulai.");
@@ -1164,9 +1239,27 @@ export default function EditVideoPage() {
         <section className={styles.panel}>
           <div className={styles.panelHead}>
             <h2>Buat Video</h2>
+            <div className={styles.pilihMode} title="Sumber video">
+              <button
+                type="button"
+                className={modeSumber === "link" ? styles.modeAktif : styles.modeBtn}
+                onClick={() => setModeSumber("link")}
+              >
+                Link
+              </button>
+              <button
+                type="button"
+                className={modeSumber === "file" ? styles.modeAktif : styles.modeBtn}
+                onClick={() => setModeSumber("file")}
+              >
+                File
+              </button>
+            </div>
           </div>
 
           <div className={styles.form}>
+            {modeSumber === "link" ? (
+              <>
             <label>
               <span>Link video sumber</span>
               <input
@@ -1221,6 +1314,51 @@ export default function EditVideoPage() {
                   </>
                 )}
               </div>
+            )}
+              </>
+            ) : (
+              <>
+            <label>
+              <span>Video dari komputer (maksimal {BATAS_SUMBER_MB} MB)</span>
+              <input
+                type="file"
+                accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void unggahSumber(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            {mengunggahSumber && <p className={styles.hint}>Mengunggah video ...</p>}
+            {galatPratinjau && <p className={styles.error}>{galatPratinjau}</p>}
+            {berkasSumber && (
+              <p className={styles.hint}>
+                Terunggah: <strong>{berkasSumber.name}</strong> (
+                {(berkasSumber.size / 1_048_576).toFixed(1)} MB
+                {berkasSumber.duration ? `, ${formatDurasi(berkasSumber.duration)}` : ""})
+              </p>
+            )}
+            <label>
+              <span>Caption video (wajib — bahan teks hook)</span>
+              <textarea
+                className={styles.naskah}
+                rows={3}
+                value={captionManual}
+                onChange={(e) => setCaptionManual(e.target.value)}
+                placeholder="Ceritakan isi videonya beberapa kalimat. Teks hook disusun dari sini."
+              />
+            </label>
+            <label>
+              <span>Sumber / pemilik video (opsional, untuk kredit di bar bawah)</span>
+              <input
+                value={sumberManual}
+                maxLength={60}
+                onChange={(e) => setSumberManual(e.target.value)}
+                placeholder="mis. @namaakun atau TikTok/namaakun"
+              />
+            </label>
+              </>
             )}
 
             <div className={styles.hookBox}>
@@ -1278,11 +1416,11 @@ export default function EditVideoPage() {
                     Warnanya mengikuti pilihan Hitam/Putih di atas — pilih yang kontras dengan
                     kotak template. Kata pembukanya tetap merah.
                   </p>
-                  {pratinjau && !membuatHook && (
+                  {naskahAktif().trim().length >= 3 && !membuatHook && (
                     <button
                       type="button"
                       className={styles.ghostBtn}
-                      onClick={() => void buatHook(pratinjau)}
+                      onClick={() => void buatHook(naskahAktif())}
                     >
                       Buat ulang
                     </button>
@@ -1337,10 +1475,9 @@ export default function EditVideoPage() {
                 </>
               )}
 
-              {pratinjau?.uploader && (
+              {namaSumber && (
                 <p className={styles.kredit}>
-                  Kredit di bar bawah:{" "}
-                  <strong>SUMBER: {pratinjau.uploader.toUpperCase()}</strong>
+                  Kredit di bar bawah: <strong>SUMBER: {namaSumber.toUpperCase()}</strong>
                 </p>
               )}
             </div>
@@ -1388,7 +1525,11 @@ export default function EditVideoPage() {
             <button
               className={styles.mulaiBtn}
               onClick={mulaiRender}
-              disabled={mengirim || !pratinjau || pilihanSet.length === 0}
+              disabled={
+                mengirim ||
+                pilihanSet.length === 0 ||
+                (modeSumber === "link" ? !pratinjau : !berkasSumber || captionManual.trim().length < 3)
+              }
             >
               {mengirim
                 ? "Mengirim..."

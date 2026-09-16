@@ -54,6 +54,11 @@ SINKRON_JEDA_DETIK = float(os.getenv("VIDEO_TEMPLATE_SYNC_SECONDS", "20"))
 # banyak template tidak mengunduhnya berulang kali (Instagram cepat membatasi
 # pengunduh yang terlalu sering).
 SOURCE_CACHE_SECONDS = float(os.getenv("VIDEO_SOURCE_CACHE_SECONDS", "21600"))
+# Video sumber yang diunggah dari komputer pengguna. Batasnya sengaja lebih
+# kecil dari aset layer: video sumber diproses utuh oleh ffmpeg, dan berkas
+# besar membuat unggahannya sendiri lama dan rawan putus.
+MAX_SOURCE_UPLOAD_MB = float(os.getenv("VIDEO_MAX_SOURCE_UPLOAD_MB", "100"))
+AWALAN_UNGGAHAN = "upload://"
 
 # yt-dlp dipasang sebagai paket Python. Di image Docker ia ada di PATH, tapi
 # saat dijalankan dari virtualenv (mode lokal) sering tidak. Jadi dicari dulu,
@@ -117,6 +122,22 @@ def jobs_dir() -> Path:
     path = MEDIA_DIR / "jobs"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def uploads_dir() -> Path:
+    path = MEDIA_DIR / "uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def bersihkan_unggahan_lama(batas_detik: float) -> int:
+    """Hapus video sumber unggahan yang lebih tua dari batas."""
+    dihapus = 0
+    for folder in uploads_dir().iterdir():
+        if folder.is_dir() and time.time() - folder.stat().st_mtime > batas_detik:
+            shutil.rmtree(folder, ignore_errors=True)
+            dihapus += 1
+    return dihapus
 
 
 def _aman(nama: str) -> str:
@@ -722,9 +743,27 @@ def download_source(
 ) -> Path:
     """Unduh video dari link mana pun yang dikenali yt-dlp."""
     url = str(url or "").strip()
+    tujuan.mkdir(parents=True, exist_ok=True)
+
+    # Sumber dari komputer pengguna: berkasnya sudah ada di server, tinggal
+    # disalin ke folder job. Disalin, bukan dipindah, karena satu unggahan bisa
+    # dipakai banyak job (satu per template) yang berjalan terpisah.
+    if url.startswith(AWALAN_UNGGAHAN):
+        folder = uploads_dir() / _aman(url[len(AWALAN_UNGGAHAN):])
+        berkas = sorted(p for p in folder.glob("source.*") if p.is_file()) if folder.is_dir() else []
+        if not berkas:
+            raise VideoError(
+                "Video sumber unggahan sudah tidak ada di server (mungkin sudah "
+                "dibersihkan). Unggah lagi berkasnya."
+            )
+        salinan = tujuan / berkas[0].name
+        shutil.copy2(berkas[0], salinan)
+        if log:
+            log(f"Memakai video sumber dari unggahan ({salinan.stat().st_size / 1_048_576:.1f} MB)")
+        return salinan
+
     if not url.lower().startswith(("http://", "https://")):
         raise VideoError("Link video harus diawali http:// atau https://")
-    tujuan.mkdir(parents=True, exist_ok=True)
     keluaran = tujuan / "source.%(ext)s"
 
     cache = MEDIA_DIR / "cache" / hashlib.sha1(url.encode("utf-8")).hexdigest()
