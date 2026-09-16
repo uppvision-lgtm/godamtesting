@@ -36,9 +36,13 @@
 
 /* ---- Tiga peran tombol ----
    Sebelumnya ada tujuh gaya tombol dengan tinggi dan radius berbeda. Sekarang
-   hanya tiga peran, dan nama kelas lama menumpang lewat "composes" supaya
-   tampilannya seragam tanpa perlu mengubah seluruh halaman. */
-.btnDasar {
+   hanya tiga peran, dan nama kelas lama menumpang lewat "composes".
+
+   Sifat dasarnya sengaja ditulis ulang di tiap peran, tidak diwarisi dari satu
+   kelas bersama: composes bertingkat (kelas lama -> peran -> dasar) hanya
+   terbawa satu tingkat, sehingga sifat dasarnya tidak pernah sampai ke
+   tombolnya dan tombol kehilangan ruang dalam serta perataan teksnya. */
+.btnUtama {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -51,38 +55,60 @@
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s, opacity 0.15s;
-}
-
-.btnDasar:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btnUtama {
-  composes: btnDasar;
+  transition: border-color .15s, color .15s, background .15s, opacity .15s;
   border: none;
   background: var(--hijau);
   color: #051008;
 }
 
 .btnSekunder {
-  composes: btnDasar;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sela-1);
+  min-height: 34px;
+  padding: var(--sela-2) var(--sela-3);
+  border-radius: var(--bulat-kecil);
+  font-family: inherit;
+  font-size: var(--teks-isi);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s, opacity .15s;
   border: 1px solid var(--garis);
   background: transparent;
   color: var(--redup);
+}
+
+.btnBahaya {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sela-1);
+  min-height: 34px;
+  padding: var(--sela-2) var(--sela-3);
+  border-radius: var(--bulat-kecil);
+  font-family: inherit;
+  font-size: var(--teks-isi);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s, opacity .15s;
+  border: 1px solid var(--garis);
+  background: transparent;
+  color: var(--redup);
+}
+
+.btnUtama:disabled,
+.btnSekunder:disabled,
+.btnBahaya:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 
 .btnSekunder:hover:not(:disabled) {
   color: #eef2ee;
   border-color: var(--hijau-tua);
-}
-
-.btnBahaya {
-  composes: btnDasar;
-  border: 1px solid var(--garis);
-  background: transparent;
-  color: var(--redup);
 }
 
 .btnBahaya:hover:not(:disabled) {
