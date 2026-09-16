@@ -34,6 +34,14 @@ import storage
 logger = logging.getLogger(__name__)
 
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", ".media"))
+
+# Pemilik template = username akun. String kosong berarti template bawaan
+# milik aplikasi: yang dilihat tamu, dan yang dipinjam tiap akun baru.
+PEMILIK_BAWAAN = ""
+ID_TEMPLATE_BAWAAN = os.getenv("TEMPLATE_BAWAAN_ID", "bawaan-tv-rakyat")
+# Template dari masa sebelum ada akun tidak menyimpan pemilik. Semuanya
+# dianggap milik akun ini.
+PEMILIK_LAMA = os.getenv("TEMPLATE_PEMILIK_LAMA", "godam").strip().lower()
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 
@@ -206,24 +214,59 @@ def load_template(template_id: str) -> dict[str, Any]:
     except json.JSONDecodeError as error:
         raise VideoError(f"Template '{template_id}' rusak: {error}") from error
     data["id"] = _aman(template_id)
+    if "owner" not in data:
+        data["owner"] = PEMILIK_LAMA
+    data["owner"] = str(data.get("owner") or "").strip().lower()
     return data
 
 
-def list_templates() -> list[dict[str, Any]]:
+def pemilik_template(template: dict[str, Any]) -> str:
+    return str(template.get("owner") or "").strip().lower()
+
+
+def boleh_lihat(template: dict[str, Any], username: str | None) -> bool:
+    """Template bawaan terlihat oleh semua; selain itu hanya oleh pemiliknya."""
+    pemilik = pemilik_template(template)
+    return pemilik == PEMILIK_BAWAAN or (bool(username) and pemilik == username)
+
+
+def boleh_ubah(template: dict[str, Any], username: str | None) -> bool:
+    """Hanya pemiliknya. Template bawaan tidak bisa diubah lewat API."""
+    return bool(username) and pemilik_template(template) == username
+
+
+def _masuk_daftar(template: dict[str, Any], username: str | None) -> bool:
+    """Daftar akun berisi miliknya saja; daftar tamu berisi template bawaan saja."""
+    pemilik = pemilik_template(template)
+    return pemilik == username if username else pemilik == PEMILIK_BAWAAN
+
+
+def list_templates(owner: str | None = None, semua: bool = False) -> list[dict[str, Any]]:
+    """Template untuk satu akun (``owner``) atau untuk tamu (``None``).
+
+    ``semua=True`` mengabaikan pemilik; dipakai skrip perawatan, bukan API.
+    """
     sinkron_template_dari_storage(paksa=not any(templates_dir().iterdir()))
     hasil = []
     for folder in sorted(templates_dir().iterdir()):
         if not folder.is_dir():
             continue
         try:
-            hasil.append(load_template(folder.name))
+            template = load_template(folder.name)
         except VideoError:
             continue
+        if semua or _masuk_daftar(template, owner):
+            hasil.append(template)
     return hasil
 
 
-def _nama_set_terpakai(nama: str, kecuali_id: str = "") -> str | None:
-    """Kembalikan id set lain yang sudah memakai nama ini, kalau ada.
+def _nama_set_terpakai(
+    nama: str, kecuali_id: str = "", owner: str | None = None
+) -> str | None:
+    """Kembalikan id set lain milik ``owner`` yang sudah memakai nama ini, kalau ada.
+
+    Nama hanya harus unik di dalam satu akun: dua orang boleh sama-sama punya
+    "TV Rakyat". ``owner=None`` membandingkan lintas akun.
 
     Perbandingannya mengabaikan besar-kecil huruf dan spasi berlebih, supaya
     "TV Rakyat" dan "tv  rakyat" tidak dianggap dua nama berbeda. Membaca
@@ -241,37 +284,68 @@ def _nama_set_terpakai(nama: str, kecuali_id: str = "") -> str | None:
         if not berkas.is_file():
             continue
         try:
-            lain = json.loads(berkas.read_text(encoding="utf-8")).get("name")
+            isi_lain = json.loads(berkas.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if owner is not None:
+            pemilik_lain = str(isi_lain.get("owner", PEMILIK_LAMA) or "").strip().lower()
+            if pemilik_lain != owner:
+                continue
+        lain = isi_lain.get("name")
         if " ".join(str(lain or "").split()).casefold() == target:
             return folder.name
     return None
 
 
-def nama_set_unik(nama: str, kecuali_id: str = "") -> str:
+def nama_set_unik(nama: str, kecuali_id: str = "", owner: str | None = None) -> str:
     """Tambahkan nomor di belakang nama sampai tidak ada yang memakainya."""
     dasar = " ".join(str(nama or "").split()) or "Set layer"
     calon = dasar
     urut = 2
-    while _nama_set_terpakai(calon, kecuali_id):
+    while _nama_set_terpakai(calon, kecuali_id, owner):
         calon = f"{dasar} {urut}"
         urut += 1
     return calon
 
 
-def save_template(data: dict[str, Any], template_id: str | None = None) -> dict[str, Any]:
+def save_template(
+    data: dict[str, Any], template_id: str | None = None, owner: str | None = None
+) -> dict[str, Any]:
+    """Simpan template.
+
+    ``owner`` hanya dipakai saat membuat template baru. Template yang sudah
+    ada tidak pernah berpindah pemilik lewat sini, dan pemiliknya tidak
+    diambil dari data kiriman halaman.
+    """
     template_id = _aman(template_id or data.get("id") or uuid.uuid4().hex[:12])
     folder = template_path(template_id)
     (folder / "assets").mkdir(parents=True, exist_ok=True)
+    berkas = folder / "template.json"
+    lama: dict[str, Any] = {}
+    if berkas.is_file():
+        try:
+            lama = json.loads(berkas.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            lama = {}
+    if lama:
+        pemilik = str(lama.get("owner", PEMILIK_LAMA) or "").strip().lower()
+    else:
+        pemilik = str((owner if owner is not None else data.get("owner")) or "").strip().lower()
     nama = " ".join(str(data.get("name") or "").split())
-    bentrok = _nama_set_terpakai(nama, template_id)
+    bentrok = _nama_set_terpakai(nama, template_id, pemilik)
     if bentrok:
         raise VideoError(
             f"Nama set layer \"{nama}\" sudah dipakai. Pilih nama lain supaya "
             "tidak tertukar di daftar."
         )
-    isi = {**TEMPLATE_CONTOH, **data, "id": template_id, "name": nama}
+    isi = {**TEMPLATE_CONTOH, **data, "id": template_id, "name": nama, "owner": pemilik}
+    # Berkas pinjaman dari template bawaan dicatat oleh server, bukan dikirim
+    # halaman; kalau tidak ada di data kiriman, yang tersimpan dipertahankan.
+    aset_dari = data.get("aset_dari") if "aset_dari" in data else lama.get("aset_dari")
+    if aset_dari:
+        isi["aset_dari"] = _aman(str(aset_dari))
+    else:
+        isi.pop("aset_dari", None)
     (folder / "template.json").write_text(
         json.dumps(isi, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -287,14 +361,18 @@ def save_template(data: dict[str, Any], template_id: str | None = None) -> dict[
     return isi
 
 
-def duplicate_template(sumber_id: str, nama_baru: str, id_baru: str | None = None) -> dict[str, Any]:
+def duplicate_template(
+    sumber_id: str, nama_baru: str, id_baru: str | None = None, owner: str | None = None
+) -> dict[str, Any]:
     """Salin satu set layer beserta seluruh berkas asetnya.
 
     Berkasnya benar-benar disalin, bukan dipakai bersama, supaya mengganti
-    atau menghapus layer di salinan tidak ikut mengubah set aslinya.
+    atau menghapus layer di salinan tidak ikut mengubah set aslinya. Itu juga
+    berlaku untuk berkas pinjaman dari template bawaan: salinannya berdiri
+    sendiri. Aset yang hanya ada di Supabase (mis. di container yang baru
+    dijalankan) ditarik dulu, jadi hasil salinan tetap lengkap.
 
-    Aset yang hanya ada di Supabase (mis. di container yang baru dijalankan)
-    ditarik dulu, jadi hasil salinan tetap lengkap.
+    ``owner`` = pemilik salinan; kalau None, mengikuti pemilik set asal.
     """
     asal = load_template(sumber_id)
     id_baru = _aman(id_baru or uuid.uuid4().hex[:12])
@@ -305,36 +383,70 @@ def duplicate_template(sumber_id: str, nama_baru: str, id_baru: str | None = Non
     folder_baru = template_path(id_baru)
     (folder_baru / "assets").mkdir(parents=True, exist_ok=True)
 
-    # Pastikan aset yang dipakai set asal ada di disk sebelum disalin.
-    dipakai = [o.get("file") for o in (asal.get("overlays") or [])]
-    dipakai += [asal.get("intro"), asal.get("outro")]
-    for nama in dipakai:
-        if nama:
-            try:
-                _aset(asal, nama)
-            except VideoError as error:
-                logger.warning("Aset %s dilewati saat menyalin: %s", nama, error)
+    # Semua berkas yang dirujuk template, ditambah berkas lain di foldernya.
+    nama_aset: list[str] = []
+    dirujuk = [o.get("file") for o in (asal.get("overlays") or [])]
+    dirujuk += [asal.get("intro"), asal.get("outro")]
+    for nama in dirujuk:
+        if nama and str(nama) not in nama_aset:
+            nama_aset.append(str(nama))
+    for berkas in sorted((folder_asal / "assets").glob("*")):
+        if berkas.is_file() and f"assets/{berkas.name}" not in nama_aset:
+            nama_aset.append(f"assets/{berkas.name}")
 
     disalin = 0
-    for berkas in sorted((folder_asal / "assets").glob("*")):
-        if not berkas.is_file():
+    for nama in nama_aset:
+        try:
+            sumber = _aset(asal, nama)
+        except VideoError as error:
+            logger.warning("Aset %s dilewati saat menyalin: %s", nama, error)
             continue
-        tujuan = folder_baru / "assets" / berkas.name
-        shutil.copy2(berkas, tujuan)
+        if sumber is None:
+            continue
+        tujuan = folder_baru / nama
+        if folder_baru.resolve() not in tujuan.resolve().parents:
+            continue
+        tujuan.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sumber, tujuan)
         disalin += 1
         if storage.enabled():
             try:
-                storage.upload(f"templates/{id_baru}/assets/{berkas.name}", tujuan)
+                storage.upload(f"templates/{id_baru}/{nama}", tujuan)
             except storage.StorageError as error:
-                logger.warning("Aset %s gagal disalin ke Supabase: %s", berkas.name, error)
+                logger.warning("Aset %s gagal disalin ke Supabase: %s", nama, error)
 
+    pemilik = owner if owner is not None else pemilik_template(asal)
     # Nama salinan diberi nomor otomatis kalau sudah ada yang memakainya,
     # jadi menyalin berkali-kali tidak menghasilkan nama kembar.
     diminta = nama_baru.strip() or f"{asal.get('name', 'Set')} (salinan)"
-    isi = {**asal, "id": id_baru, "name": nama_set_unik(diminta, id_baru)}
-    hasil = save_template(isi, id_baru)
+    isi = {**asal, "id": id_baru, "name": nama_set_unik(diminta, id_baru, pemilik)}
+    isi.pop("aset_dari", None)
+    hasil = save_template(isi, id_baru, owner=pemilik)
     logger.info("Set %s disalin ke %s beserta %d berkas", sumber_id, id_baru, disalin)
     return hasil
+
+
+def template_awal_untuk(username: str) -> dict[str, Any]:
+    """Template pertama akun baru: TV Rakyat, meminjam berkas template bawaan.
+
+    Berkasnya tidak disalin (lihat ``_aset``), jadi mendaftar tidak berarti
+    menggandakan puluhan MB aset. Begitu pengguna mengunggah berkasnya
+    sendiri, berkas itu masuk ke folder templatenya dan yang dipinjam tidak
+    dipakai lagi.
+    """
+    username = str(username or "").strip().lower()
+    if not username:
+        raise VideoError("Username kosong")
+    bawaan = load_template(ID_TEMPLATE_BAWAAN)
+    id_baru = uuid.uuid4().hex[:12]
+    nama = str(bawaan.get("name") or "TV Rakyat")
+    isi = {
+        **bawaan,
+        "id": id_baru,
+        "name": nama_set_unik(nama, id_baru, username),
+        "aset_dari": ID_TEMPLATE_BAWAAN,
+    }
+    return save_template(isi, id_baru, owner=username)
 
 
 def hapus_hasil_job(job_id: str) -> None:
@@ -382,9 +494,20 @@ def _aset(template: dict[str, Any], nama: str | None) -> Path | None:
     if not path.is_file():
         # Cache lokal hilang (mis. container baru) — ambil lagi dari Supabase.
         _tarik_dari_storage(f"templates/{template['id']}/{nama}", path)
-    if not path.is_file():
-        raise VideoError(f"Aset '{nama}' tidak ditemukan di template")
-    return path
+    if path.is_file():
+        return path
+    # Template akun baru meminjam berkas template bawaan alih-alih menyalinnya.
+    dari = str(template.get("aset_dari") or "").strip()
+    induk = _aman(dari) if dari else ""
+    if induk and induk != template["id"]:
+        folder_induk = template_path(induk).resolve()
+        path_induk = (folder_induk / str(nama)).resolve()
+        if folder_induk in path_induk.parents:
+            if not path_induk.is_file():
+                _tarik_dari_storage(f"templates/{induk}/{nama}", path_induk)
+            if path_induk.is_file():
+                return path_induk
+    raise VideoError(f"Aset '{nama}' tidak ditemukan di template")
 
 
 # ============================================================

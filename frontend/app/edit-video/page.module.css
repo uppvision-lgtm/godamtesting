@@ -790,3 +790,22 @@
 @media (prefers-reduced-motion: reduce) {
   .rangka { animation: none; }
 }
+
+/* Keterangan saat template yang dibuka tidak bisa diubah (tamu / bawaan). */
+.kunciInfo {
+  margin: 0;
+  padding: var(--sela-3) var(--sela-4);
+  border: 1px solid #4a4526;
+  border-radius: var(--bulat-kecil);
+  background: #1f1d12;
+  color: #e6d38a;
+  font-size: var(--teks-isi);
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+/* Tombol unggah yang dikunci: tampak redup dan tidak bisa diklik. */
+.nonaktif {
+  opacity: 0.45;
+  pointer-events: none;
+}

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, simpanForm } from "../components/formStore";
+import LoginButton from "../components/LoginButton";
+import { akunSekarang, apiFetch, useAkun, useSudahHidrasi } from "../components/auth";
 
 /**
  * Auto Edit Video.
@@ -33,6 +35,15 @@ const BATAS_SUMBER_MB = 100;
 const API_LANGSUNG = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 function urlUnggah(path: string): string {
   return API_LANGSUNG ? `${API_LANGSUNG}${path}` : path;
+}
+
+/** Id template dari namanya, dengan akhiran acak supaya dua nama mirip tidak bertabrakan. */
+function idBaru(nama: string): string {
+  return (
+    nama.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) +
+    "-" +
+    Math.random().toString(36).slice(2, 6)
+  );
 }
 
 type Overlay = {
@@ -92,6 +103,11 @@ type Susunan = {
   kategori?: string;
   teks_warna?: string;
   assets?: string[];
+  // Diisi server: pemilik template, dan apakah akun yang sedang masuk boleh
+  // mengubahnya. Tamu dan template bawaan: false.
+  owner?: string;
+  can_edit?: boolean;
+  aset_dari?: string | null;
 };
 
 type Pratinjau = {
@@ -127,6 +143,8 @@ type JobStatus = {
   url?: string | null;
   error?: string | null;
   template_id?: string;
+  owner?: string;
+  created?: number;
 };
 
 /** Nama slot yang tampil di layar, berurutan dari lapisan bawah ke atas.
@@ -372,6 +390,15 @@ export default function EditVideoPage() {
   const [mengirim, setMengirim] = useState(false);
   const [galat, setGalat] = useState("");
 
+  // Akun yang sedang masuk. Kosong = tamu: boleh membuat video dengan template
+  // bawaan, tetapi tidak bisa menyimpan template maupun riwayat.
+  const akun = useAkun();
+  // Data akun baru dibaca setelah hidrasi, supaya tamu dan akun tidak
+  // sama-sama dimuat lalu saling menimpa.
+  const siap = useSudahHidrasi();
+  // Template yang dibuka tidak bisa diubah: tamu, atau template bawaan.
+  const kunci = !!susunan && !susunan.can_edit;
+
   useEffect(() => {
     simpanForm("edit-video", { link });
   }, [link]);
@@ -381,7 +408,7 @@ export default function EditVideoPage() {
   /** Ambil daftar semua template yang tersimpan. */
   const muatDaftar = useCallback(async () => {
     try {
-      const res = await fetch("/api/video/templates", { cache: "no-store" });
+      const res = await apiFetch("/api/video/templates", { cache: "no-store" });
       if (!res.ok) return [];
       const data = await res.json();
       const daftar = (data.templates || []).map((t: Susunan) => ({ id: t.id, name: t.name }));
@@ -401,7 +428,7 @@ export default function EditVideoPage() {
   /** Muat satu template. Kalau belum ada, dibuatkan dengan susunan bawaan. */
   const muatSet = useCallback(async (id: string, nama: string) => {
     try {
-      const res = await fetch(`/api/video/templates/${id}`, { cache: "no-store" });
+      const res = await apiFetch(`/api/video/templates/${id}`, { cache: "no-store" });
       if (res.ok) {
         const ada: Susunan = await res.json();
         // Layer teks selalu didefinisikan di kode (hook + kredit sumber), jadi
@@ -434,7 +461,7 @@ export default function EditVideoPage() {
         setBadgeBoxBawaan(ada.badge_box_default || null);
         setKategori(ada.kategori || "");
         setTeksWarna(ada.teks_warna === "black" ? "black" : "white");
-        if (perluDisimpan) {
+        if (perluDisimpan && ada.can_edit) {
           // Penyelarasan ini berjalan sendiri saat set dibuka. Kalau gagal
           // (mis. namanya kembar dengan set lain), setnya tetap ditampilkan
           // supaya masih bisa diperbaiki — hanya penyelarasannya yang tertunda.
@@ -452,15 +479,21 @@ export default function EditVideoPage() {
     } catch {
       // lanjut ke pembuatan di bawah
     }
+    if (!akunSekarang()) {
+      // Tamu tidak punya template sendiri; yang bisa dibuka hanya template bawaan.
+      setSusunan(null);
+      setPesanLayer("Template tidak ditemukan. Masuk atau daftar untuk membuat template sendiri.");
+      return;
+    }
     try {
-      const res = await fetch(`/api/video/templates?template_id=${id}`, {
+      const res = await apiFetch(`/api/video/templates?template_id=${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(susunanBawaan(id, nama)),
       });
       if (res.ok) {
         const dibuat = await res.json();
-        setSusunan(dibuat);
+        setSusunan({ ...dibuat, can_edit: true });
         setIdSet(dibuat.id);
         setNamaSet(dibuat.name);
         setKotakTeks(null);
@@ -479,19 +512,23 @@ export default function EditVideoPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [muatDaftar]);
 
+  // Dimuat ulang tiap akun berganti: daftar template tamu dan daftar tiap
+  // akun berbeda isinya. Kalau daftarnya kosong, dibuatkan yang pertama
+  // dengan id baru (bukan id milik akun lain).
   useEffect(() => {
+    if (!siap) return;
     void (async () => {
       const daftar = await muatDaftar();
       const pertama = daftar[0];
-      await muatSet(pertama?.id || ID_SET_PERTAMA, pertama?.name || NAMA_SET_PERTAMA);
+      await muatSet(pertama?.id || idBaru(NAMA_SET_PERTAMA), pertama?.name || NAMA_SET_PERTAMA);
     })();
-  }, [muatDaftar, muatSet]);
+  }, [muatDaftar, muatSet, akun, siap]);
 
   /** Simpan template (dipanggil setelah berkas diganti atau nama diubah). */
   async function simpanSusunan(baru: Susunan, id?: string) {
     const sasaran = id || idSet;
     setSusunan(baru);
-    const res = await fetch(`/api/video/templates?template_id=${sasaran}`, {
+    const res = await apiFetch(`/api/video/templates?template_id=${sasaran}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -519,7 +556,7 @@ export default function EditVideoPage() {
     setPratinjauSiap(false);
     // Tebakan kotak badge dihitung server dari kotak teks; ambil yang terbaru.
     try {
-      const r = await fetch(`/api/video/templates/${sasaran}`, { cache: "no-store" });
+      const r = await apiFetch(`/api/video/templates/${sasaran}`, { cache: "no-store" });
       if (r.ok) {
         const d: Susunan = await r.json();
         setBadgeBoxBawaan(d.badge_box_default || null);
@@ -535,7 +572,7 @@ export default function EditVideoPage() {
   async function bersihkanHasil(ids: string[]) {
     if (ids.length === 0) return;
     try {
-      await fetch("/api/video/jobs/cleanup", {
+      await apiFetch("/api/video/jobs/cleanup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_ids: ids }),
@@ -553,7 +590,7 @@ export default function EditVideoPage() {
     if (!nama) return;
     setPesanLayer("Menyalin template ...");
     try {
-      const res = await fetch(`/api/video/templates/${idSet}/duplicate`, {
+      const res = await apiFetch(`/api/video/templates/${idSet}/duplicate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: nama }),
@@ -575,11 +612,11 @@ export default function EditVideoPage() {
     const nama = namaSet;
     if (!window.confirm(`Hapus template "${nama}"? Berkas layer di dalamnya ikut terhapus.`)) return;
     try {
-      const res = await fetch(`/api/video/templates/${idSet}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/video/templates/${idSet}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Gagal menghapus template.");
       const daftar = await muatDaftar();
       const berikut = daftar[0];
-      await muatSet(berikut?.id || ID_SET_PERTAMA, berikut?.name || NAMA_SET_PERTAMA);
+      await muatSet(berikut?.id || idBaru(NAMA_SET_PERTAMA), berikut?.name || NAMA_SET_PERTAMA);
       setPesanLayer(`Template "${nama}" dihapus.`);
     } catch (err) {
       setPesanLayer(err instanceof Error ? err.message : "Gagal menghapus template.");
@@ -635,7 +672,7 @@ export default function EditVideoPage() {
     setMendeteksi(true);
     setPesanLayer("Mencari kotak teks di layer ...");
     try {
-      const res = await fetch(`/api/video/templates/${idSet}/detect-box`, { method: "POST" });
+      const res = await apiFetch(`/api/video/templates/${idSet}/detect-box`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Tidak menemukan kotak teks.");
       await simpanKotak(data.text_box as KotakTeks);
@@ -660,6 +697,7 @@ export default function EditVideoPage() {
   }
 
   function mulaiSeret(e: React.PointerEvent<HTMLDivElement>) {
+    if (kunci) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     const p = titikKanvas(e);
     seretRef.current = p;
@@ -714,15 +752,15 @@ export default function EditVideoPage() {
 
   /** Buat template baru yang kosong. */
   async function buatSetBaru() {
+    if (!akun) {
+      setPesanLayer("Masuk dulu untuk membuat template sendiri.");
+      return;
+    }
     const nama = (window.prompt("Nama template baru:", "") || "").trim();
     if (!nama) return;
     // Id dibuat dari namanya supaya mudah dikenali di penyimpanan, dengan
     // akhiran acak agar dua set bernama mirip tidak saling menimpa.
-    const id =
-      nama.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) +
-      "-" +
-      Math.random().toString(36).slice(2, 6);
-    await muatSet(id, nama);
+    await muatSet(idBaru(nama), nama);
     setPesanLayer(`Template "${nama}" dibuat. Unggah berkas tiap layernya.`);
   }
 
@@ -738,7 +776,7 @@ export default function EditVideoPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(urlUnggah(`/api/video/templates/${idSet}/assets`), {
+      const res = await apiFetch(urlUnggah(`/api/video/templates/${idSet}/assets`), {
         method: "POST",
         body: form,
       });
@@ -797,7 +835,7 @@ export default function EditVideoPage() {
     }
     setMembuatHook(true);
     try {
-      const res = await fetch("/api/video/hook", {
+      const res = await apiFetch("/api/video/hook", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ naskah }),
@@ -834,7 +872,7 @@ export default function EditVideoPage() {
       setMemuatPratinjau(true);
       setGalatPratinjau("");
       try {
-        const res = await fetch("/api/video/preview", {
+        const res = await apiFetch("/api/video/preview", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: tautan }),
@@ -897,7 +935,7 @@ export default function EditVideoPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(urlUnggah("/api/video/sources"), { method: "POST", body: form });
+      const res = await apiFetch(urlUnggah("/api/video/sources"), { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal mengunggah video.");
       setBerkasSumber({ url: data.url, name: data.name, size: data.size, duration: data.duration });
@@ -919,7 +957,7 @@ export default function EditVideoPage() {
       const hasil = await Promise.all(
         aktif.map(async (id) => {
           try {
-            const r = await fetch(`/api/video/jobs/${id}`, { cache: "no-store" });
+            const r = await apiFetch(`/api/video/jobs/${id}`, { cache: "no-store" });
             return r.ok ? ((await r.json()) as JobStatus) : null;
           } catch {
             return null;
@@ -931,13 +969,37 @@ export default function EditVideoPage() {
     return () => window.clearInterval(timer);
   }, [kunciAktif]);
 
-  // Saat tab ditutup atau berpindah halaman, hasil yang masih tampil ikut
-  // dibuang. sendBeacon dipakai karena permintaan biasa sering dibatalkan
-  // peramban begitu halaman ditinggalkan.
+  // Riwayat akun: job yang masih tersimpan di server muncul lagi setelah
+  // halaman dimuat ulang atau setelah masuk. Tamu tidak punya riwayat.
+  useEffect(() => {
+    if (!siap) return;
+    let batal = false;
+    void (async () => {
+      let riwayat: JobStatus[] = [];
+      if (akun) {
+        try {
+          const res = await apiFetch("/api/video/jobs?limit=50", { cache: "no-store" });
+          if (res.ok) riwayat = ((await res.json()).jobs || []) as JobStatus[];
+        } catch {
+          // riwayat sekadar tidak muncul
+        }
+      }
+      if (!batal) setJobs(riwayat);
+    })();
+    return () => {
+      batal = true;
+    };
+  }, [akun, siap]);
+
+  // Untuk tamu: saat tab ditutup atau berpindah halaman, hasil yang masih
+  // tampil ikut dibuang karena tidak ada riwayat yang menyimpannya. sendBeacon
+  // dipakai karena permintaan biasa sering dibatalkan peramban begitu halaman
+  // ditinggalkan. Hasil milik akun dibiarkan; server membersihkannya sendiri.
   const jobsRef = useRef<JobStatus[]>([]);
   jobsRef.current = jobs;
   useEffect(() => {
     const saatKeluar = () => {
+      if (akunSekarang()) return;
       const ids = jobsRef.current.map((j) => j.job_id);
       if (ids.length === 0) return;
       try {
@@ -989,7 +1051,7 @@ export default function EditVideoPage() {
         );
       }
       const sasaran = pilihanSet.length ? pilihanSet : [idSet];
-      const res = await fetch("/api/video/jobs/batch", {
+      const res = await apiFetch("/api/video/jobs/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: sumberUrl, template_ids: sasaran, texts }),
@@ -1004,10 +1066,15 @@ export default function EditVideoPage() {
           template_id: j.template_id,
         })
       );
-      // Hasil dari klik sebelumnya tidak ditampilkan lagi, jadi videonya
-      // langsung dibuang dari penyimpanan supaya tidak menumpuk.
-      void bersihkanHasil(jobs.map((j) => j.job_id));
-      setJobs(baru);
+      if (akun) {
+        // Riwayat akun dipertahankan: hasil lama tetap ada di bawah yang baru.
+        setJobs((lama) => [...baru, ...lama]);
+      } else {
+        // Tamu: hasil dari klik sebelumnya tidak ditampilkan lagi, jadi
+        // videonya langsung dibuang dari penyimpanan supaya tidak menumpuk.
+        void bersihkanHasil(jobs.map((j) => j.job_id));
+        setJobs(baru);
+      }
     } catch (err) {
       setGalat(err instanceof Error ? err.message : "Gagal memulai.");
     } finally {
@@ -1037,6 +1104,7 @@ export default function EditVideoPage() {
         <Link href="/" className={styles.back} title="Kembali ke beranda">←</Link>
         <span className={styles.brand}>IG · EDIT VIDEO</span>
         <span className={styles.headStatus}>{sedangJalan ? "rendering" : "idle"}</span>
+        <LoginButton />
       </header>
 
       <main className={styles.main}>
@@ -1046,6 +1114,14 @@ export default function EditVideoPage() {
             <h2>Template</h2>
             <span className={styles.headStatus}>720 × 1280</span>
           </div>
+
+          {kunci && (
+            <p className={styles.kunciInfo}>
+              {akun
+                ? "Ini template bawaan dan tidak bisa diubah. Tekan Duplikat untuk membuat salinan yang bisa kamu sunting."
+                : "Kamu belum masuk, jadi template ini hanya bisa dipakai, tidak bisa diubah. Video tetap bisa dibuat. Masuk atau daftar untuk menyimpan template sendiri."}
+            </p>
+          )}
 
           <div className={styles.form}>
             <div className={styles.row}>
@@ -1065,15 +1141,21 @@ export default function EditVideoPage() {
                   ))}
                 </select>
               </label>
-              <button type="button" className={styles.ghostBtn} onClick={buatSetBaru}>
+              <button
+                type="button"
+                className={styles.ghostBtn}
+                onClick={buatSetBaru}
+                disabled={!akun}
+                title={akun ? "Buat template kosong" : "Masuk dulu untuk membuat template"}
+              >
                 + Baru
               </button>
               <button
                 type="button"
                 className={styles.ghostBtn}
                 onClick={duplikatSet}
-                disabled={!susunan}
-                title="Salin set ini dengan nama baru"
+                disabled={!susunan || !akun}
+                title={akun ? "Salin set ini dengan nama baru" : "Masuk dulu untuk menyalin template"}
               >
                 Duplikat
               </button>
@@ -1081,7 +1163,7 @@ export default function EditVideoPage() {
                 type="button"
                 className={styles.hapusBtn}
                 onClick={hapusSet}
-                disabled={!susunan}
+                disabled={!susunan || kunci}
                 title="Hapus template yang sedang dibuka"
               >
                 Hapus
@@ -1094,6 +1176,7 @@ export default function EditVideoPage() {
                 <input
                   value={namaSet}
                   maxLength={60}
+                  readOnly={kunci}
                   onChange={(e) => setNamaSet(e.target.value)}
                   placeholder="mis. TV Rakyat"
                 />
@@ -1102,7 +1185,7 @@ export default function EditVideoPage() {
                 type="button"
                 className={styles.simpanBtn}
                 onClick={simpanNama}
-                disabled={menyimpanNama}
+                disabled={menyimpanNama || kunci}
               >
                 {menyimpanNama ? "Menyimpan..." : "Simpan"}
               </button>
@@ -1126,7 +1209,7 @@ export default function EditVideoPage() {
                     value={ov.file ? ov.file.replace("assets/", "") : "(belum ada berkas)"}
                   />
                 </label>
-                {ov.file && (
+                {ov.file && !kunci && (
                   <button
                     type="button"
                     className={styles.kosongkanBtn}
@@ -1137,10 +1220,11 @@ export default function EditVideoPage() {
                     ×
                   </button>
                 )}
-                <label className={styles.uploadBtn}>
+                <label className={kunci ? `${styles.uploadBtn} ${styles.nonaktif}` : styles.uploadBtn}>
                   {ov.file ? "Ganti" : "Unggah"}
                   <input
                     type="file"
+                    disabled={kunci}
                     accept=".png,.jpg,.jpeg,.webp,.mp4,.mov,.m4v,.webm"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -1160,7 +1244,7 @@ export default function EditVideoPage() {
                   value={susunan?.outro ? susunan.outro.replace("assets/", "") : "(belum ada berkas)"}
                 />
               </label>
-              {susunan?.outro && (
+              {susunan?.outro && !kunci && (
                 <button
                   type="button"
                   className={styles.kosongkanBtn}
@@ -1171,10 +1255,11 @@ export default function EditVideoPage() {
                   ×
                 </button>
               )}
-              <label className={styles.uploadBtn}>
+              <label className={kunci ? `${styles.uploadBtn} ${styles.nonaktif}` : styles.uploadBtn}>
                 {susunan?.outro ? "Ganti" : "Unggah"}
                 <input
                   type="file"
+                  disabled={kunci}
                   accept=".mp4,.mov,.m4v,.webm"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
@@ -1198,6 +1283,7 @@ export default function EditVideoPage() {
                 <input
                   value={kategori}
                   maxLength={30}
+                  readOnly={kunci}
                   placeholder="NEWS"
                   onChange={(e) => setKategori(e.target.value)}
                   onBlur={() => void simpanKategori()}
@@ -1241,16 +1327,16 @@ export default function EditVideoPage() {
                   type="button"
                   className={styles.ghostBtn}
                   onClick={deteksiKotak}
-                  disabled={mendeteksi || !susunan}
+                  disabled={mendeteksi || !susunan || kunci}
                 >
                   {mendeteksi ? "Mencari..." : "Deteksi otomatis"}
                 </button>
-                {modeGambar === "teks" && kotakTeks && (
+                {modeGambar === "teks" && kotakTeks && !kunci && (
                   <button type="button" className={styles.hapusBtn} onClick={() => void simpanKotak(null)}>
                     Hapus kotak teks
                   </button>
                 )}
-                {modeGambar === "kategori" && badgeBox && (
+                {modeGambar === "kategori" && badgeBox && !kunci && (
                   <button type="button" className={styles.hapusBtn} onClick={() => void simpanBadge(null)}>
                     Pakai tebakan
                   </button>
@@ -1468,6 +1554,7 @@ export default function EditVideoPage() {
                     type="button"
                     className={teksWarna === "black" ? styles.modeAktif : styles.modeBtn}
                     onClick={() => void simpanWarnaTeks("black")}
+                    disabled={kunci}
                   >
                     Hitam
                   </button>
@@ -1475,6 +1562,7 @@ export default function EditVideoPage() {
                     type="button"
                     className={teksWarna === "white" ? styles.modeAktif : styles.modeBtn}
                     onClick={() => void simpanWarnaTeks("white")}
+                    disabled={kunci}
                   >
                     Putih
                   </button>

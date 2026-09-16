@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -18,6 +18,7 @@ import storage
 import video_edit as ve
 import video_hook as vh
 import video_tasks as vt
+from auth_api import pengguna_opsional, pengguna_wajib
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,66 @@ def _tangani(error: ve.VideoError) -> HTTPException:
 
 
 # ============================================================
+#  SIAPA BOLEH APA
+# ============================================================
+#
+# Template punya pemilik (username) atau kosong = template bawaan. Tamu hanya
+# melihat template bawaan dan boleh merender dengannya, tetapi tidak bisa
+# menyimpan apa pun. Job pun dicatat pemiliknya, jadi riwayat satu akun tidak
+# terlihat akun lain.
+
+
+def _nama_akun(pengguna: dict[str, Any] | None) -> str | None:
+    return str(pengguna["username"]) if pengguna else None
+
+
+def _template_terlihat(template_id: str, pengguna: dict[str, Any] | None) -> dict[str, Any]:
+    """Template yang boleh dibaca akun ini: miliknya sendiri atau template bawaan."""
+    try:
+        data = ve.load_template(template_id)
+    except ve.VideoError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if not ve.boleh_lihat(data, _nama_akun(pengguna)):
+        # 404, bukan 403: keberadaan template orang lain tidak perlu diumumkan.
+        raise HTTPException(status_code=404, detail=f"Template '{template_id}' tidak ditemukan")
+    return data
+
+
+def _periksa_ubah(data: dict[str, Any], pengguna: dict[str, Any] | None) -> None:
+    nama = _nama_akun(pengguna)
+    if not ve.boleh_lihat(data, nama):
+        raise HTTPException(status_code=404, detail=f"Template '{data.get('id')}' tidak ditemukan")
+    if not pengguna:
+        raise HTTPException(status_code=401, detail="Masuk dulu untuk mengubah template.")
+    if not ve.boleh_ubah(data, nama):
+        raise HTTPException(
+            status_code=403,
+            detail="Template bawaan tidak bisa diubah. Duplikat dulu untuk menyuntingnya.",
+        )
+
+
+def _template_milik(template_id: str, pengguna: dict[str, Any] | None) -> dict[str, Any]:
+    """Template yang boleh diubah akun ini. Tamu selalu ditolak."""
+    try:
+        data = ve.load_template(template_id)
+    except ve.VideoError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    _periksa_ubah(data, pengguna)
+    return data
+
+
+def _job_terjangkau(job_id: str, pengguna: dict[str, Any] | None) -> dict[str, Any]:
+    """Job milik akun ini; untuk tamu, job tamu (tanpa pemilik)."""
+    try:
+        data = vt.baca_status(job_id)
+    except ve.VideoError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if str(data.get("owner") or "") != (_nama_akun(pengguna) or ""):
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' tidak ditemukan")
+    return data
+
+
+# ============================================================
 #  PRATINJAU LINK
 # ============================================================
 
@@ -250,43 +311,64 @@ async def buat_hook(body: HookBody) -> dict[str, Any]:
 
 
 @router.get("/templates")
-def daftar_template() -> dict[str, Any]:
-    return {"templates": ve.list_templates()}
+def daftar_template(
+    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+) -> dict[str, Any]:
+    """Template milik akun yang masuk; untuk tamu, template bawaan saja."""
+    return {"templates": ve.list_templates(owner=_nama_akun(pengguna))}
 
 
 @router.post("/templates")
-def buat_template(body: TemplateBody, template_id: str | None = None) -> dict[str, Any]:
+def buat_template(
+    body: TemplateBody,
+    template_id: str | None = None,
+    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+) -> dict[str, Any]:
+    """Buat atau perbarui template. Tamu tidak bisa menyimpan apa pun."""
+    ada: dict[str, Any] | None = None
+    if template_id:
+        try:
+            ada = ve.load_template(template_id)
+        except ve.VideoError:
+            ada = None
+    if ada is not None:
+        _periksa_ubah(ada, pengguna)
+    elif not pengguna:
+        raise HTTPException(status_code=401, detail="Masuk dulu untuk menyimpan template.")
     try:
-        return ve.save_template(body.model_dump(), template_id)
+        return ve.save_template(body.model_dump(), template_id, owner=_nama_akun(pengguna))
     except ve.VideoError as error:
         raise _tangani(error) from error
 
 
 @router.get("/templates/{template_id}")
-def ambil_template(template_id: str) -> dict[str, Any]:
-    try:
-        data = ve.load_template(template_id)
-    except ve.VideoError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+def ambil_template(
+    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, Any]:
+    data = _template_terlihat(template_id, pengguna)
     aset = sorted(
         p.name for p in (ve.template_path(template_id) / "assets").glob("*") if p.is_file()
     )
     # Kotak badge yang akan dipakai kalau pengguna belum menggambarnya, supaya
-    # halaman bisa menampilkannya sebagai tebakan.
+    # halaman bisa menampilkannya sebagai tebakan. can_edit memberi tahu
+    # halaman apakah kendali penyuntingan perlu dikunci.
     return {
         **data,
         "assets": aset,
         "badge_box_default": ve.kotak_kategori_bawaan(data.get("text_box")),
+        "can_edit": ve.boleh_ubah(data, _nama_akun(pengguna)),
     }
 
 
 @router.get("/templates/{template_id}/preview.png")
-def pratinjau_template(template_id: str) -> Response:
+def pratinjau_template(
+    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> Response:
     """Gambar komposit layer statis template (tanpa video), untuk halaman."""
     import io
 
+    template = _template_terlihat(template_id, pengguna)
     try:
-        template = ve.load_template(template_id)
         kanvas = ve.komposit_statis(template)
     except ve.VideoError as error:
         raise _tangani(error)
@@ -297,10 +379,12 @@ def pratinjau_template(template_id: str) -> Response:
 
 
 @router.post("/templates/{template_id}/detect-box")
-def deteksi_kotak(template_id: str) -> dict[str, Any]:
+def deteksi_kotak(
+    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, Any]:
     """Tebak posisi kotak teks dari layer gambar template."""
+    template = _template_terlihat(template_id, pengguna)
     try:
-        template = ve.load_template(template_id)
         kotak = ve.deteksi_kotak_teks(ve.komposit_statis(template))
     except ve.VideoError as error:
         raise _tangani(error)
@@ -310,10 +394,17 @@ def deteksi_kotak(template_id: str) -> dict[str, Any]:
 
 
 @router.post("/templates/{template_id}/duplicate")
-def duplikat_template(template_id: str, body: DuplikatBody) -> dict[str, Any]:
-    """Buat set layer baru dengan isi yang sama, hanya namanya berbeda."""
+def duplikat_template(
+    template_id: str, body: DuplikatBody, pengguna: dict[str, Any] = Depends(pengguna_wajib)
+) -> dict[str, Any]:
+    """Buat set layer baru dengan isi yang sama, hanya namanya berbeda.
+
+    Salinannya menjadi milik akun yang menyalin, juga saat sumbernya template
+    bawaan. Itulah cara menyunting template bawaan.
+    """
+    _template_terlihat(template_id, pengguna)
     try:
-        hasil = ve.duplicate_template(template_id, body.name)
+        hasil = ve.duplicate_template(template_id, body.name, owner=pengguna["username"])
     except ve.VideoError as error:
         raise _tangani(error)
     aset = sorted(
@@ -323,18 +414,22 @@ def duplikat_template(template_id: str, body: DuplikatBody) -> dict[str, Any]:
 
 
 @router.delete("/templates/{template_id}")
-def hapus_template(template_id: str) -> dict[str, bool]:
+def hapus_template(
+    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, bool]:
+    _template_milik(template_id, pengguna)
     ve.delete_template(template_id)
     return {"ok": True}
 
 
 @router.post("/templates/{template_id}/assets")
-async def unggah_aset(template_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+async def unggah_aset(
+    template_id: str,
+    file: UploadFile = File(...),
+    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+) -> dict[str, Any]:
     """Terima satu berkas layer (PNG overlay, intro, atau outro)."""
-    try:
-        ve.load_template(template_id)
-    except ve.VideoError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+    _template_milik(template_id, pengguna)
 
     nama = ve._aman(Path(file.filename or "aset").name)
     if Path(nama).suffix.lower() not in JENIS_ASET:
@@ -373,7 +468,10 @@ async def unggah_aset(template_id: str, file: UploadFile = File(...)) -> dict[st
 
 
 @router.delete("/templates/{template_id}/assets/{nama}")
-def hapus_aset(template_id: str, nama: str) -> dict[str, bool]:
+def hapus_aset(
+    template_id: str, nama: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, bool]:
+    _template_milik(template_id, pengguna)
     berkas = ve.template_path(template_id) / "assets" / ve._aman(nama)
     berkas.unlink(missing_ok=True)
     return {"ok": True}
@@ -385,14 +483,15 @@ def hapus_aset(template_id: str, nama: str) -> dict[str, bool]:
 
 
 @router.post("/jobs")
-def mulai_job(body: JobBody) -> dict[str, Any]:
-    try:
-        ve.load_template(body.template_id)
-    except ve.VideoError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+def mulai_job(
+    body: JobBody, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, Any]:
+    _template_terlihat(body.template_id, pengguna)
 
     _pastikan_antrean_muat(1)
-    job_id = vt.buat_job(body.url.strip(), body.template_id, body.texts)
+    job_id = vt.buat_job(
+        body.url.strip(), body.template_id, body.texts, owner=_nama_akun(pengguna) or ""
+    )
     vt.render_video.delay(
         job_id, body.url.strip(), body.template_id, body.texts, body.session_id.strip()
     )
@@ -460,7 +559,9 @@ async def unggah_sumber(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 @router.post("/jobs/batch")
-def mulai_banyak_job(body: BatchBody) -> dict[str, Any]:
+def mulai_banyak_job(
+    body: BatchBody, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, Any]:
     """Buat satu job per set layer untuk link yang sama.
 
     Worker mengerjakannya berurutan, dan video sumbernya diunduh sekali lalu
@@ -474,40 +575,41 @@ def mulai_banyak_job(body: BatchBody) -> dict[str, Any]:
     if not ids:
         raise HTTPException(status_code=400, detail="Pilih minimal satu set layer.")
     for tid in ids:
-        try:
-            ve.load_template(tid)
-        except ve.VideoError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+        _template_terlihat(tid, pengguna)
     _pastikan_antrean_muat(len(ids))
 
     url = body.url.strip()
+    pemilik = _nama_akun(pengguna) or ""
     jobs = []
     for tid in ids:
-        job_id = vt.buat_job(url, tid, body.texts)
+        job_id = vt.buat_job(url, tid, body.texts, owner=pemilik)
         vt.render_video.delay(job_id, url, tid, body.texts, body.session_id.strip())
         jobs.append({"job_id": job_id, "template_id": tid, "status": "queued"})
     return {"jobs": jobs}
 
 
 @router.get("/jobs")
-def daftar_job(limit: int = 20) -> dict[str, Any]:
-    return {"jobs": vt.daftar_job(max(1, min(100, limit)))}
+def daftar_job(
+    limit: int = 20, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, Any]:
+    """Riwayat render akun yang masuk. Tamu tidak punya riwayat."""
+    if not pengguna:
+        return {"jobs": []}
+    return {"jobs": vt.daftar_job(max(1, min(100, limit)), owner=pengguna["username"])}
 
 
 @router.get("/jobs/{job_id}")
-def status_job(job_id: str) -> dict[str, Any]:
-    try:
-        return vt.baca_status(job_id)
-    except ve.VideoError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+def status_job(
+    job_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, Any]:
+    return _job_terjangkau(job_id, pengguna)
 
 
 @router.get("/jobs/{job_id}/file")
-def berkas_job(job_id: str) -> FileResponse:
-    try:
-        status = vt.baca_status(job_id)
-    except ve.VideoError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+def berkas_job(
+    job_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> FileResponse:
+    status = _job_terjangkau(job_id, pengguna)
     if not status.get("output"):
         raise HTTPException(status_code=409, detail="Video belum selesai disusun")
     berkas = vt.job_path(job_id) / str(status["output"])
@@ -526,14 +628,19 @@ class BersihkanBody(BaseModel):
 
 
 @router.delete("/jobs/{job_id}")
-def hapus_job(job_id: str) -> dict[str, bool]:
+def hapus_job(
+    job_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, bool]:
+    _job_terjangkau(job_id, pengguna)
     ve.hapus_hasil_job(job_id)
     shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
     return {"ok": True}
 
 
 @router.post("/jobs/cleanup")
-def bersihkan_job(body: BersihkanBody) -> dict[str, int]:
+def bersihkan_job(
+    body: BersihkanBody, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+) -> dict[str, int]:
     """Buang hasil render yang sudah tidak ditampilkan lagi.
 
     Dipakai halaman saat memulai render baru atau saat ditinggalkan. Memakai
@@ -545,6 +652,10 @@ def bersihkan_job(body: BersihkanBody) -> dict[str, int]:
         job_id = str(job_id).strip()
         if not job_id:
             continue
+        try:
+            _job_terjangkau(job_id, pengguna)
+        except HTTPException:
+            continue  # bukan miliknya, atau sudah tidak ada
         ve.hapus_hasil_job(job_id)
         shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
         dihapus += 1

@@ -158,3 +158,126 @@
 .tautanBiru:hover {
   text-decoration: underline;
 }
+
+/* ---------- menu akun ---------- */
+.akunBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #2a3a2e;
+  border-radius: 999px;
+  background: transparent;
+  color: #7fe0a0;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 6px 12px 6px 14px;
+  cursor: pointer;
+}
+
+.akunBtn:hover,
+.akunBtn[aria-expanded="true"] {
+  border-color: #3fce6f;
+}
+
+.panah {
+  font-size: 11px;
+  color: #8fa095;
+}
+
+.akunWrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 50;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid #2a3a2e;
+  border-radius: 12px;
+  background: #161a17;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+}
+
+.menuItem {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #eef2ee;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.menuItem:hover {
+  background: #1f2621;
+}
+
+.menuKeluar {
+  color: #ff9a9a;
+}
+
+/* ---------- kolom password ---------- */
+.pwWrap {
+  position: relative;
+  display: block;
+}
+
+.pwWrap input {
+  padding-right: 44px;
+}
+
+.pwToggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8fa095;
+  cursor: pointer;
+}
+
+.pwToggle:hover,
+.pwToggle[aria-pressed="true"] {
+  color: #eef2ee;
+  background: #1f2621;
+}
+
+.bantu {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #8fa095;
+  line-height: 1.5;
+}
+
+.sukses {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #7fe0a0;
+  line-height: 1.6;
+}
+
+.catatan {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #8fa095;
+  line-height: 1.6;
+  text-align: center;
+}

@@ -74,15 +74,19 @@ def tulis_status(job_id: str, **ubahan: Any) -> dict[str, Any]:
     return data
 
 
-def daftar_job(batas: int = 20) -> list[dict[str, Any]]:
+def daftar_job(batas: int = 20, owner: str | None = None) -> list[dict[str, Any]]:
+    """Job terbaru. ``owner`` menyaring per akun ("" = job tamu); None = semua."""
     hasil = []
     for folder in jobs_dir().iterdir():
         if not folder.is_dir():
             continue
         try:
-            hasil.append(baca_status(folder.name))
+            status = baca_status(folder.name)
         except VideoError:
             continue
+        if owner is not None and str(status.get("owner") or "") != owner:
+            continue
+        hasil.append(status)
     hasil.sort(key=lambda d: d.get("created") or 0, reverse=True)
     return hasil[:batas]
 
@@ -112,8 +116,14 @@ def bersihkan_job_lama() -> int:
     return dihapus
 
 
-def buat_job(url: str, template_id: str, texts: dict[str, str] | None = None) -> str:
-    """Siapkan folder + status awal, lalu kembalikan ID job."""
+def buat_job(
+    url: str, template_id: str, texts: dict[str, str] | None = None, owner: str = ""
+) -> str:
+    """Siapkan folder + status awal, lalu kembalikan ID job.
+
+    ``owner`` = username pemilik job; kosong untuk tamu. Riwayat akun dibaca
+    dari sini, dan job orang lain tidak bisa dilihat lewat API.
+    """
     job_id = uuid.uuid4().hex[:12]
     tulis_status(
         job_id,
@@ -121,6 +131,7 @@ def buat_job(url: str, template_id: str, texts: dict[str, str] | None = None) ->
         progress=0,
         url=url,
         template_id=template_id,
+        owner=str(owner or "").strip().lower(),
         texts=texts or {},
         output=None,
         error=None,
