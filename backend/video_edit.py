@@ -165,9 +165,19 @@ def _tarik_dari_storage(path_relatif: str, tujuan: Path) -> bool:
         return False
     try:
         storage.download(path_relatif, tujuan)
-        return tujuan.is_file()
     except storage.StorageError:
-        return False
+        pass
+    if tujuan.is_file():
+        return True
+    # Folder yang dibuat untuk menampung unduhan yang ternyata tidak ada
+    # dibuang lagi; kalau tidak, setiap id template yang salah ketik
+    # meninggalkan folder kosong di disk.
+    try:
+        if tujuan.parent.is_dir() and not any(tujuan.parent.iterdir()):
+            tujuan.parent.rmdir()
+    except OSError:
+        pass
+    return False
 
 
 _sinkron_terakhir = 0.0
