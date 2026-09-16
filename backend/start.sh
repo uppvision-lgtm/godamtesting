@@ -17,10 +17,15 @@ PORT="${PORT:-8000}"
 
 echo "==> Menjalankan Celery worker..."
 # Pool "solo" hanya mengerjakan satu tugas pada satu waktu, berapa pun
-# concurrency-nya — render banyak template jadi selalu berurutan. Prefork
-# menjalankan sebanyak CELERY_CONCURRENCY proses sekaligus.
+# concurrency-nya, sehingga render banyak template selalu berurutan.
+#
+# Dipakai "threads", bukan "prefork": prefork menyalin seluruh proses Python
+# untuk tiap worker, dan di container kecil sisa memorinya jadi tidak cukup
+# untuk ffmpeg — rendernya dimatikan sistem. Threads berbagi satu proses,
+# dan itu tidak memperlambat apa pun di sini karena kerja beratnya ada di
+# ffmpeg yang berjalan sebagai proses terpisah.
 celery -A celery_app.celery_app worker --loglevel="$LOG_LEVEL" \
-  --pool=prefork --concurrency="$CELERY_CONCURRENCY" &
+  --pool=threads --concurrency="$CELERY_CONCURRENCY" &
 CELERY_PID=$!
 
 echo "==> Menjalankan FastAPI di port $PORT ..."
