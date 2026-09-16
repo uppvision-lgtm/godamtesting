@@ -54,6 +54,7 @@
   font-size: var(--teks-isi);
   font-weight: 700;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: border-color .15s, color .15s, background .15s, opacity .15s;
   border: none;
@@ -73,6 +74,7 @@
   font-size: var(--teks-isi);
   font-weight: 700;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: border-color .15s, color .15s, background .15s, opacity .15s;
   border: 1px solid var(--garis);
@@ -92,6 +94,7 @@
   font-size: var(--teks-isi);
   font-weight: 700;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: border-color .15s, color .15s, background .15s, opacity .15s;
   border: 1px solid var(--garis);
@@ -178,11 +181,6 @@
   flex-wrap: wrap;
 }
 
-.panelHead h2 {
-  font-size: var(--teks-judul);
-  font-weight: 800;
-  margin: 0;
-}
 
 .headActions {
   display: flex;
@@ -263,22 +261,11 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--sela-3);
+  /* Menumpuk hanya saat benar-benar tidak muat, bukan sedikit-sedikit. */
+  flex-wrap: wrap;
 }
 
-.blokHead h3 {
-  font-size: var(--teks-isi);
-  font-weight: 800;
-  margin: 0;
-  color: #eef2ee;
-}
 
-.hint {
-  font-size: var(--teks-isi);
-  color: #8fa095;
-  font-weight: 600;
-  line-height: 1.6;
-  margin: 0;
-}
 
 .asetList {
   list-style: none;
@@ -325,8 +312,9 @@
 .aksi {
   display: flex;
   align-items: center;
-  gap: var(--sela-3);
-  flex-wrap: wrap;
+  gap: var(--sela-2);
+  /* Tidak membungkus: tombol di satu baris berdampingan, bukan bertumpuk. */
+  flex-wrap: nowrap;
 }
 
 .simpanBtn {
@@ -352,12 +340,6 @@
   color: #7fe0a0;
 }
 
-.error {
-  font-size: var(--teks-isi);
-  font-weight: 700;
-  color: #ff9a9a;
-  margin: 0;
-}
 
 /* ---------- JOB ---------- */
 
@@ -575,6 +557,7 @@
   font: inherit;
   font-size: var(--teks-kecil);
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
   background: transparent;
   color: inherit;
