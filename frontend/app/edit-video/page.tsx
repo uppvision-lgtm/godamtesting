@@ -1231,26 +1231,30 @@ export default function EditVideoPage() {
                     Kotak badge
                   </button>
                 </div>
-                <div className={styles.aksi}>
-                  <button
-                    type="button"
-                    className={styles.ghostBtn}
-                    onClick={deteksiKotak}
-                    disabled={mendeteksi || !susunan}
-                  >
-                    {mendeteksi ? "Mencari..." : "Deteksi otomatis"}
+              </div>
+              {/* Tombol aksi sengaja ditaruh di luar baris judul. Kalau ikut di
+                  dalamnya, jumlah tombol yang berubah-ubah membuat baris kadang
+                  membungkus kadang tidak, dan sakelar mode jadi berpindah-pindah
+                  antara tengah dan kanan. */}
+              <div className={styles.aksi}>
+                <button
+                  type="button"
+                  className={styles.ghostBtn}
+                  onClick={deteksiKotak}
+                  disabled={mendeteksi || !susunan}
+                >
+                  {mendeteksi ? "Mencari..." : "Deteksi otomatis"}
+                </button>
+                {modeGambar === "teks" && kotakTeks && (
+                  <button type="button" className={styles.hapusBtn} onClick={() => void simpanKotak(null)}>
+                    Hapus kotak teks
                   </button>
-                  {modeGambar === "teks" && kotakTeks && (
-                    <button type="button" className={styles.hapusBtn} onClick={() => void simpanKotak(null)}>
-                      Hapus kotak teks
-                    </button>
-                  )}
-                  {modeGambar === "kategori" && badgeBox && (
-                    <button type="button" className={styles.hapusBtn} onClick={() => void simpanBadge(null)}>
-                      Pakai tebakan
-                    </button>
-                  )}
-                </div>
+                )}
+                {modeGambar === "kategori" && badgeBox && (
+                  <button type="button" className={styles.hapusBtn} onClick={() => void simpanBadge(null)}>
+                    Pakai tebakan
+                  </button>
+                )}
               </div>
               <p className={styles.hint}>
                 Seret di gambar untuk menentukan letak tulisan.
