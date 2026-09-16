@@ -334,6 +334,9 @@ export default function EditVideoPage() {
   const seretRef = useRef<{ x: number; y: number } | null>(null);
   const pratinjauRef = useRef<HTMLDivElement>(null);
   const [versiPratinjau, setVersiPratinjau] = useState(0);
+  // Gambar pratinjau dimuat ulang tiap kali layer berubah; rangka menahan
+  // ruangnya supaya isian di bawahnya tidak melompat saat gambar datang.
+  const [pratinjauSiap, setPratinjauSiap] = useState(false);
   const [mendeteksi, setMendeteksi] = useState(false);
   const [kategori, setKategori] = useState("");
   const [teksWarna, setTeksWarna] = useState<"black" | "white">("white");
@@ -513,6 +516,7 @@ export default function EditVideoPage() {
     }
     // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
     setVersiPratinjau((v) => v + 1);
+    setPratinjauSiap(false);
     // Tebakan kotak badge dihitung server dari kotak teks; ambil yang terbaru.
     try {
       const r = await fetch(`/api/video/templates/${sasaran}`, { cache: "no-store" });
@@ -1266,11 +1270,15 @@ export default function EditVideoPage() {
                   onPointerUp={selesaiSeret}
                   onPointerCancel={selesaiSeret}
                 >
+                  {!pratinjauSiap && <div className={styles.rangkaKotak} style={{ height: 200 }} />}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={`/api/video/templates/${idSet}/preview.png?v=${versiPratinjau}`}
-                    alt="Pratinjau layer"
+                    alt="Pratinjau template"
                     draggable={false}
+                    style={pratinjauSiap ? undefined : { display: "none" }}
+                    onLoad={() => setPratinjauSiap(true)}
+                    onError={() => setPratinjauSiap(true)}
                   />
                   {(() => {
                     const teksK = modeGambar === "teks" && kotakSementara ? kotakSementara : kotakTeks;
@@ -1339,7 +1347,15 @@ export default function EditVideoPage() {
 
             {(memuatPratinjau || pratinjau || galatPratinjau) && (
               <div className={styles.pratinjauBox}>
-                {memuatPratinjau && <p className={styles.hint}>Membaca isi link ...</p>}
+                {memuatPratinjau && (
+                  <div className={styles.pratinjauIsi} aria-label="Sedang membaca isi link">
+                    <div className={`${styles.pratinjauGambar} ${styles.rangka}`} style={{ height: 90 }} />
+                    <div className={styles.pratinjauTeks} style={{ flex: 1 }}>
+                      <div className={styles.rangkaBaris} style={{ width: "70%" }} />
+                      <div className={styles.rangkaBaris} style={{ width: "45%" }} />
+                    </div>
+                  </div>
+                )}
                 {galatPratinjau && <p className={styles.error}>{galatPratinjau}</p>}
                 {pratinjau && (
                   <>
@@ -1479,7 +1495,12 @@ export default function EditVideoPage() {
 
               {modeTeks === "ai" ? (
                 <>
-                  {membuatHook && <p className={styles.hint}>Menyusun teks dari caption ...</p>}
+                  {membuatHook && (
+                    <div aria-label="Sedang menyusun tulisan berita">
+                      <div className={styles.rangkaBaris} style={{ width: "92%" }} />
+                      <div className={styles.rangkaBaris} style={{ width: "78%" }} />
+                    </div>
+                  )}
                   {isi && (
                     <p className={`${styles.hookParagraf} ${teksWarna === "white" ? styles.isiPutih : styles.isiHitam}`}>
                       <span className={styles.hookKicker}>{kicker || "VIRAL"}!</span> {isi}
@@ -1586,6 +1607,10 @@ export default function EditVideoPage() {
                 </div>
               </div>
               <div className={styles.daftarCek}>
+                {daftarSet.length === 0 &&
+                  [0, 1, 2].map((i) => (
+                    <div key={i} className={styles.rangkaKotak} style={{ width: 120, height: 38 }} />
+                  ))}
                 {daftarSet.map((d) => (
                   <label key={d.id} className={styles.cekItem}>
                     <input

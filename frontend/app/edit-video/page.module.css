@@ -1,3 +1,95 @@
+/* ============================================================
+   Nilai dasar tampilan.
+
+   Sebelumnya halaman ini memakai sebelas ukuran huruf, lima nilai jarak, dan
+   lima radius yang berbeda-beda — kombinasi yang membuatnya terasa berantakan
+   walau tiap bagiannya sendiri terlihat wajar. Semuanya kini diambil dari
+   daftar di bawah, jadi yang dipakai selalu itu-itu saja.
+   ============================================================ */
+.page {
+  /* Jarak: satu deret naik, dipakai untuk gap, padding, dan margin. */
+  --sela-1: 4px;
+  --sela-2: 8px;
+  --sela-3: 12px;
+  --sela-4: 16px;
+  --sela-5: 24px;
+
+  /* Ukuran huruf: empat tingkat saja, dari judul sampai keterangan. */
+  --teks-judul: 18px;
+  --teks-subjudul: 14px;
+  --teks-isi: 13px;
+  --teks-kecil: 11px;
+
+  /* Sudut membulat */
+  --bulat-kecil: 8px;
+  --bulat: 12px;
+  --bulat-penuh: 999px;
+
+  /* Warna */
+  --hijau: #7fe0a0;
+  --hijau-tua: #3fce6f;
+  --merah: #ff7d7d;
+  --kuning: #f0b429;
+  --garis: #2a3a2e;
+  --redup: #9aa89f;
+}
+
+/* ---- Tiga peran tombol ----
+   Sebelumnya ada tujuh gaya tombol dengan tinggi dan radius berbeda. Sekarang
+   hanya tiga peran, dan nama kelas lama menumpang lewat "composes" supaya
+   tampilannya seragam tanpa perlu mengubah seluruh halaman. */
+.btnDasar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sela-1);
+  min-height: 34px;
+  padding: var(--sela-2) var(--sela-3);
+  border-radius: var(--bulat-kecil);
+  font-family: inherit;
+  font-size: var(--teks-isi);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s, opacity 0.15s;
+}
+
+.btnDasar:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btnUtama {
+  composes: btnDasar;
+  border: none;
+  background: var(--hijau);
+  color: #051008;
+}
+
+.btnSekunder {
+  composes: btnDasar;
+  border: 1px solid var(--garis);
+  background: transparent;
+  color: var(--redup);
+}
+
+.btnSekunder:hover:not(:disabled) {
+  color: #eef2ee;
+  border-color: var(--hijau-tua);
+}
+
+.btnBahaya {
+  composes: btnDasar;
+  border: 1px solid var(--garis);
+  background: transparent;
+  color: var(--redup);
+}
+
+.btnBahaya:hover:not(:disabled) {
+  color: var(--merah);
+  border-color: #63302f;
+}
+
 .page {
   min-height: 100vh;
   background: #0f1210;
@@ -8,19 +100,19 @@
 .topbar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px 24px;
+  gap: var(--sela-4);
+  padding: var(--sela-4) var(--sela-5);
   border-bottom: 1px solid #232a24;
 }
 
 .back {
   color: #7fe0a0;
-  font-size: 18px;
+  font-size: var(--teks-judul);
   font-weight: 800;
 }
 
 .brand {
-  font-size: 14px;
+  font-size: var(--teks-subjudul);
   letter-spacing: 2px;
   color: #7fe0a0;
   font-weight: 700;
@@ -28,7 +120,7 @@
 
 .headStatus {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--teks-isi);
   text-transform: uppercase;
   color: #8fa095;
   font-weight: 700;
@@ -40,47 +132,47 @@
   padding-block: 28px 48px;
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 20px;
+  gap: var(--sela-5);
   align-items: start;
 }
 
 .panel {
   border: 1px solid #2a3a2e;
-  border-radius: 16px;
+  border-radius: var(--bulat);
   background: #161a17;
-  padding: 20px;
+  padding: var(--sela-5);
 }
 
 .panelHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sela-3);
   margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
 .panelHead h2 {
-  font-size: 17px;
+  font-size: var(--teks-judul);
   font-weight: 800;
   margin: 0;
 }
 
 .headActions {
   display: flex;
-  gap: 8px;
+  gap: var(--sela-2);
   align-items: center;
 }
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sela-4);
 }
 
 .row {
   display: flex;
-  gap: 10px;
+  gap: var(--sela-3);
   flex-wrap: wrap;
   align-items: flex-end;
 }
@@ -98,11 +190,11 @@
 .panel label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sela-2);
 }
 
 .panel label > span {
-  font-size: 12px;
+  font-size: var(--teks-isi);
   font-weight: 700;
   color: #9aa89f;
 }
@@ -111,13 +203,13 @@
 .panel select {
   width: 100%;
   border: 1px solid #2a3a2e;
-  border-radius: 9px;
+  border-radius: var(--bulat-kecil);
   background: #0f1210;
   color: #eef2ee;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--teks-isi);
   font-weight: 600;
-  padding: 10px 11px;
+  padding: var(--sela-3);
 }
 
 .panel input:focus,
@@ -133,29 +225,29 @@
 
 .blok {
   border: 1px solid #232a24;
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: var(--bulat);
+  padding: var(--sela-4);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sela-3);
 }
 
 .blokHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sela-3);
 }
 
 .blokHead h3 {
-  font-size: 13px;
+  font-size: var(--teks-isi);
   font-weight: 800;
   margin: 0;
   color: #eef2ee;
 }
 
 .hint {
-  font-size: 12px;
+  font-size: var(--teks-isi);
   color: #8fa095;
   font-weight: 600;
   line-height: 1.6;
@@ -166,7 +258,7 @@
   list-style: none;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sela-2);
   margin: 0;
   padding: 0;
 }
@@ -177,44 +269,28 @@
 
 .asetList code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--teks-kecil);
   background: #0f1210;
   border: 1px solid #2a3a2e;
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: var(--bulat-kecil);
+  padding: var(--sela-1) var(--sela-2);
   color: #7fe0a0;
 }
 
-.ghostBtn,
-.hapusBtn,
+.ghostBtn {
+  composes: btnSekunder;
+}
+
+.hapusBtn {
+  composes: btnBahaya;
+}
+
 .uploadBtn {
-  border: 1px solid #2a3a2e;
-  border-radius: 9px;
-  background: transparent;
-  color: #9aa89f;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 9px 12px;
-  cursor: pointer;
-  white-space: nowrap;
+  composes: btnSekunder;
 }
 
-.ghostBtn:hover,
-.uploadBtn:hover {
-  color: #eef2ee;
-  border-color: #3fce6f;
-}
 
-.ghostBtn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
 
-.hapusBtn:hover {
-  color: #ff9a9a;
-  border-color: #63302f;
-}
 
 .uploadBtn input[type="file"] {
   display: none;
@@ -223,39 +299,35 @@
 .aksi {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sela-3);
   flex-wrap: wrap;
 }
 
-.simpanBtn,
-.mulaiBtn,
-.unduhBtn {
-  border: none;
-  border-radius: 10px;
-  background: #7fe0a0;
-  color: #051008;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 800;
-  padding: 12px 18px;
-  cursor: pointer;
-  text-align: center;
+.simpanBtn {
+  composes: btnUtama;
 }
 
-.simpanBtn:disabled,
-.mulaiBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.mulaiBtn {
+  composes: btnUtama;
+  width: 100%;
+  min-height: 42px;
+  font-size: var(--teks-subjudul);
 }
+
+.unduhBtn {
+  composes: btnUtama;
+  text-decoration: none;
+}
+
 
 .pesan {
-  font-size: 12px;
+  font-size: var(--teks-isi);
   font-weight: 600;
   color: #7fe0a0;
 }
 
 .error {
-  font-size: 12px;
+  font-size: var(--teks-isi);
   font-weight: 700;
   color: #ff9a9a;
   margin: 0;
@@ -265,29 +337,29 @@
 
 .jobBox {
   border: 1px solid #232a24;
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: var(--bulat);
+  padding: var(--sela-4);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sela-3);
 }
 
 .jobHead {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 12px;
+  gap: var(--sela-3);
+  font-size: var(--teks-isi);
   font-weight: 600;
   color: #b8c6bd;
 }
 
 .badge {
-  font-size: 10px;
+  font-size: var(--teks-kecil);
   text-transform: uppercase;
   letter-spacing: 1px;
   font-weight: 800;
-  padding: 4px 9px;
-  border-radius: 999px;
+  padding: var(--sela-1) var(--sela-3);
+  border-radius: var(--bulat-penuh);
   background: #2a2f2b;
   color: #8fa095;
 }
@@ -311,7 +383,7 @@
 
 .barWrap {
   height: 7px;
-  border-radius: 999px;
+  border-radius: var(--bulat-penuh);
   background: #0f1210;
   border: 1px solid #2a3a2e;
   overflow: hidden;
@@ -326,7 +398,7 @@
 .logBody {
   max-height: 180px;
   overflow-y: auto;
-  font-size: 11.5px;
+  font-size: var(--teks-kecil);
   font-weight: 600;
   color: #9aa89f;
   line-height: 1.7;
@@ -336,13 +408,13 @@
 .hasil {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sela-3);
 }
 
 .video {
   width: 100%;
   max-height: 460px;
-  border-radius: 10px;
+  border-radius: var(--bulat);
   background: #000;
 }
 
@@ -356,10 +428,10 @@
 .hookBox {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: var(--sela-2);
+  padding: var(--sela-3);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
+  border-radius: var(--bulat);
   background: rgba(255, 255, 255, 0.03);
 }
 
@@ -370,37 +442,29 @@
 }
 
 .hookBtn {
+  composes: btnSekunder;
   align-self: flex-start;
-  padding: 8px 14px;
-  border: 0;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
-.hookBtn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
 
 /* ---- Pratinjau isi link ---- */
 .pratinjauBox {
-  padding: 12px;
+  padding: var(--sela-3);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
+  border-radius: var(--bulat);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .pratinjauIsi {
   display: flex;
-  gap: 12px;
+  gap: var(--sela-3);
   align-items: flex-start;
 }
 
 .pratinjauGambar {
   width: 140px;
   max-width: 40%;
-  border-radius: 8px;
+  border-radius: var(--bulat-kecil);
   object-fit: cover;
   flex-shrink: 0;
 }
@@ -408,7 +472,7 @@
 .pratinjauTeks {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sela-1);
   min-width: 0;
 }
 
@@ -417,7 +481,7 @@
 }
 
 .pratinjauTeks span {
-  font-size: 0.85em;
+  font-size: var(--teks-kecil);
   opacity: 0.75;
 }
 
@@ -432,10 +496,10 @@
 
 /* ---- Caption & hook ---- */
 .caption {
-  margin: 10px 0 0;
+  margin: var(--sela-3) 0 0;
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
-  font-size: 0.85em;
+  font-size: var(--teks-kecil);
   line-height: 1.5;
   opacity: 0.8;
   white-space: pre-wrap;
@@ -444,7 +508,7 @@
 }
 
 .hookJudul {
-  font-size: 0.8em;
+  font-size: var(--teks-kecil);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.6;
@@ -467,23 +531,23 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--sela-3);
   flex-wrap: wrap;
 }
 
 .pilihMode {
   display: inline-flex;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
+  border-radius: var(--bulat-penuh);
   overflow: hidden;
 }
 
 .modeBtn,
 .modeAktif {
-  padding: 5px 16px;
+  padding: var(--sela-1) var(--sela-4);
   border: 0;
   font: inherit;
-  font-size: 0.85em;
+  font-size: var(--teks-kecil);
   font-weight: 600;
   cursor: pointer;
   background: transparent;
@@ -496,43 +560,30 @@
 }
 
 .kredit {
-  margin: 4px 0 0;
+  margin: var(--sela-1) 0 0;
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
-  font-size: 0.85em;
+  font-size: var(--teks-kecil);
   opacity: 0.8;
 }
 
 /* ---- Tombol kosongkan slot layer ---- */
 .kosongkanBtn {
+  composes: btnBahaya;
   flex: 0 0 auto;
   width: 34px;
-  align-self: flex-end;
-  height: 38px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 1.2em;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.75;
+  align-self: flex-end;
+  font-size: var(--teks-subjudul);
 }
 
-.kosongkanBtn:hover {
-  border-color: #d32d27;
-  color: #d32d27;
-  opacity: 1;
-}
 
 /* ---- Pratinjau & kotak teks ---- */
 .pratinjauKotak {
   position: relative;
   width: 100%;
   max-width: 360px;
-  border-radius: 10px;
+  border-radius: var(--bulat);
   overflow: hidden;
   cursor: crosshair;
   touch-action: none;
@@ -572,16 +623,16 @@
 .daftarCek {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: var(--sela-2) var(--sela-4);
 }
 
 .cekItem {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: var(--sela-2);
+  padding: var(--sela-2) var(--sela-3);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
+  border-radius: var(--bulat-kecil);
   cursor: pointer;
 }
 
@@ -593,7 +644,7 @@
 .jobDaftar {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sela-3);
 }
 
 /* ---- Warna pratinjau teks berita ----
@@ -603,15 +654,15 @@
 .isiHitam {
   color: #111;
   background: #f4f4f4;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: var(--sela-3) var(--sela-3);
+  border-radius: var(--bulat-kecil);
 }
 
 .isiPutih {
   color: #fff;
   background: #1c1c1c;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: var(--sela-3) var(--sela-3);
+  border-radius: var(--bulat-kecil);
 }
 
 /* ---- Tanda tanya penjelasan ---- */
@@ -629,7 +680,7 @@
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--teks-kecil);
   line-height: 1;
   cursor: pointer;
   opacity: 0.7;
@@ -645,11 +696,11 @@
 .bantuanIsi {
   display: block;
   margin-top: 6px;
-  padding: 8px 10px;
+  padding: var(--sela-2) var(--sela-3);
   border-left: 2px solid rgba(74, 222, 128, 0.6);
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--bulat-kecil) var(--bulat-kecil) 0;
   background: rgba(255, 255, 255, 0.05);
-  font-size: 0.85em;
+  font-size: var(--teks-kecil);
   font-weight: 400;
   line-height: 1.5;
   opacity: 0.9;
@@ -660,7 +711,73 @@
 /* ---- Alasan tombol belum bisa ditekan ---- */
 .alasan {
   margin: -4px 0 0;
-  font-size: 0.85em;
+  font-size: var(--teks-kecil);
   text-align: center;
   opacity: 0.75;
+}
+
+
+/* ---- Tingkat tulisan ----
+   Tiga tingkat yang jelas: judul panel, judul bagian, lalu isi. Keterangan
+   kecil dibuat lebih redup agar tidak bersaing dengan isian. */
+.panelHead h2 {
+  margin: 0;
+  font-size: var(--teks-judul);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.blokHead h3 {
+  margin: 0;
+  font-size: var(--teks-subjudul);
+  font-weight: 700;
+}
+
+.form > label > span,
+.row > label > span {
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+}
+
+.hint {
+  font-size: var(--teks-kecil);
+  line-height: 1.55;
+  opacity: 0.65;
+}
+
+/* ---- Rangka pemuatan ----
+   Saat menunggu jawaban server, area kosong membuat halaman terlihat
+   berkedip. Balok redup berdenyut ini menahan ruangnya lebih dulu. */
+.rangka {
+  border-radius: var(--bulat-kecil);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 25%,
+    rgba(255, 255, 255, 0.11) 37%,
+    rgba(255, 255, 255, 0.05) 63%
+  );
+  background-size: 400% 100%;
+  animation: denyut 1.4s ease-in-out infinite;
+}
+
+.rangkaBaris {
+  composes: rangka;
+  height: 14px;
+  margin-bottom: var(--sela-2);
+}
+
+.rangkaKotak {
+  composes: rangka;
+  height: 76px;
+}
+
+@keyframes denyut {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rangka { animation: none; }
 }
