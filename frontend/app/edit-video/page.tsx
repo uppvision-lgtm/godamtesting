@@ -17,7 +17,7 @@ import { bacaForm, simpanForm } from "../components/formStore";
  * 4 layer + 1 outro, sesuai skrip main.py. Pengguna hanya mengganti berkasnya.
  */
 
-// Set layer pertama. Id "utama" dipertahankan dari versi sebelumnya supaya
+// Template pertama. Id "utama" dipertahankan dari versi sebelumnya supaya
 // berkas yang sudah diunggah tidak perlu diunggah ulang; namanya kini "TV
 // Rakyat". Set berikutnya dibuat lewat tombol "Baru" dengan id sendiri.
 const ID_SET_PERTAMA = "utama";
@@ -68,7 +68,7 @@ type TextLayer = {
   max_lines?: number;
   line_height?: number;
   kicker_color?: string;
-  // Isi diambil dari field set layer (mis. "kategori"), bukan dari job.
+  // Isi diambil dari field template (mis. "kategori"), bukan dari job.
   source?: string;
 };
 
@@ -173,7 +173,7 @@ const TEKS_HOOK: TextLayer = {
 };
 
 /** Badge kategori (NEWS / HIBURAN / SHOWBIZ). Isinya dari field "kategori"
- *  set layer, posisinya dari badge_box set itu (atau tebakan di atas kotak
+ *  template, posisinya dari badge_box set itu (atau tebakan di atas kotak
  *  teks kalau belum digambar). */
 const TEKS_KATEGORI: TextLayer = {
   name: "kategori",
@@ -252,6 +252,49 @@ function susunHook(kicker: string, isi: string): string {
   return k ? `${k}! ${i}` : i;
 }
 
+/**
+ * Tanda tanya kecil yang membuka penjelasan saat diklik.
+ *
+ * Penjelasan panjang disimpan di sini, bukan sebagai paragraf permanen:
+ * paragraf abu-abu di bawah tiap kolom jarang dibaca dan justru membuat
+ * halaman terasa rumit bagi yang baru pertama memakainya.
+ */
+function Bantuan({ children }: { children: React.ReactNode }) {
+  const [buka, setBuka] = useState(false);
+  return (
+    <span className={styles.bantuanBungkus}>
+      <button
+        type="button"
+        className={styles.bantuanTombol}
+        aria-expanded={buka}
+        aria-label={buka ? "Tutup penjelasan" : "Lihat penjelasan"}
+        onClick={() => setBuka((b) => !b)}
+      >
+        ?
+      </button>
+      {buka && <span className={styles.bantuanIsi}>{children}</span>}
+    </span>
+  );
+}
+
+/** Ubah status job jadi kalimat yang bisa dipahami tanpa tahu istilah teknis. */
+function labelStatus(status: string): string {
+  switch (status) {
+    case "queued":
+      return "Menunggu giliran";
+    case "downloading":
+      return "Mengambil video";
+    case "rendering":
+      return "Menyusun video";
+    case "done":
+      return "Selesai";
+    case "error":
+      return "Gagal";
+    default:
+      return status;
+  }
+}
+
 function formatDurasi(detik: number): string {
   const total = Math.round(detik);
   const m = Math.floor(total / 60);
@@ -298,7 +341,7 @@ export default function EditVideoPage() {
   const [badgeBoxBawaan, setBadgeBoxBawaan] = useState<KotakTeks | null>(null);
   // Kotak mana yang sedang digambar di pratinjau.
   const [modeGambar, setModeGambar] = useState<"teks" | "kategori">("teks");
-  // Set layer yang dicentang untuk dirender sekaligus.
+  // Template yang dicentang untuk dirender sekaligus.
   const [pilihanSet, setPilihanSet] = useState<string[]>([]);
 
   // Sumber video: tempel link, atau unggah berkas dari komputer.
@@ -332,7 +375,7 @@ export default function EditVideoPage() {
 
   // ===== SET LAYER =====
 
-  /** Ambil daftar semua set layer yang tersimpan. */
+  /** Ambil daftar semua template yang tersimpan. */
   const muatDaftar = useCallback(async () => {
     try {
       const res = await fetch("/api/video/templates", { cache: "no-store" });
@@ -352,7 +395,7 @@ export default function EditVideoPage() {
     }
   }, []);
 
-  /** Muat satu set layer. Kalau belum ada, dibuatkan dengan susunan bawaan. */
+  /** Muat satu template. Kalau belum ada, dibuatkan dengan susunan bawaan. */
   const muatSet = useCallback(async (id: string, nama: string) => {
     try {
       const res = await fetch(`/api/video/templates/${id}`, { cache: "no-store" });
@@ -396,7 +439,7 @@ export default function EditVideoPage() {
             await simpanSusunan(ada, ada.id);
           } catch (err) {
             setSusunan(ada);
-            setPesanLayer(err instanceof Error ? err.message : "Set layer belum tersimpan.");
+            setPesanLayer(err instanceof Error ? err.message : "Template belum tersimpan.");
           }
         } else {
           setSusunan(ada);
@@ -425,7 +468,7 @@ export default function EditVideoPage() {
         await muatDaftar();
       }
     } catch {
-      setPesanLayer("Tidak bisa menyiapkan set layer.");
+      setPesanLayer("Tidak bisa menyiapkan template.");
     }
     // simpanSusunan sengaja tidak masuk daftar dependensi: ia didefinisikan
     // ulang setiap render, jadi memasukkannya membuat muatSet ikut berubah
@@ -441,7 +484,7 @@ export default function EditVideoPage() {
     })();
   }, [muatDaftar, muatSet]);
 
-  /** Simpan set layer (dipanggil setelah berkas diganti atau nama diubah). */
+  /** Simpan template (dipanggil setelah berkas diganti atau nama diubah). */
   async function simpanSusunan(baru: Susunan, id?: string) {
     const sasaran = id || idSet;
     setSusunan(baru);
@@ -466,7 +509,7 @@ export default function EditVideoPage() {
     if (!res.ok) {
       // Pesan dari server dipakai apa adanya — mis. saat namanya bentrok.
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || "Gagal menyimpan set layer.");
+      throw new Error(data.detail || "Gagal menyimpan template.");
     }
     // Pratinjau digambar dari layer tersimpan, jadi dimuat ulang tiap ada perubahan.
     setVersiPratinjau((v) => v + 1);
@@ -502,9 +545,9 @@ export default function EditVideoPage() {
   async function duplikatSet() {
     if (!susunan) return;
     const usul = `${namaSet} (salinan)`;
-    const nama = (window.prompt("Nama set layer salinan:", usul) || "").trim();
+    const nama = (window.prompt("Nama template salinan:", usul) || "").trim();
     if (!nama) return;
-    setPesanLayer("Menyalin set layer ...");
+    setPesanLayer("Menyalin template ...");
     try {
       const res = await fetch(`/api/video/templates/${idSet}/duplicate`, {
         method: "POST",
@@ -512,30 +555,30 @@ export default function EditVideoPage() {
         body: JSON.stringify({ name: nama }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Gagal menyalin set layer.");
+      if (!res.ok) throw new Error(data.detail || "Gagal menyalin template.");
       await muatDaftar();
       // Langsung buka salinannya supaya bisa disunting.
       await muatSet(data.id, data.name);
-      setPesanLayer(`Set layer "${nama}" dibuat dari salinan "${namaSet}".`);
+      setPesanLayer(`Template "${nama}" dibuat dari salinan "${namaSet}".`);
     } catch (err) {
-      setPesanLayer(err instanceof Error ? err.message : "Gagal menyalin set layer.");
+      setPesanLayer(err instanceof Error ? err.message : "Gagal menyalin template.");
     }
   }
 
-  /** Hapus set layer yang sedang dibuka beserta berkasnya. */
+  /** Hapus template yang sedang dibuka beserta berkasnya. */
   async function hapusSet() {
     if (!susunan) return;
     const nama = namaSet;
-    if (!window.confirm(`Hapus set layer "${nama}"? Berkas layer di dalamnya ikut terhapus.`)) return;
+    if (!window.confirm(`Hapus template "${nama}"? Berkas layer di dalamnya ikut terhapus.`)) return;
     try {
       const res = await fetch(`/api/video/templates/${idSet}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Gagal menghapus set layer.");
+      if (!res.ok) throw new Error("Gagal menghapus template.");
       const daftar = await muatDaftar();
       const berikut = daftar[0];
       await muatSet(berikut?.id || ID_SET_PERTAMA, berikut?.name || NAMA_SET_PERTAMA);
-      setPesanLayer(`Set layer "${nama}" dihapus.`);
+      setPesanLayer(`Template "${nama}" dihapus.`);
     } catch (err) {
-      setPesanLayer(err instanceof Error ? err.message : "Gagal menghapus set layer.");
+      setPesanLayer(err instanceof Error ? err.message : "Gagal menghapus template.");
     }
   }
 
@@ -646,7 +689,7 @@ export default function EditVideoPage() {
     if (!susunan) return;
     const nama = namaSet.trim();
     if (!nama) {
-      setPesanLayer("Nama set layer tidak boleh kosong.");
+      setPesanLayer("Nama template tidak boleh kosong.");
       return;
     }
     setMenyimpanNama(true);
@@ -654,20 +697,20 @@ export default function EditVideoPage() {
     try {
       await simpanSusunan({ ...susunan, name: nama });
       await muatDaftar();
-      setPesanLayer(`Set layer "${nama}" tersimpan.`);
+      setPesanLayer(`Template "${nama}" tersimpan.`);
     } catch (err) {
       // Nama yang sudah dipakai set lain ditolak server; kembalikan isian ke
       // nama tersimpan supaya tidak tampak seolah perubahannya berhasil.
       setNamaSet(susunan.name);
-      setPesanLayer(err instanceof Error ? err.message : "Gagal menyimpan set layer.");
+      setPesanLayer(err instanceof Error ? err.message : "Gagal menyimpan template.");
     } finally {
       setMenyimpanNama(false);
     }
   }
 
-  /** Buat set layer baru yang kosong. */
+  /** Buat template baru yang kosong. */
   async function buatSetBaru() {
-    const nama = (window.prompt("Nama set layer baru:", "") || "").trim();
+    const nama = (window.prompt("Nama template baru:", "") || "").trim();
     if (!nama) return;
     // Id dibuat dari namanya supaya mudah dikenali di penyimpanan, dengan
     // akhiran acak agar dua set bernama mirip tidak saling menimpa.
@@ -676,7 +719,7 @@ export default function EditVideoPage() {
       "-" +
       Math.random().toString(36).slice(2, 6);
     await muatSet(id, nama);
-    setPesanLayer(`Set layer "${nama}" dibuat. Unggah berkas tiap layernya.`);
+    setPesanLayer(`Template "${nama}" dibuat. Unggah berkas tiap layernya.`);
   }
 
   /** Unggah satu berkas, kembalikan namanya ("assets/xxx.png"). */
@@ -728,7 +771,7 @@ export default function EditVideoPage() {
   async function kosongkanOutro() {
     if (!susunan) return;
     await simpanSusunan({ ...susunan, outro: null });
-    setPesanLayer("Outro dikosongkan.");
+    setPesanLayer("Video penutup dikosongkan.");
   }
 
   async function gantiOutro(file: File) {
@@ -970,6 +1013,20 @@ export default function EditVideoPage() {
 
   const sedangJalan = jobs.some((j) => !selesai(j.status));
 
+  // Kenapa tombol Buat video belum bisa ditekan. Ditampilkan apa adanya di
+  // bawah tombol supaya tidak perlu menebak bagian mana yang kurang.
+  const alasanBelumSiap = (() => {
+    if (modeSumber === "link" && !pratinjau) {
+      return link.trim()
+        ? "Tunggu sebentar, isi linknya sedang dibaca."
+        : "Tempel dulu link videonya di atas.";
+    }
+    if (modeSumber === "file" && !berkasSumber) return "Pilih dulu video dari komputer.";
+    if (modeSumber === "file" && captionManual.trim().length < 3) return "Isi dulu caption videonya.";
+    if (pilihanSet.length === 0) return "Centang dulu minimal satu template di bawah.";
+    return "";
+  })();
+
   return (
     <div className={styles.page}>
       <header className={styles.topbar}>
@@ -982,14 +1039,14 @@ export default function EditVideoPage() {
         {/* ================= LAYER ================= */}
         <section className={styles.panel}>
           <div className={styles.panelHead}>
-            <h2>Layer</h2>
+            <h2>Template</h2>
             <span className={styles.headStatus}>720 × 1280</span>
           </div>
 
           <div className={styles.form}>
             <div className={styles.row}>
               <label>
-                <span>Set layer</span>
+                <span>Template</span>
                 <select
                   className={styles.select}
                   value={idSet}
@@ -1021,7 +1078,7 @@ export default function EditVideoPage() {
                 className={styles.hapusBtn}
                 onClick={hapusSet}
                 disabled={!susunan}
-                title="Hapus set layer yang sedang dibuka"
+                title="Hapus template yang sedang dibuka"
               >
                 Hapus
               </button>
@@ -1029,7 +1086,7 @@ export default function EditVideoPage() {
 
             <div className={styles.row}>
               <label>
-                <span>Nama set</span>
+                <span>Nama template</span>
                 <input
                   value={namaSet}
                   maxLength={60}
@@ -1048,8 +1105,12 @@ export default function EditVideoPage() {
             </div>
 
             <p className={styles.hint}>
-              Empat layer dan satu outro, susunannya tetap. Kamu cukup mengganti berkasnya —
-              posisi dan waktu tampilnya sudah diatur. Berkas tersimpan per set layer.
+              Ganti berkas tiap bagian di bawah ini.
+              <Bantuan>
+                Susunan dan waktu tampil tiap bagian sudah diatur, jadi kamu cukup mengganti
+                berkasnya. Berkas disimpan terpisah per template, jadi mengubah satu template
+                tidak memengaruhi yang lain.
+              </Bantuan>
             </p>
 
             {(susunan?.overlays || []).map((ov, i) => (
@@ -1089,7 +1150,7 @@ export default function EditVideoPage() {
 
             <div className={styles.row}>
               <label>
-                <span>Outro</span>
+                <span>Video penutup</span>
                 <input
                   readOnly
                   value={susunan?.outro ? susunan.outro.replace("assets/", "") : "(belum ada berkas)"}
@@ -1099,8 +1160,8 @@ export default function EditVideoPage() {
                 <button
                   type="button"
                   className={styles.kosongkanBtn}
-                  title="Kosongkan outro"
-                  aria-label="Kosongkan outro"
+                  title="Kosongkan video penutup"
+                  aria-label="Kosongkan video penutup"
                   onClick={() => void kosongkanOutro()}
                 >
                   ×
@@ -1122,7 +1183,14 @@ export default function EditVideoPage() {
 
             <div className={styles.row}>
               <label>
-                <span>Kategori badge (mis. NEWS, HIBURAN, SHOWBIZ)</span>
+                <span>
+                  Label kategori
+                  <Bantuan>
+                    Tulisan di kotak kecil berwarna, mis. NEWS atau HIBURAN. Ditulis kapital,
+                    ukurannya menyesuaikan kotak, dan muncul bersamaan dengan panel bawah lalu
+                    ikut hilang. Kosongkan kalau template ini tidak memakainya.
+                  </Bantuan>
+                </span>
                 <input
                   value={kategori}
                   maxLength={30}
@@ -1135,18 +1203,14 @@ export default function EditVideoPage() {
                 />
               </label>
             </div>
-            <p className={styles.hint}>
-              Ditulis kapital di dalam kotak badge — huruf besarnya menyesuaikan kotak.
-              Muncul bersamaan dengan kotak bawah, lalu ikut hilang. Kosongkan kalau
-              template ini tidak memakai badge.
-            </p>
+
 
 
 
             {/* ---- KOTAK TEKS ---- */}
             <div className={styles.blok}>
               <div className={styles.blokHead}>
-                <h3>Kotak teks &amp; badge</h3>
+                <h3>Posisi tulisan</h3>
                 <div className={styles.pilihMode}>
                   <button
                     type="button"
@@ -1185,9 +1249,13 @@ export default function EditVideoPage() {
                 </div>
               </div>
               <p className={styles.hint}>
-                Hijau = kotak teks hook, oranye = kotak badge kategori (putus-putus berarti
-                masih tebakan di atas kotak teks). Pilih mode lalu seret di pratinjau untuk
-                menggambar ulang. Tiap set layer punya kotaknya sendiri.
+                Seret di gambar untuk menentukan letak tulisan.
+                <Bantuan>
+                  Hijau adalah kotak tulisan berita, oranye kotak label kategori. Garis
+                  putus-putus berarti letaknya masih tebakan otomatis. Pilih dulu kotak mana
+                  yang mau diatur lewat tombol di atas, lalu seret di gambar. Tiap template
+                  punya letaknya sendiri.
+                </Bantuan>
               </p>
               {susunan && (
                 <div
@@ -1261,7 +1329,7 @@ export default function EditVideoPage() {
             {modeSumber === "link" ? (
               <>
             <label>
-              <span>Link video sumber</span>
+              <span>Link video</span>
               <input
                 value={link}
                 onChange={(e) => setLink(e.target.value)}
@@ -1340,17 +1408,28 @@ export default function EditVideoPage() {
               </p>
             )}
             <label>
-              <span>Caption video (wajib — bahan teks hook)</span>
+              <span>
+                  Caption video
+                  <Bantuan>
+                    Wajib diisi. Tulisan berita di video disusun dari caption ini, jadi
+                    ceritakan isi videonya beberapa kalimat.
+                  </Bantuan>
+                </span>
               <textarea
                 className={styles.naskah}
                 rows={3}
                 value={captionManual}
                 onChange={(e) => setCaptionManual(e.target.value)}
-                placeholder="Ceritakan isi videonya beberapa kalimat. Teks hook disusun dari sini."
+                placeholder="Ceritakan isi videonya beberapa kalimat. Tulisan berita disusun dari sini."
               />
             </label>
             <label>
-              <span>Sumber / pemilik video (opsional, untuk kredit di bar bawah)</span>
+              <span>
+                  Pemilik video
+                  <Bantuan>
+                    Opsional. Ditulis sebagai kredit &quot;SUMBER: ...&quot; di bar bawah video.
+                  </Bantuan>
+                </span>
               <input
                 value={sumberManual}
                 maxLength={60}
@@ -1412,10 +1491,7 @@ export default function EditVideoPage() {
                     </p>
                   )}
                   {sumberHook && <p className={styles.hint}>{sumberHook}</p>}
-                  <p className={styles.hint}>
-                    Warnanya mengikuti pilihan Hitam/Putih di atas — pilih yang kontras dengan
-                    kotak template. Kata pembukanya tetap merah.
-                  </p>
+
                   {naskahAktif().trim().length >= 3 && !membuatHook && (
                     <button
                       type="button"
@@ -1429,7 +1505,13 @@ export default function EditVideoPage() {
               ) : (
                 <>
                   <label>
-                    <span>Kata pembuka (merah, otomatis diberi tanda seru)</span>
+                    <span>
+                      Kata pembuka
+                      <Bantuan>
+                        Satu kata yang menarik perhatian, mis. VIRAL atau HEBOH. Ditulis merah
+                        dan otomatis diberi tanda seru.
+                      </Bantuan>
+                    </span>
                     <input
                       value={kickerManual}
                       maxLength={12}
@@ -1457,8 +1539,11 @@ export default function EditVideoPage() {
                     </p>
                   )}
                   <p className={styles.hint}>
-                    Huruf kecil otomatis dijadikan kapital. Kalau terlalu panjang untuk 4 baris,
-                    ukuran hurufnya diperkecil sedikit saat dirender.
+                    Maksimal 4 baris.
+                    <Bantuan>
+                      Huruf kecil otomatis dijadikan kapital. Kalau tulisannya terlalu panjang
+                      untuk empat baris, ukuran hurufnya diperkecil sedikit saat dirender.
+                    </Bantuan>
                   </p>
                   {isi && (
                     <button
@@ -1517,24 +1602,26 @@ export default function EditVideoPage() {
                 ))}
               </div>
               <p className={styles.hint}>
-                Satu link dirender sekali untuk tiap template yang dicentang. Video sumbernya
-                diunduh sekali lalu dipakai ulang, dan hasilnya dikerjakan berurutan.
+                Centang template yang mau dipakai.
+                <Bantuan>
+                  Satu video dibuat untuk tiap template yang dicentang. Videonya diambil sekali
+                  lalu dipakai ulang, dan hasilnya dikerjakan bergantian.
+                </Bantuan>
               </p>
             </div>
 
             <button
               className={styles.mulaiBtn}
               onClick={mulaiRender}
-              disabled={
-                mengirim ||
-                pilihanSet.length === 0 ||
-                (modeSumber === "link" ? !pratinjau : !berkasSumber || captionManual.trim().length < 3)
-              }
+              disabled={mengirim || alasanBelumSiap !== ""}
             >
               {mengirim
                 ? "Mengirim..."
-                : `Buat ${pilihanSet.length} video`}
+                : pilihanSet.length === 1
+                  ? "Buat 1 video"
+                  : `Buat ${pilihanSet.length} video`}
             </button>
+            {alasanBelumSiap && <p className={styles.alasan}>{alasanBelumSiap}</p>}
 
             {jobs.length > 0 && (
               <div className={styles.jobDaftar}>
@@ -1543,13 +1630,26 @@ export default function EditVideoPage() {
                   return (
                     <div key={j.job_id} className={styles.jobBox}>
                       <div className={styles.jobHead}>
-                        <span className={`${styles.badge} ${styles[j.status] || ""}`}>{j.status}</span>
+                        <span className={`${styles.badge} ${styles[j.status] || ""}`}>
+                          {labelStatus(j.status)}
+                        </span>
                         <strong>{namaSetDari(j.template_id)}</strong>
-                        <span>{j.message}</span>
                       </div>
-                      <div className={styles.barWrap}>
-                        <div className={styles.bar} style={{ width: `${j.progress || 0}%` }} />
-                      </div>
+                      {!selesai(j.status) && (
+                        <>
+                          <div className={styles.barWrap}>
+                            <div className={styles.bar} style={{ width: `${j.progress || 0}%` }} />
+                          </div>
+                          <p className={styles.hint}>
+                            {j.status === "rendering"
+                              ? `Menyusun video — ${j.progress || 0}% selesai`
+                              : labelStatus(j.status)}
+                          </p>
+                        </>
+                      )}
+                      {j.status === "done" && (
+                        <p className={styles.hint}>Video siap diputar dan diunduh.</p>
+                      )}
                       {j.status === "error" && j.error && <p className={styles.error}>{j.error}</p>}
                       {j.status === "done" && berkas && (
                         <div className={styles.hasil}>
