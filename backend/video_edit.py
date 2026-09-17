@@ -128,6 +128,14 @@ class VideoError(RuntimeError):
     """Kesalahan yang layak ditampilkan apa adanya ke pengguna."""
 
 
+class Dibatalkan(VideoError):
+    """Render dihentikan atas permintaan pengguna, bukan karena gagal.
+
+    Dipisah dari VideoError biasa supaya halaman bisa membedakan "kamu yang
+    menghentikan" dari "ada yang salah".
+    """
+
+
 # ============================================================
 #  LOKASI BERKAS
 # ============================================================
@@ -1678,8 +1686,15 @@ def render(
     texts: dict[str, str] | None = None,
     log: Callable[[str], None] | None = None,
     progress: Callable[[int], None] | None = None,
+    batal: Callable[[], bool] | None = None,
 ) -> Path:
-    """Susun video akhir sesuai template. Mengembalikan path berkas hasil."""
+    """Susun video akhir sesuai template. Mengembalikan path berkas hasil.
+
+    ``batal`` ditanya berkala selama render berjalan. Begitu ia menjawab True,
+    ffmpeg dihentikan dan Dibatalkan dilempar. Pembatalan harus bekerja seperti
+    ini, bukan dengan mematikan tugas Celery: worker memakai kumpulan utas, dan
+    utas tidak bisa ditembak dari luar seperti proses.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     keluaran = out_dir / "output.mp4"
     perintah, total = _bangun_perintah(template, source, keluaran, texts or {}, out_dir)
@@ -1696,8 +1711,16 @@ def render(
         )
         persen_terakhir = -1
         try:
+            periksa_batal = 0.0
             for baris in proses.stdout or []:
                 baris = baris.strip()
+                # Ditanya paling sering sekali per detik; ffmpeg mengirim kabar
+                # jauh lebih rapat dari itu dan tiap pertanyaan menyentuh Redis.
+                if batal and time.monotonic() - periksa_batal > 1.0:
+                    periksa_batal = time.monotonic()
+                    if batal():
+                        proses.kill()
+                        raise Dibatalkan("Pembuatan video dihentikan.")
                 if baris.startswith("out_time_ms=") and total > 0:
                     try:
                         detik = int(baris.split("=", 1)[1]) / 1_000_000

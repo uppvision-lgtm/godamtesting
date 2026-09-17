@@ -309,6 +309,8 @@ function labelStatus(status: string): string {
       return "Selesai";
     case "error":
       return "Gagal";
+    case "dibatalkan":
+      return "Dihentikan";
     default:
       return status;
   }
@@ -334,7 +336,13 @@ function formatTanggal(yyyymmdd: string): string {
 }
 
 function selesai(status: string): boolean {
-  return status === "done" || status === "error";
+  return status === "done" || status === "error" || status === "dibatalkan";
+}
+
+/** Nama berkas unduhan yang enak dibaca, mis. "TV Rakyat.mp4". */
+function namaUnduhan(nama: string, jobId: string): string {
+  const bersih = nama.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  return `${bersih || "video"}-${jobId.slice(0, 6)}.mp4`;
 }
 
 export default function EditVideoPage() {
@@ -402,6 +410,11 @@ export default function EditVideoPage() {
   const [membuatHook, setMembuatHook] = useState(false);
 
   const [jobs, setJobs] = useState<JobStatus[]>([]);
+  // Angka persen yang DITAMPILKAN, terpisah dari angka yang dilaporkan server.
+  // Server hanya ditanya tiap dua detik, jadi angkanya melompat; yang ini
+  // berjalan naik satu per satu supaya tidak ada angka yang terlewat.
+  const [progresTampil, setProgresTampil] = useState<Record<string, number>>({});
+  const [menghentikan, setMenghentikan] = useState(false);
   const [mengirim, setMengirim] = useState(false);
   const [galat, setGalat] = useState("");
 
@@ -1080,6 +1093,86 @@ export default function EditVideoPage() {
     return () => window.clearInterval(timer);
   }, [kunciAktif]);
 
+  // Angka persen dinaikkan satu per satu, satu angka per gambar layar. Server
+  // hanya ditanya tiap dua detik sehingga angkanya melompat jauh; tanpa ini
+  // yang terlihat cuma 0, lalu 56, lalu 100.
+  //
+  // Dipakai requestAnimationFrame, bukan pewaktu biasa: dengan pewaktu, dua
+  // kenaikan bisa terjadi di antara dua gambar layar sehingga ada angka yang
+  // tidak pernah sempat terlihat. Satu kenaikan per gambar menjamin setiap
+  // angka benar-benar tampil, dan 60 angka per detik cukup cepat menyusul
+  // lompatan sebesar apa pun.
+  useEffect(() => {
+    let jalan = true;
+    let bingkai = 0;
+    const langkah = () => {
+      if (!jalan) return;
+      setProgresTampil((lama) => {
+        let berubah = false;
+        const baru = { ...lama };
+        for (const j of jobsRef.current) {
+          const sasaran = j.status === "done" ? 100 : Math.max(0, Math.min(100, j.progress || 0));
+          const kini = baru[j.job_id] ?? 0;
+          if (kini < sasaran) {
+            baru[j.job_id] = kini + 1;
+            berubah = true;
+          } else if (kini > sasaran) {
+            // Job baru memakai ulang slot lama, atau server mundur: samakan.
+            baru[j.job_id] = sasaran;
+            berubah = true;
+          }
+        }
+        return berubah ? baru : lama;
+      });
+      bingkai = window.requestAnimationFrame(langkah);
+    };
+    bingkai = window.requestAnimationFrame(langkah);
+    return () => {
+      jalan = false;
+      window.cancelAnimationFrame(bingkai);
+    };
+  }, []);
+
+  /** Hentikan semua pembuatan video yang belum selesai. */
+  async function hentikanSemua() {
+    setMenghentikan(true);
+    setGalat("");
+    try {
+      const res = await apiFetch("/api/video/jobs/stop", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Gagal menghentikan.");
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal menghentikan.");
+    } finally {
+      setMenghentikan(false);
+    }
+  }
+
+  /** Buang satu hasil dari server, sekaligus dari daftar. */
+  async function hapusHasil(jobId: string) {
+    setJobs((lama) => lama.filter((j) => j.job_id !== jobId));
+    try {
+      await apiFetch(`/api/video/jobs/${jobId}`, { method: "DELETE" });
+    } catch {
+      // kalau gagal, pembersihan berkala di server yang menanganinya
+    }
+  }
+
+  /** Buang semua hasil yang sudah selesai. */
+  async function hapusSemuaHasil() {
+    const ids = jobs.filter((j) => selesai(j.status)).map((j) => j.job_id);
+    if (ids.length === 0) return;
+    const setuju = await dialog.konfirmasi({
+      judul: `Hapus ${ids.length} hasil video?`,
+      pesan: "Videonya dibuang dari penyimpanan dan tidak bisa dikembalikan.",
+      tombolYa: "Hapus",
+      bahaya: true,
+    });
+    if (!setuju) return;
+    setJobs((lama) => lama.filter((j) => !ids.includes(j.job_id)));
+    void bersihkanHasil(ids);
+  }
+
   // Riwayat akun: job yang masih tersimpan di server muncul lagi setelah
   // halaman dimuat ulang atau setelah masuk. Tamu tidak punya riwayat.
   useEffect(() => {
@@ -1136,6 +1229,18 @@ export default function EditVideoPage() {
 
   function namaSetDari(id?: string): string {
     return daftarSet.find((d) => d.id === id)?.name || id || "";
+  }
+
+  /** Alamat untuk TOMBOL UNDUH.
+   *
+   *  Atribut `download` diabaikan peramban kalau berkasnya beda asal, jadi
+   *  menekan tombol dulu justru membuka videonya. Supabase menerima parameter
+   *  `download`, dan dengan itu ia mengirim berkasnya sebagai unduhan lengkap
+   *  dengan nama yang kita minta. */
+  function alamatUnduh(j: JobStatus, berkas: string): string {
+    if (!berkas.includes("supabase.co")) return berkas;
+    const pemisah = berkas.includes("?") ? "&" : "?";
+    return `${berkas}${pemisah}download=${encodeURIComponent(namaUnduhan(namaSetDari(j.template_id), j.job_id))}`;
   }
 
   /** Alamat video hasil: dari Supabase kalau sudah tersimpan, kalau tidak dari server. */
@@ -1870,8 +1975,31 @@ export default function EditVideoPage() {
             </button>
             {alasanBelumSiap && <p className={styles.alasan}>{alasanBelumSiap}</p>}
 
+            {sedangJalan && (
+              <button
+                type="button"
+                className={styles.stopBtn}
+                onClick={() => void hentikanSemua()}
+                disabled={menghentikan}
+              >
+                {menghentikan ? "Menghentikan..." : "Hentikan semua"}
+              </button>
+            )}
+
             {jobs.length > 0 && (
               <div className={styles.jobDaftar}>
+                <div className={styles.jobHeadBar}>
+                  <span className={styles.jobJumlah}>
+                    {jobs.length} video
+                    {jobs.some((j) => selesai(j.status)) &&
+                      ` · ${jobs.filter((j) => j.status === "done").length} siap`}
+                  </span>
+                  {jobs.some((j) => selesai(j.status)) && (
+                    <button type="button" className={styles.hapusSemuaBtn} onClick={() => void hapusSemuaHasil()}>
+                      Hapus semua hasil
+                    </button>
+                  )}
+                </div>
                 {jobs.map((j) => {
                   const berkas = berkasJob(j);
                   return (
@@ -1885,11 +2013,20 @@ export default function EditVideoPage() {
                       {!selesai(j.status) && (
                         <>
                           <div className={styles.barWrap}>
-                            <div className={styles.bar} style={{ width: `${j.progress || 0}%` }} />
+                            {j.status === "rendering" ? (
+                              <div
+                                className={styles.bar}
+                                style={{ width: `${progresTampil[j.job_id] ?? 0}%` }}
+                              />
+                            ) : (
+                              // Tahap unduh tidak punya angka sama sekali, jadi
+                              // barnya bergerak alih-alih berdiam di nol.
+                              <div className={styles.barGerak} />
+                            )}
                           </div>
                           <p className={styles.hint}>
                             {j.status === "rendering"
-                              ? `Menyusun video — ${j.progress || 0}% selesai`
+                              ? `Menyusun video — ${progresTampil[j.job_id] ?? 0}% selesai`
                               : labelStatus(j.status)}
                           </p>
                         </>
@@ -1897,14 +2034,39 @@ export default function EditVideoPage() {
                       {j.status === "done" && (
                         <p className={styles.hint}>Video siap diputar dan diunduh.</p>
                       )}
+                      {j.status === "dibatalkan" && (
+                        <p className={styles.hint}>Dihentikan sebelum videonya jadi.</p>
+                      )}
                       {j.status === "error" && j.error && <p className={styles.error}>{j.error}</p>}
                       {j.status === "done" && berkas && (
                         <div className={styles.hasil}>
                           <video className={styles.video} src={berkas} controls playsInline preload="metadata" />
-                          <a className={styles.unduhBtn} href={berkas} download>
-                            Unduh MP4
-                          </a>
+                          <div className={styles.hasilAksi}>
+                            <a
+                              className={styles.unduhBtn}
+                              href={alamatUnduh(j, berkas)}
+                              download={namaUnduhan(namaSetDari(j.template_id), j.job_id)}
+                            >
+                              Unduh MP4
+                            </a>
+                            <button
+                              type="button"
+                              className={styles.hapusHasilBtn}
+                              onClick={() => void hapusHasil(j.job_id)}
+                            >
+                              Hapus
+                            </button>
+                          </div>
                         </div>
+                      )}
+                      {selesai(j.status) && j.status !== "done" && (
+                        <button
+                          type="button"
+                          className={styles.hapusHasilBtn}
+                          onClick={() => void hapusHasil(j.job_id)}
+                        >
+                          Hapus
+                        </button>
                       )}
                     </div>
                   );

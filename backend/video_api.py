@@ -690,6 +690,42 @@ def berkas_job(
     return FileResponse(berkas, media_type="video/mp4", filename=f"{job_id}.mp4")
 
 
+@router.post("/jobs/stop")
+def hentikan_job(
+    pengguna: dict[str, Any] | None = Depends(identitas),
+) -> dict[str, Any]:
+    """Hentikan semua pembuatan video milik pemanggil yang belum selesai.
+
+    Satu tombol untuk semuanya: yang masih menunggu giliran tidak akan pernah
+    mulai, dan yang sedang berjalan dihentikan di tengah jalan. Job milik
+    orang lain tidak tersentuh.
+    """
+    pemilik = _nama_akun(pengguna) or ""
+    belum = [
+        j
+        for j in vt.daftar_job(500, owner=pemilik)
+        if j.get("status") in ("queued", "downloading", "rendering")
+    ]
+    for j in belum:
+        vt.minta_batal(str(j["job_id"]))
+        # Yang masih mengantre dicegat lebih awal supaya tidak membuang waktu
+        # worker sama sekali. terminate sengaja tidak dipakai: worker memakai
+        # kumpulan utas, dan utas tidak bisa ditembak dari luar.
+        tugas = j.get("task_id")
+        if tugas:
+            try:
+                vt.celery_app.control.revoke(str(tugas))
+            except Exception:  # noqa: BLE001
+                logger.warning("Gagal mencabut tugas %s", tugas)
+        # Yang belum mulai bisa langsung ditandai; yang sedang jalan akan
+        # menandai dirinya sendiri begitu ffmpeg berhenti.
+        if j.get("status") == "queued":
+            vt.tulis_status(
+                str(j["job_id"]), status="dibatalkan", log="Dihentikan sebelum mulai."
+            )
+    return {"dihentikan": len(belum)}
+
+
 class BersihkanBody(BaseModel):
     """Daftar job yang hasil videonya sudah tidak dipakai."""
 

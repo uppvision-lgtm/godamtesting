@@ -28,6 +28,7 @@ import storage
 from celery_app import celery_app
 from video_edit import (
     MEDIA_DIR,
+    Dibatalkan,
     VideoError,
     bersihkan_cache_unduhan,
     bersihkan_unggahan_lama,
@@ -45,6 +46,12 @@ JOB_RETENTION_HOURS = float(os.getenv("VIDEO_JOB_RETENTION_HOURS", "24"))
 
 KUNCI_JOB = "videojob:"
 KUNCI_URUT = "videojob:urut"
+# Penanda "tolong hentikan". Dipakai karena worker memakai kumpulan utas, dan
+# utas tidak bisa ditembak dari luar seperti proses — jadi pembatalan harus
+# ditanyakan, bukan dipaksakan. Umurnya dibatasi supaya penanda yang tidak
+# sempat terpakai tidak tertinggal selamanya.
+KUNCI_BATAL = "videojob:batal:"
+BATAL_UMUR_DETIK = 3 * 3600
 _redis_klien: redis.Redis | None = None
 
 
@@ -191,7 +198,26 @@ def buang_job(job_id: str) -> None:
     shutil.rmtree(jobs_dir() / job_id, ignore_errors=True)
     r = _r()
     r.delete(KUNCI_JOB + job_id)
+    r.delete(KUNCI_BATAL + job_id)
     r.zrem(KUNCI_URUT, job_id)
+
+
+def minta_batal(job_id: str) -> None:
+    """Tandai satu job supaya berhenti pada kesempatan berikutnya."""
+    _r().set(KUNCI_BATAL + _aman_id(job_id), "1", ex=BATAL_UMUR_DETIK)
+
+
+def diminta_batal(job_id: str) -> bool:
+    try:
+        return bool(_r().exists(KUNCI_BATAL + _aman_id(job_id)))
+    except Exception:  # noqa: BLE001
+        # Redis sedang bermasalah: lebih baik render diteruskan daripada
+        # dihentikan karena salah paham.
+        return False
+
+
+def lupakan_batal(job_id: str) -> None:
+    _r().delete(KUNCI_BATAL + _aman_id(job_id))
 
 
 def _bersihkan_berkas_kerja(folder: Path, hasil: Path | None, di_supabase: bool) -> None:
@@ -277,6 +303,12 @@ def render_video(
     folder = job_path(job_id)
     catat = lambda teks: tulis_status(job_id, log=teks)  # noqa: E731
     try:
+        # Job yang sudah diminta berhenti sebelum sempat mulai tidak perlu
+        # dikerjakan sama sekali.
+        if diminta_batal(job_id):
+            lupakan_batal(job_id)
+            tulis_status(job_id, status="dibatalkan", progress=0, log="Dihentikan sebelum mulai.")
+            return {"job_id": job_id, "status": "dibatalkan"}
         template = load_template(template_id)
         tulis_status(job_id, status="downloading", progress=0, task_id=self.request.id)
         catat(f"Template: {template.get('name') or template_id}")
@@ -290,6 +322,7 @@ def render_video(
             texts=texts or {},
             log=catat,
             progress=lambda p: tulis_status(job_id, progress=p),
+            batal=lambda: diminta_batal(job_id),
         )
         # Sumber tidak dipakai lagi; hapus supaya disk hemat.
         sumber.unlink(missing_ok=True)
@@ -321,6 +354,12 @@ def render_video(
         _bersihkan_berkas_kerja(folder, hasil, di_supabase)
         bersihkan_job_lama()
         return {"job_id": job_id, "status": "done", "output": str(hasil)}
+    except Dibatalkan:
+        logger.info("Job video %s dihentikan pengguna", job_id)
+        lupakan_batal(job_id)
+        tulis_status(job_id, status="dibatalkan", log="Pembuatan video dihentikan.")
+        _bersihkan_setelah_gagal(job_id, folder)
+        return {"job_id": job_id, "status": "dibatalkan"}
     except VideoError as error:
         logger.warning("Job video %s gagal: %s", job_id, error)
         tulis_status(job_id, status="error", error=str(error), log=f"Gagal: {error}")
