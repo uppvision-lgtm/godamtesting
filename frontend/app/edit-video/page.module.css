@@ -822,3 +822,14 @@
   font-weight: 600;
   line-height: 1.6;
 }
+
+/* Pesan saat gambar pratinjau tidak bisa dibuat (mis. berkas layernya hilang). */
+.pratinjauGagal {
+  margin: 0;
+  padding: var(--sela-4);
+  text-align: center;
+  font-size: var(--teks-isi);
+  font-weight: 600;
+  color: #ff9a9a;
+  line-height: 1.6;
+}

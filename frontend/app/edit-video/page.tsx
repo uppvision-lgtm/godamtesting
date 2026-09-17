@@ -356,6 +356,11 @@ export default function EditVideoPage() {
   // Gambar pratinjau dimuat ulang tiap kali layer berubah; rangka menahan
   // ruangnya supaya isian di bawahnya tidak melompat saat gambar datang.
   const [pratinjauSiap, setPratinjauSiap] = useState(false);
+  // Alamat gambar pratinjau. Bukan alamat API langsung, melainkan blob hasil
+  // unduhan: tag <img> tidak bisa membawa header Authorization, sedangkan
+  // pratinjau template milik akun memang hanya boleh dibuka pemiliknya.
+  const [pratinjauSrc, setPratinjauSrc] = useState("");
+  const [galatPratinjauGambar, setGalatPratinjauGambar] = useState("");
   const [mendeteksi, setMendeteksi] = useState(false);
   const [kategori, setKategori] = useState("");
   const [teksWarna, setTeksWarna] = useState<"black" | "white">("white");
@@ -416,6 +421,45 @@ export default function EditVideoPage() {
       batal = true;
     };
   }, [akun]);
+
+  // Gambar pratinjau diambil dengan apiFetch supaya identitas ikut terkirim,
+  // lalu dijadikan alamat blob. Alamat lama dilepas agar tidak menumpuk di
+  // memori peramban.
+  useEffect(() => {
+    let batal = false;
+    let alamat = "";
+    void (async () => {
+      if (!idSet || !susunan) {
+        setPratinjauSrc("");
+        return;
+      }
+      try {
+        const res = await apiFetch(`/api/video/templates/${idSet}/preview.png?v=${versiPratinjau}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.detail || "Pratinjau tidak bisa dibuat.");
+        }
+        const blob = await res.blob();
+        if (batal) return;
+        alamat = URL.createObjectURL(blob);
+        setPratinjauSrc(alamat);
+        setGalatPratinjauGambar("");
+      } catch (err) {
+        if (batal) return;
+        setPratinjauSrc("");
+        setPratinjauSiap(true);
+        setGalatPratinjauGambar(
+          err instanceof Error ? err.message : "Pratinjau tidak bisa dibuat."
+        );
+      }
+    })();
+    return () => {
+      batal = true;
+      if (alamat) URL.revokeObjectURL(alamat);
+    };
+  }, [idSet, susunan, versiPratinjau]);
 
   // ===== SET LAYER =====
 
@@ -1395,15 +1439,20 @@ export default function EditVideoPage() {
                   onPointerCancel={selesaiSeret}
                 >
                   {!pratinjauSiap && <div className={styles.rangkaKotak} style={{ height: 200 }} />}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`/api/video/templates/${idSet}/preview.png?v=${versiPratinjau}`}
-                    alt="Pratinjau template"
-                    draggable={false}
-                    style={pratinjauSiap ? undefined : { display: "none" }}
-                    onLoad={() => setPratinjauSiap(true)}
-                    onError={() => setPratinjauSiap(true)}
-                  />
+                  {galatPratinjauGambar && (
+                    <p className={styles.pratinjauGagal}>{galatPratinjauGambar}</p>
+                  )}
+                  {pratinjauSrc && (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={pratinjauSrc}
+                      alt="Pratinjau template"
+                      draggable={false}
+                      style={pratinjauSiap ? undefined : { display: "none" }}
+                      onLoad={() => setPratinjauSiap(true)}
+                      onError={() => setPratinjauSiap(true)}
+                    />
+                  )}
                   {(() => {
                     const teksK = modeGambar === "teks" && kotakSementara ? kotakSementara : kotakTeks;
                     const badgeK =
