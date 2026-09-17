@@ -26,3 +26,17 @@ auto edit video/main_compiled.bin
 # Dump Redis kalau redis-server dijalankan dari folder repo.
 dump.rdb
 .vercel
+
+# ---- Auto Upload sosmed (paket autoupload) ----
+# Kode paketnya ikut git, tetapi data runtime tidak: virtualenv 337 MB, profil
+# browser berisi sesi login yang setara password, berkas yang diunggah, dan
+# basis data SQLite-nya.
+auto-upload/.venv/
+auto-upload/browser_profiles/
+auto-upload/uploads/*
+!auto-upload/uploads/.gitkeep
+auto-upload/autoupload.db*
+auto-upload/debug_shots/
+auto-upload/__pycache__/
+auto-upload/.kilo/
+auto-upload/.vscode/

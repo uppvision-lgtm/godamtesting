@@ -1,0 +1,7 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0      # hanya perlu kalau dijalankan sendiri (python main.py)
+pydantic>=2.9
+python-multipart>=0.0.9        # untuk upload file multipart
+sqlalchemy>=2.0.35
+playwright>=1.48.0             # mesin upload lewat browser nyata
+PyAutoGUI>=0.9.54              # khusus Instagram: klik level-OS (macOS, headful)

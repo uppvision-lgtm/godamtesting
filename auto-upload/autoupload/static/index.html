@@ -1,0 +1,390 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Upload</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%F0%9F%9A%80%3C/text%3E%3C/svg%3E">
+<!--
+  Front end 1 file: HTML + CSS + JS polos, tanpa build step, tanpa dependency.
+  Mau ditaruh di website lain? Copy file ini, lalu arahkan API-nya:
+      <script>window.AUTOUPLOAD_API = "https://server-kamu/api"</script>
+  (atau biarkan kosong kalau API-nya satu domain di /api)
+-->
+<style>
+  :root {
+    --bg: #fafafa; --card: #fff; --line: #e3e3e3; --text: #14171a;
+    --muted: #6b7280; --accent: #111; --ok: #0a7c2f; --bad: #c62828; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --card: #1e2126; --line: #313640; --text: #e8eaed;
+            --muted: #9aa3af; --accent: #e8eaed; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24 }
+  }
+  * { box-sizing: border-box }
+  body { margin: 0; padding: 20px 16px 60px; background: var(--bg); color: var(--text);
+         font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif }
+  .wrap { max-width: 720px; margin: 0 auto }
+  h1 { font-size: 19px; margin: 0 }
+  .sub { color: var(--muted); font-size: 13px; margin: 2px 0 20px }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 16px; margin-bottom: 14px }
+  .card > h2 { font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px }
+  .card > h2 .n { background: var(--accent); color: var(--card); width: 20px; height: 20px;
+                  border-radius: 50%; display: grid; place-items: center; font-size: 11px }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px }
+  label:first-of-type { margin-top: 0 }
+
+  input, textarea, select, button { font: inherit; color: var(--text) }
+  input[type=text], input[type=datetime-local], textarea, select {
+    width: 100%; padding: 8px 10px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px }
+  textarea { min-height: 84px; resize: vertical }
+  button { cursor: pointer; background: var(--bg); border: 1px solid var(--line);
+           border-radius: 6px; padding: 6px 11px; white-space: nowrap }
+  button:hover:not(:disabled) { border-color: var(--muted) }
+  button:disabled { opacity: .45; cursor: default }
+  button.primary { background: var(--accent); color: var(--card); border-color: var(--accent);
+                   padding: 9px 20px; font-weight: 600 }
+  button.link { border: 0; background: none; color: var(--muted); padding: 2px 4px;
+                text-decoration: underline; font-size: 12px }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+
+  /* akun */
+  .acc { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line) }
+  .acc:last-child { border-bottom: 0 }
+  .acc b { width: 82px; font-weight: 600 }
+  .acc .info { flex: 1; min-width: 120px; font-size: 12px; color: var(--muted) }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); flex: none }
+  @media (max-width: 560px) {
+    .acc { flex-wrap: wrap }
+    .acc b { width: auto; flex: 1 }
+    .acc .info { flex: 1 1 100%; order: 9; padding-left: 17px }
+  }
+  .dot.on { background: var(--ok) } .dot.busy { background: var(--warn) }
+
+  /* pilih platform */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
+          border: 1px solid var(--line); border-radius: 20px; cursor: pointer; font-size: 13px;
+          user-select: none }
+  .chip input { display: none }
+  .chip.sel { border-color: var(--accent); background: var(--accent); color: var(--card) }
+  .chip.none { opacity: .5 }
+  .chip .len { font-size: 11px; opacity: .75; font-variant-numeric: tabular-nums }
+  .chip .len.over { color: var(--bad); font-weight: 700 }
+  .chip.sel .len.over { color: #fff }
+
+  /* drop file */
+  .drop { border: 1.5px dashed var(--line); border-radius: 8px; padding: 18px; text-align: center;
+          cursor: pointer; color: var(--muted) }
+  .drop.over { border-color: var(--accent); color: var(--text) }
+  .drop.has { border-style: solid; text-align: left; display: flex; gap: 12px; align-items: center }
+  .drop input { display: none }
+  .thumb { width: 64px; height: 64px; border-radius: 6px; object-fit: cover; background: var(--bg); flex: none }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed }
+  td { overflow-wrap: anywhere }              /* caption panjang membungkus, bukan melebar */
+  th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 500;
+       border-bottom: 1px solid var(--line); padding: 0 6px 5px 0 }
+  td { padding: 7px 6px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top }
+  tr:last-child td { border-bottom: 0 }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line);
+         display: inline-block }
+  .tag.ok { color: var(--ok); border-color: var(--ok) }
+  .tag.bad { color: var(--bad); border-color: var(--bad) }
+  .tag.run { color: var(--warn); border-color: var(--warn) }
+  a { color: inherit }
+  .muted { color: var(--muted); font-size: 12px }
+  #log { display: none; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line);
+         border-radius: 6px; padding: 9px 11px; margin-top: 12px; font-size: 12px;
+         font-family: ui-monospace, monospace; max-height: 190px; overflow: auto }
+  #log.show { display: block }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid currentColor;
+          border-top-color: transparent; border-radius: 50%; animation: s .7s linear infinite;
+          vertical-align: -1px; margin-right: 6px }
+  @keyframes s { to { transform: rotate(360deg) } }
+</style>
+
+<div class="wrap">
+  <h1>Auto Upload</h1>
+  <p class="sub">Unggah sekali, sebar ke TikTok · Instagram · Facebook · YouTube · Threads · X</p>
+
+  <section class="card">
+    <h2><span class="n">1</span> Akun &amp; sesi browser</h2>
+    <div id="accounts"><p class="muted">memuat…</p></div>
+    <p><button class="link" onclick="toggleSid()">+ pakai Session ID (tanpa jendela login)</button></p>
+    <div id="sid-form" hidden>
+      <div class="row">
+        <select id="sid-platform" style="width:auto"></select>
+        <input type="text" id="sid-name" placeholder="nama profil" style="width:130px">
+        <input type="text" id="sid-value" placeholder="nilai cookie, gabung dengan |" style="flex:1;min-width:150px">
+        <button onclick="addAccount()">Simpan</button>
+      </div>
+      <p class="muted">Beberapa cookie? Gabung pakai <code>|</code> sesuai urutan di
+        <code>session_cookie_map</code> adapter platform tersebut.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><span class="n">2</span> Buat postingan</h2>
+
+    <label>File video atau foto</label>
+    <div class="drop" id="drop" onclick="document.getElementById('file').click()">
+      <input type="file" id="file" accept="video/*,image/*">
+      <span id="drop-text">Klik atau tarik file ke sini</span>
+      <img id="thumb" class="thumb" hidden alt="">
+      <div id="drop-meta" hidden style="flex:1"></div>
+    </div>
+
+    <label for="caption">Caption</label>
+    <textarea id="caption" placeholder="Caption otomatis dipotong sesuai limit tiap platform…"></textarea>
+
+    <label>Platform tujuan <span class="muted" id="sel-count"></span></label>
+    <div class="chips" id="platforms"></div>
+
+    <label for="scheduled">Jadwal — kosongkan untuk upload sekarang</label>
+    <input type="datetime-local" id="scheduled">
+
+    <p style="margin:16px 0 0"><button class="primary" id="go" onclick="submitUpload()">Upload</button></p>
+    <div id="log"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="n">3</span> Riwayat &amp; jadwal
+      <button class="link" style="margin-left:auto" onclick="loadPosts()">muat ulang</button></h2>
+    <div id="posts"><p class="muted">memuat…</p></div>
+  </section>
+</div>
+
+<script>
+const API = (window.AUTOUPLOAD_API || "/api").replace(/\/$/, "");
+const PLATFORMS = ["tiktok", "instagram", "facebook", "youtube", "threads", "twitter"];
+const LIMIT = { tiktok: 2200, instagram: 2200, facebook: 5000, youtube: 5000, threads: 500, twitter: 280 };
+const NAMA = { tiktok: "TikTok", instagram: "Instagram", facebook: "Facebook",
+               youtube: "YouTube", threads: "Threads", twitter: "X" };
+
+let media = null;            // {media_path, media_kind, size_bytes}
+let sessions = {};           // platform -> punya sesi?
+let busy = false;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[<>&"]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
+const picked = () => [...document.querySelectorAll("#platforms input:checked")].map(c => c.value);
+
+function say(msg, spin) {
+  const box = $("log");
+  box.classList.add("show");
+  box.insertAdjacentHTML("beforeend", (spin ? '<span class="spin"></span>' : "") + esc(msg) + "\n");
+  box.scrollTop = box.scrollHeight;
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(API + path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.status + " " + res.statusText);
+  return data;
+}
+
+/* ---------------------------------------------------------- pilih platform */
+
+$("platforms").innerHTML = PLATFORMS.map(p => `
+  <label class="chip" id="chip-${p}">
+    <input type="checkbox" value="${p}" onchange="refreshChips()">
+    ${NAMA[p]}<span class="len" id="len-${p}"></span>
+  </label>`).join("");
+$("sid-platform").innerHTML = PLATFORMS.map(p => `<option value="${p}">${NAMA[p]}</option>`).join("");
+
+function refreshChips() {
+  const caption = $("caption").value;
+  const sel = picked();
+  for (const p of PLATFORMS) {
+    const chip = $("chip-" + p);
+    const on = sel.includes(p);
+    chip.classList.toggle("sel", on);
+    // tandai platform yang belum punya sesi -> upload-nya pasti gagal
+    chip.classList.toggle("none", !sessions[p]);
+    chip.title = sessions[p] ? `limit ${LIMIT[p]} karakter` : `${NAMA[p]}: belum ada sesi login`;
+    const len = $("len-" + p);
+    len.textContent = on && caption ? `${caption.length}/${LIMIT[p]}` : "";
+    len.classList.toggle("over", caption.length > LIMIT[p]);
+  }
+  $("sel-count").textContent = sel.length ? `— ${sel.length} dipilih` : "";
+}
+$("caption").addEventListener("input", refreshChips);
+
+/* ------------------------------------------------------------------- akun */
+
+async function loadAccounts() {
+  const [rows, accounts] = await Promise.all([api("/login"), api("/accounts")]);
+  sessions = {};
+  $("accounts").innerHTML = rows.map(s => {
+    const sid = accounts.filter(a => a.platform === s.platform && a.has_session_id);
+    sessions[s.platform] = s.has_session || sid.length > 0;
+    const state = s.running ? "busy" : (sessions[s.platform] ? "on" : "");
+    const info = s.running ? (s.message || "menunggu login…")
+      : s.has_session ? "profil: " + s.sessions.join(", ")
+      : sid.length ? `session id: ${sid.map(a => esc(a.display_name)).join(", ")}`
+      : "belum tersambung";
+    return `<div class="acc">
+      <span class="dot ${state}"></span><b>${NAMA[s.platform] || s.platform}</b>
+      <span class="info">${info}</span>
+      ${s.running
+        ? `<button onclick="loginFinish('${s.platform}')">Selesai</button>
+           <button onclick="loginCancel('${s.platform}')">Batal</button>`
+        : `<button onclick="loginStart('${s.platform}')">${s.has_session ? "Login lagi" : "Login browser"}</button>`}
+      ${s.sessions.map(n => `<button class="link" title="hapus sesi ${esc(n)}"
+           onclick="deleteSession('${s.platform}','${n}')">hapus</button>`).join("")}
+      ${sid.map(a => `<button class="link" onclick="deleteAccount(${a.id})">hapus</button>`).join("")}
+    </div>`;
+  }).join("");
+  refreshChips();
+}
+
+async function loginStart(platform) {
+  try {
+    await api(`/login/${platform}/start`, { method: "POST" });
+    say(`Jendela Chrome ${platform} dibuka — login di sana, lalu klik "Selesai".`);
+  } catch (e) { say("Gagal: " + e.message) }
+  loadAccounts();
+}
+
+async function loginFinish(platform) {
+  say(`Memverifikasi & menyimpan sesi ${platform}…`, true);
+  try {
+    const r = await api(`/login/${platform}/finish`, { method: "POST" });
+    say(r.message || (r.ok ? "Sesi tersimpan." : "Login belum selesai."));
+  } catch (e) { say("Gagal: " + e.message) }
+  loadAccounts();
+}
+
+async function loginCancel(platform) {
+  await api(`/login/${platform}/cancel`, { method: "POST" });
+  loadAccounts();
+}
+
+async function deleteSession(platform, name) {
+  if (!confirm(`Hapus sesi ${platform}/${name}?\nKamu harus login ulang untuk platform ini.`)) return;
+  const r = await api(`/login/${platform}/${name}`, { method: "DELETE" });
+  say(r.message || "Sesi dihapus.");
+  loadAccounts();
+}
+
+function toggleSid() { $("sid-form").hidden = !$("sid-form").hidden }
+
+async function addAccount() {
+  const name = $("sid-name").value.trim();
+  const value = $("sid-value").value.trim();
+  if (!value) return say("Isi dulu nilai cookie-nya.");
+  try {
+    await api("/accounts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform: $("sid-platform").value, session_id: value,
+        session_name: name || "default", display_name: name || "session-id",
+      }),
+    });
+    $("sid-value").value = ""; $("sid-name").value = "";
+    say("Akun tersimpan.");
+    loadAccounts();
+  } catch (e) { say("Gagal: " + e.message) }
+}
+
+async function deleteAccount(id) {
+  await api(`/accounts/${id}`, { method: "DELETE" });
+  loadAccounts();
+}
+
+/* ----------------------------------------------------------------- file */
+
+const drop = $("drop");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over") });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("over");
+  if (e.dataTransfer.files[0]) sendFile(e.dataTransfer.files[0]);
+});
+$("file").addEventListener("change", e => e.target.files[0] && sendFile(e.target.files[0]));
+
+async function sendFile(file) {
+  drop.classList.add("has");
+  $("drop-text").hidden = true;
+  $("drop-meta").hidden = false;
+  $("drop-meta").innerHTML = `<b>${esc(file.name)}</b><br><span class="muted">mengunggah…</span>`;
+
+  const thumb = $("thumb");
+  thumb.hidden = !file.type.startsWith("image/");
+  if (!thumb.hidden) thumb.src = URL.createObjectURL(file);
+
+  const body = new FormData();
+  body.append("file", file);
+  try {
+    media = await api("/media", { method: "POST", body });
+    $("drop-meta").innerHTML = `<b>${esc(file.name)}</b><br><span class="muted">${media.media_kind} · ` +
+      `${(media.size_bytes / 1048576).toFixed(1)} MB · siap</span>`;
+  } catch (e) {
+    media = null;
+    $("drop-meta").innerHTML = `<b>${esc(file.name)}</b><br><span class="muted">Gagal: ${esc(e.message)}</span>`;
+  }
+}
+
+/* --------------------------------------------------------------- upload */
+
+async function submitUpload() {
+  const platforms = picked();
+  if (!media) return say("Pilih file dulu.");
+  if (!$("caption").value.trim()) return say("Caption masih kosong.");
+  if (!platforms.length) return say("Pilih minimal satu platform.");
+
+  const tanpaSesi = platforms.filter(p => !sessions[p]);
+  if (tanpaSesi.length && !confirm(
+      `Belum ada sesi login untuk: ${tanpaSesi.join(", ")}.\nPlatform itu akan gagal. Lanjut?`)) return;
+
+  busy = true; $("go").disabled = true;
+  const jadwal = $("scheduled").value;
+  say(jadwal ? "Menjadwalkan…" : `Upload ke ${platforms.join(", ")} — jendela browser bisa jalan beberapa menit…`, !jadwal);
+  try {
+    const r = await api("/upload", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        media_path: media.media_path, media_kind: media.media_kind,
+        caption: $("caption").value, platforms, scheduled_at: jadwal || null,
+      }),
+    });
+    if (r.status === "scheduled") {
+      say(`Post #${r.post_id} dijadwalkan pada ${r.scheduled_at}.`);
+    } else {
+      say(`Post #${r.post_id} → ${r.status}`);
+      (r.results || []).forEach(x => say(`   ${x.success ? "✓" : "✗"} ${x.platform}  ${x.url || x.error || ""}`));
+    }
+  } catch (e) { say("Gagal: " + e.message) }
+  busy = false; $("go").disabled = false;
+  loadPosts();
+}
+
+/* -------------------------------------------------------------- riwayat */
+
+async function loadPosts() {
+  const rows = await api("/posts?limit=20");
+  if (!rows.length) { $("posts").innerHTML = '<p class="muted">Belum ada postingan.</p>'; return; }
+  const cls = s => s === "done" || s === "success" ? "ok"
+    : s === "failed" ? "bad" : s === "processing" || s === "scheduled" ? "run" : "";
+  $("posts").innerHTML = `<table>
+    <colgroup><col style="width:32px"><col style="width:88px"><col><col style="width:34%"></colgroup>
+    <tr><th>#</th><th>status</th><th>caption</th><th>hasil</th></tr>
+    ${rows.map(p => `<tr>
+      <td>${p.id}</td>
+      <td><span class="tag ${cls(p.status)}">${p.status}</span>
+        ${p.scheduled_at ? `<br><span class="muted">${new Date(p.scheduled_at).toLocaleString("id-ID")}</span>` : ""}</td>
+      <td>${esc(p.caption) || '<span class="muted">—</span>'}</td>
+      <td>${p.targets.map(t => t.url
+            ? `<a class="tag ok" href="${esc(t.url)}" target="_blank" rel="noreferrer">${NAMA[t.platform] || t.platform} ↗</a> `
+            : `<span class="tag ${cls(t.status)}" title="${esc(t.error)}">${NAMA[t.platform] || t.platform}</span> `).join("")}</td>
+    </tr>`).join("")}</table>`;
+}
+
+/* ------------------------------------------------------------------ init */
+
+loadAccounts(); loadPosts();
+// status login browser berubah dari thread latar; jangan polling saat upload jalan
+setInterval(() => { if (!busy) loadAccounts() }, 5000);
+setInterval(() => { if (!busy) loadPosts() }, 15000);
+</script>

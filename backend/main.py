@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
+import logging
 import os
 import sys
+from pathlib import Path
 from datetime import datetime, timezone
 
 # Playwright butuh subprocess. Di Windows, loop default uvicorn (Selector)
@@ -26,6 +28,41 @@ from upload_api import router as upload_router
 from auth_api import router as auth_router
 from forms_api import router as forms_router
 from admin_api import router as admin_router
+
+
+# ============================================================
+#  AUTO UPLOAD SOSMED (paket "autoupload" di folder auto-upload/)
+# ============================================================
+#
+# Paketnya berdiri sendiri dan bisa dijalankan terpisah lewat main.py miliknya.
+# Di sini ia dipasang ke website utama supaya tombol di halaman depan bisa
+# langsung menujunya, dan supaya semuanya hidup di satu alamat.
+#
+# Awalan alamatnya digeser ke /api/sosmed karena website ini sudah punya
+# /api/upload sendiri untuk unggah Instagram versi lama.
+#
+# Kalau foldernya tidak ada (mis. di server yang tidak memuatnya), aplikasi
+# tetap berjalan tanpa fitur ini — hanya dicatat di log.
+
+AUTOUPLOAD_DIR = Path(__file__).resolve().parent.parent / "auto-upload"
+sosmed_router = None
+sosmed_alasan = ""
+
+if AUTOUPLOAD_DIR.is_dir():
+    os.environ.setdefault("AUTOUPLOAD_API_PREFIX", "/api/sosmed")
+    # Basis data, profil browser, dan berkas unggahan tetap tinggal di folder
+    # paketnya sendiri, bukan tercecer di folder backend.
+    os.environ.setdefault("AUTOUPLOAD_DATA_DIR", str(AUTOUPLOAD_DIR))
+    if str(AUTOUPLOAD_DIR) not in sys.path:
+        sys.path.insert(0, str(AUTOUPLOAD_DIR))
+    try:
+        from autoupload import router as sosmed_router
+        from autoupload import init_db as sosmed_init_db
+        from autoupload import start_scheduler as sosmed_start_scheduler
+    except Exception as error:  # noqa: BLE001
+        sosmed_alasan = f"{type(error).__name__}: {error}"
+else:
+    sosmed_alasan = f"folder {AUTOUPLOAD_DIR.name} tidak ada"
 
 
 app = FastAPI(title="Instagram Auto Comment Bot API")
@@ -64,6 +101,19 @@ app.include_router(upload_router)
 app.include_router(auth_router)
 app.include_router(forms_router)
 app.include_router(admin_router)
+
+if sosmed_router is not None:
+    app.include_router(sosmed_router)
+    try:
+        sosmed_init_db()
+        # Penjadwal berjalan di thread latar; ia yang mengirim postingan
+        # terjadwal begitu waktunya tiba.
+        sosmed_start_scheduler()
+        logging.getLogger(__name__).info("Auto Upload sosmed aktif di /api/sosmed")
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("Auto Upload sosmed gagal disiapkan")
+else:
+    logging.getLogger(__name__).warning("Auto Upload sosmed tidak aktif: %s", sosmed_alasan)
 
 
 class JobRequest(BaseModel):

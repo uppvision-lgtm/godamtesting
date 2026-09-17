@@ -37,8 +37,10 @@ const tools: Tool[] = [
     id: "upload",
     icon: "⬆️",
     title: "Auto Upload Instagram",
-    desc: "pilih video dari laptop, isi caption, unggah",
-    status: "soon",
+    desc: "satu video, sebar ke Instagram, TikTok, YouTube, Facebook, Threads, dan X",
+    href: "/auto-upload",
+    status: "ready",
+    badge: "Tersedia",
   },
   {
     id: "rantai",
