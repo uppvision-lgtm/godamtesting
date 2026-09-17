@@ -127,6 +127,56 @@ export function apiFetch(input: string, init: RequestInit = {}): Promise<Respons
   return fetch(input, { ...init, headers });
 }
 
+/**
+ * Unggah satu berkas sambil melaporkan kemajuannya.
+ *
+ * Memakai XMLHttpRequest, bukan fetch: fetch tidak punya cara melaporkan
+ * berapa banyak yang sudah terkirim, sedangkan berkas layer bisa puluhan MB
+ * dan orang perlu tahu unggahannya benar-benar berjalan.
+ *
+ * `onProgres` menerima 0-100 untuk bagian pengirimannya saja. Setelah
+ * mencapai 100, server masih memeriksa dan merapikan berkasnya, jadi
+ * pemanggil sebaiknya menampilkan keadaan "sedang diproses" sampai
+ * jawabannya datang.
+ */
+export function apiUnggah(
+  url: string,
+  file: File,
+  onProgres: (persen: number) => void
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    const token = ambilToken();
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    } else {
+      const tamu = idTamu();
+      if (tamu) xhr.setRequestHeader("X-Guest-Id", tamu);
+    }
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) {
+        onProgres(Math.min(100, Math.round((e.loaded / e.total) * 100)));
+      }
+    };
+    xhr.upload.onload = () => onProgres(100);
+    xhr.onload = () => {
+      let data: Record<string, unknown> = {};
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        data = {};
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+    };
+    xhr.onerror = () => reject(new Error("Sambungan terputus saat mengunggah."));
+    xhr.onabort = () => reject(new Error("Unggahan dibatalkan."));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}
+
 function langgananAkun(beritahu: () => void): () => void {
   window.addEventListener(PERISTIWA_AKUN, beritahu);
   // Tab lain yang masuk/keluar ikut terlihat di sini.

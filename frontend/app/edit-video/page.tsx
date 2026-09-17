@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
 import LoginButton from "../components/LoginButton";
-import { apiFetch, idTamu, useAkun, useSudahHidrasi } from "../components/auth";
+import { apiFetch, apiUnggah, idTamu, useAkun, useSudahHidrasi } from "../components/auth";
 import { useDialog } from "../components/Dialog";
 
 /**
@@ -346,6 +346,15 @@ export default function EditVideoPage() {
   const [idSet, setIdSet] = useState(ID_SET_PERTAMA);
   const [namaSet, setNamaSet] = useState(NAMA_SET_PERTAMA);
   const [menyimpanNama, setMenyimpanNama] = useState(false);
+  // Unggahan yang sedang berjalan. "slot" menandai baris mana yang sedang
+  // dipakai: "layer-0".."layer-2", "outro", atau "sumber". Hanya satu
+  // unggahan berjalan pada satu waktu, jadi cukup satu keadaan.
+  const [unggahan, setUnggahan] = useState<{
+    slot: string;
+    nama: string;
+    persen: number;
+    diproses: boolean;
+  } | null>(null);
   const [pesanLayer, setPesanLayer] = useState("");
   // Kotak teks set yang sedang dibuka, plus keadaan saat pengguna menggambar.
   const [kotakTeks, setKotakTeks] = useState<KotakTeks | null>(null);
@@ -832,34 +841,58 @@ export default function EditVideoPage() {
   }
 
   /** Unggah satu berkas, kembalikan namanya ("assets/xxx.png"). */
-  async function unggah(file: File): Promise<string | null> {
+  async function unggah(file: File, slot: string): Promise<string | null> {
     if (file.size > BATAS_UNGGAH_MB * 1_048_576) {
       setPesanLayer(
         `Berkas ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar (batas ${BATAS_UNGGAH_MB} MB).`
       );
       return null;
     }
-    setPesanLayer(`Mengunggah ${file.name} ...`);
+    setPesanLayer("");
+    setUnggahan({ slot, nama: file.name, persen: 0, diproses: false });
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await apiFetch(urlUnggah(`/api/video/templates/${idSet}/assets`), {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Gagal mengunggah.");
+      const { ok, data } = await apiUnggah(
+        urlUnggah(`/api/video/templates/${idSet}/assets`),
+        file,
+        (persen) =>
+          setUnggahan((u) =>
+            u && u.slot === slot ? { ...u, persen, diproses: persen >= 100 } : u
+          )
+      );
+      if (!ok) throw new Error(String(data.detail || "Gagal mengunggah."));
       setPesanLayer(`${file.name} tersimpan.`);
       return data.file as string;
     } catch (err) {
       setPesanLayer(err instanceof Error ? err.message : "Gagal mengunggah.");
       return null;
+    } finally {
+      setUnggahan((u) => (u && u.slot === slot ? null : u));
     }
+  }
+
+  /** Bar kemajuan unggahan untuk satu slot; kosong kalau slot itu tidak sedang dipakai. */
+  function barUnggah(slot: string) {
+    if (unggahan?.slot !== slot) return null;
+    return (
+      <div className={styles.unggahProgres}>
+        <div className={styles.unggahBarWrap}>
+          <div
+            className={unggahan.diproses ? styles.unggahBarProses : styles.unggahBar}
+            style={unggahan.diproses ? undefined : { width: `${unggahan.persen}%` }}
+          />
+        </div>
+        <span className={styles.unggahLabel}>
+          {unggahan.diproses
+            ? `Memproses ${unggahan.nama} ...`
+            : `Mengunggah ${unggahan.nama} — ${unggahan.persen}%`}
+        </span>
+      </div>
+    );
   }
 
   async function gantiLayer(index: number, file: File) {
     if (!susunan) return;
-    const nama = await unggah(file);
+    const nama = await unggah(file, `layer-${index}`);
     if (!nama) return;
     const overlays = [...susunan.overlays];
     overlays[index] = { ...overlays[index], file: nama };
@@ -885,7 +918,7 @@ export default function EditVideoPage() {
 
   async function gantiOutro(file: File) {
     if (!susunan) return;
-    const nama = await unggah(file);
+    const nama = await unggah(file, "outro");
     if (!nama) return;
     await simpanSusunan({ ...susunan, outro: nama });
   }
@@ -999,17 +1032,28 @@ export default function EditVideoPage() {
     }
     setMengunggahSumber(true);
     setGalatPratinjau("");
+    setUnggahan({ slot: "sumber", nama: file.name, persen: 0, diproses: false });
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await apiFetch(urlUnggah("/api/video/sources"), { method: "POST", body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Gagal mengunggah video.");
-      setBerkasSumber({ url: data.url, name: data.name, size: data.size, duration: data.duration });
+      const { ok, data } = await apiUnggah(
+        urlUnggah("/api/video/sources"),
+        file,
+        (persen) =>
+          setUnggahan((u) =>
+            u && u.slot === "sumber" ? { ...u, persen, diproses: persen >= 100 } : u
+          )
+      );
+      if (!ok) throw new Error(String(data.detail || "Gagal mengunggah video."));
+      setBerkasSumber({
+        url: data.url as string,
+        name: data.name as string,
+        size: data.size as number,
+        duration: (data.duration as number) ?? null,
+      });
     } catch (err) {
       setBerkasSumber(null);
       setGalatPratinjau(err instanceof Error ? err.message : "Gagal mengunggah video.");
     } finally {
+      setUnggahan((u) => (u && u.slot === "sumber" ? null : u));
       setMengunggahSumber(false);
     }
   }
@@ -1302,7 +1346,7 @@ export default function EditVideoPage() {
                   {ov.file ? "Ganti" : "Unggah"}
                   <input
                     type="file"
-                    disabled={kunci}
+                    disabled={kunci || !!unggahan}
                     accept=".png,.jpg,.jpeg,.webp,.mp4,.mov,.m4v,.webm"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -1311,6 +1355,7 @@ export default function EditVideoPage() {
                     }}
                   />
                 </label>
+                {barUnggah(`layer-${i}`)}
               </div>
             ))}
 
@@ -1337,7 +1382,7 @@ export default function EditVideoPage() {
                 {susunan?.outro ? "Ganti" : "Unggah"}
                 <input
                   type="file"
-                  disabled={kunci}
+                  disabled={kunci || !!unggahan}
                   accept=".mp4,.mov,.m4v,.webm"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
@@ -1346,6 +1391,7 @@ export default function EditVideoPage() {
                   }}
                 />
               </label>
+              {barUnggah("outro")}
             </div>
 
             <div className={styles.row}>
@@ -1579,6 +1625,7 @@ export default function EditVideoPage() {
               <span>Video dari komputer (maksimal {BATAS_SUMBER_MB} MB)</span>
               <input
                 type="file"
+                disabled={mengunggahSumber}
                 accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -1587,7 +1634,7 @@ export default function EditVideoPage() {
                 }}
               />
             </label>
-            {mengunggahSumber && <p className={styles.hint}>Mengunggah video ...</p>}
+            {barUnggah("sumber")}
             {galatPratinjau && <p className={styles.error}>{galatPratinjau}</p>}
             {berkasSumber && (
               <p className={styles.hint}>
