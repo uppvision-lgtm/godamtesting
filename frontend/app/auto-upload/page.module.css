@@ -185,19 +185,37 @@
 
 .akunBaris {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--sela-3);
   padding: var(--sela-3);
   border: 1px solid #232a24;
   border-radius: var(--bulat-kecil);
+}
+
+.akunUtama {
+  display: flex;
+  align-items: center;
+  gap: var(--sela-3);
   flex-wrap: wrap;
 }
 
-.titik {
-  width: 10px;
-  height: 10px;
-  border-radius: var(--bulat-penuh);
+/* Lambang platform. Warnanya diwarisi dari induk lewat currentColor, jadi
+   satu kelas cukup untuk keadaan terhubung maupun belum. */
+.logo,
+.logoKecil {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+}
+
+.logo {
+  width: 30px;
+  height: 30px;
+}
+
+.logoMati {
+  color: #4a554c;
 }
 
 .akunTeks {
@@ -230,6 +248,57 @@
   align-items: center;
   gap: var(--sela-2);
   flex-wrap: nowrap;
+}
+
+.ssidKotak {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-2);
+  padding: var(--sela-3);
+  border-radius: var(--bulat-kecil);
+  background: #0f1210;
+  border: 1px solid var(--garis);
+}
+
+.ssidLabel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-1);
+}
+
+.ssidLabel > span {
+  font-size: var(--teks-kecil);
+  font-weight: 700;
+  color: var(--redup);
+}
+
+.ssidLabel input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.ssidPetunjuk {
+  margin: 0;
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: #7c8a81;
+  line-height: 1.6;
+}
+
+.catatan {
+  margin: 0;
+  padding-top: var(--sela-3);
+  border-top: 1px solid #232a24;
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: #7c8a81;
+  line-height: 1.6;
+}
+
+.hasilNama {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sela-2);
 }
 
 .pesan {

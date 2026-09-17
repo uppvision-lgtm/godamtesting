@@ -4,35 +4,37 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import styles from "./page.module.css";
 import LoginButton from "../components/LoginButton";
+import LogoSosmed, { WARNA, type PlatformId } from "../components/LogoSosmed";
 import { apiFetch, apiUnggah } from "../components/auth";
 import { useDialog } from "../components/Dialog";
 
 /**
  * Auto Upload Sosmed.
  *
- * Satu video atau foto, dikirim ke enam platform sekaligus lewat sesi browser
- * sungguhan. Alurnya sengaja dibuat berurutan dari kiri ke kanan:
+ * Satu video atau foto, dikirim ke enam platform sekaligus. Alurnya berurutan
+ * dari kiri ke kanan:
  *
- *   hubungkan akun -> pilih berkas -> tulis caption -> centang platform ->
- *   unggah sekarang atau jadwalkan
+ *   tempel Session ID -> pilih berkas -> tulis caption -> centang platform ->
+ *   kirim sekarang atau jadwalkan
+ *
+ * Akun dihubungkan dengan menempel Session ID dari cookie peramban, bukan
+ * lewat jendela login. Dengan begitu tidak ada jendela browser yang harus
+ * dibuka, dan halaman ini tetap berguna walau dibuka dari perangkat lain.
  *
  * Semua permintaan menuju /api/sosmed, yaitu paket "autoupload" yang dipasang
  * di backend yang sama dengan fitur lain.
  */
 
-type Platform = "tiktok" | "instagram" | "facebook" | "youtube" | "threads" | "twitter";
-
-type Sesi = {
-  platform: Platform;
-  running: boolean;
-  message: string;
-  has_session: boolean;
-  saved_at: string | null;
-  session_name: string;
-  sessions: string[];
-};
-
 type Sasaran = { platform: string; status: string; url: string | null; error: string | null };
+
+type Akun = {
+  id: number;
+  platform: PlatformId;
+  display_name: string;
+  session_name: string;
+  has_session_id: boolean;
+  has_browser_session: boolean;
+};
 
 type Postingan = {
   id: number;
@@ -46,14 +48,60 @@ type Postingan = {
 
 type Berkas = { media_path: string; size_bytes: number; media_kind: "video" | "photo" };
 
-/** Nama tampil dan warna tiap platform. Urutannya mengikuti kebiasaan pakai. */
-const PLATFORM: { id: Platform; nama: string; warna: string; batas: number }[] = [
-  { id: "instagram", nama: "Instagram", warna: "#e1306c", batas: 2200 },
-  { id: "tiktok", nama: "TikTok", warna: "#25f4ee", batas: 2200 },
-  { id: "youtube", nama: "YouTube", warna: "#ff0000", batas: 5000 },
-  { id: "facebook", nama: "Facebook", warna: "#1877f2", batas: 5000 },
-  { id: "threads", nama: "Threads", warna: "#c9c9c9", batas: 500 },
-  { id: "twitter", nama: "X / Twitter", warna: "#9aa89f", batas: 280 },
+/** Nama tampil, batas caption, dan cookie yang harus ditempel tiap platform.
+ *
+ *  Daftar cookie-nya mengikuti session_cookie_map di paket autoupload. Yang
+ *  ditulis di sini hanya yang wajib; milik YouTube ada tiga cookie tambahan
+ *  yang boleh dilewati. */
+const PLATFORM: {
+  id: PlatformId;
+  nama: string;
+  batas: number;
+  cookie: string[];
+  petunjuk: string;
+}[] = [
+  {
+    id: "instagram",
+    nama: "Instagram",
+    batas: 2200,
+    cookie: ["sessionid"],
+    petunjuk: "Buka instagram.com, lalu salin nilai cookie sessionid.",
+  },
+  {
+    id: "tiktok",
+    nama: "TikTok",
+    batas: 2200,
+    cookie: ["sessionid"],
+    petunjuk: "Buka tiktok.com, lalu salin nilai cookie sessionid.",
+  },
+  {
+    id: "youtube",
+    nama: "YouTube",
+    batas: 5000,
+    cookie: ["SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"],
+    petunjuk: "Buka youtube.com, salin ketujuh cookie di atas, pisahkan dengan tanda |.",
+  },
+  {
+    id: "facebook",
+    nama: "Facebook",
+    batas: 5000,
+    cookie: ["c_user", "xs"],
+    petunjuk: "Buka facebook.com, salin c_user dan xs, pisahkan dengan tanda |.",
+  },
+  {
+    id: "threads",
+    nama: "Threads",
+    batas: 500,
+    cookie: ["sessionid"],
+    petunjuk: "Buka threads.net, lalu salin nilai cookie sessionid.",
+  },
+  {
+    id: "twitter",
+    nama: "X / Twitter",
+    batas: 280,
+    cookie: ["auth_token"],
+    petunjuk: "Buka x.com, lalu salin nilai cookie auth_token.",
+  },
 ];
 
 const BATAS_BERKAS_MB = 500;
@@ -90,7 +138,7 @@ function waktuSingkat(nilai: string | null): string {
 }
 
 /** Keterangan kecil di bawah kotak caption: platform mana yang kepanjangan. */
-function terpotong(caption: string, dipilih: Platform[]): string {
+function terpotong(caption: string, dipilih: PlatformId[]): string {
   const lewat = PLATFORM.filter((p) => dipilih.includes(p.id) && caption.length > p.batas);
   if (lewat.length === 0) return "";
   return `Caption dipotong otomatis untuk ${lewat.map((p) => `${p.nama} (${p.batas})`).join(", ")}.`;
@@ -99,9 +147,13 @@ function terpotong(caption: string, dipilih: Platform[]): string {
 export default function AutoUploadPage() {
   const dialog = useDialog();
 
-  const [sesi, setSesi] = useState<Sesi[]>([]);
-  const [memuatSesi, setMemuatSesi] = useState(true);
-  const [sibukPlatform, setSibukPlatform] = useState<string>("");
+  const [akun, setAkun] = useState<Akun[]>([]);
+  const [memuatAkun, setMemuatAkun] = useState(true);
+  const [sibuk, setSibuk] = useState<string>("");
+  // Platform yang kotak Session ID-nya sedang terbuka, beserta isiannya.
+  const [buka, setBuka] = useState<PlatformId | "">("");
+  const [ssid, setSsid] = useState("");
+  const [galatAkun, setGalatAkun] = useState("");
 
   const [berkas, setBerkas] = useState<Berkas | null>(null);
   const [namaBerkas, setNamaBerkas] = useState("");
@@ -110,7 +162,7 @@ export default function AutoUploadPage() {
   );
 
   const [caption, setCaption] = useState("");
-  const [dipilih, setDipilih] = useState<Platform[]>([]);
+  const [dipilih, setDipilih] = useState<PlatformId[]>([]);
   const [jadwal, setJadwal] = useState("");
 
   const [mengirim, setMengirim] = useState(false);
@@ -120,65 +172,79 @@ export default function AutoUploadPage() {
   const [posts, setPosts] = useState<Postingan[]>([]);
   const [memuatPosts, setMemuatPosts] = useState(true);
 
-  // ===== AKUN & SESI =====
+  // ===== AKUN =====
 
-  const muatSesi = useCallback(async () => {
+  const muatAkun = useCallback(async () => {
     try {
-      const res = await apiFetch("/api/sosmed/login", { cache: "no-store" });
-      if (res.ok) setSesi((await res.json()) as Sesi[]);
+      const res = await apiFetch("/api/sosmed/accounts", { cache: "no-store" });
+      if (res.ok) setAkun((await res.json()) as Akun[]);
     } catch {
       // backend sedang mati; daftar dibiarkan seperti adanya
     } finally {
-      setMemuatSesi(false);
+      setMemuatAkun(false);
     }
   }, []);
 
   useEffect(() => {
     void (async () => {
-      await muatSesi();
+      await muatAkun();
     })();
-  }, [muatSesi]);
+  }, [muatAkun]);
 
-  // Selama ada jendela login terbuka, statusnya ditanyakan berkala supaya
-  // tombol "Selesai" hilang sendiri begitu sesinya tersimpan.
-  const adaYangLogin = sesi.some((s) => s.running);
-  useEffect(() => {
-    if (!adaYangLogin) return;
-    const timer = window.setInterval(() => void muatSesi(), 2000);
-    return () => window.clearInterval(timer);
-  }, [adaYangLogin, muatSesi]);
+  /** Akun terbaru milik satu platform, atau null kalau belum dihubungkan. */
+  const akunDari = (p: PlatformId) =>
+    akun.filter((a) => a.platform === p && a.has_session_id).slice(-1)[0] || null;
 
-  async function aksiLogin(platform: string, aksi: "start" | "finish" | "cancel") {
-    setSibukPlatform(platform);
-    setGalat("");
+  async function simpanSsid(p: (typeof PLATFORM)[number]) {
+    const nilai = ssid.trim();
+    if (!nilai) return;
+    const bagian = nilai.split("|").length;
+    if (bagian !== p.cookie.length) {
+      setGalatAkun(
+        `${p.nama} butuh ${p.cookie.length} nilai (${p.cookie.join(" | ")}), yang ditempel ${bagian}.`
+      );
+      return;
+    }
+    setSibuk(p.id);
+    setGalatAkun("");
     try {
-      const res = await apiFetch(`/api/sosmed/login/${platform}/${aksi}`, { method: "POST" });
+      const res = await apiFetch("/api/sosmed/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform: p.id,
+          display_name: p.nama,
+          session_name: "ssid",
+          session_id: nilai,
+        }),
+      });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || "Gagal.");
-      await muatSesi();
+      if (!res.ok) throw new Error(data.detail || "Gagal menyimpan Session ID.");
+      setSsid("");
+      setBuka("");
+      await muatAkun();
     } catch (err) {
-      setGalat(err instanceof Error ? err.message : "Gagal.");
+      setGalatAkun(err instanceof Error ? err.message : "Gagal menyimpan Session ID.");
     } finally {
-      setSibukPlatform("");
+      setSibuk("");
     }
   }
 
-  async function hapusSesi(platform: string, nama: string) {
+  async function putuskan(p: (typeof PLATFORM)[number], a: Akun) {
     const setuju = await dialog.konfirmasi({
-      judul: `Putuskan sesi ${nama}?`,
-      pesan: "Kamu perlu login lewat jendela browser lagi untuk memakai platform ini.",
+      judul: `Putuskan ${p.nama}?`,
+      pesan: "Session ID-nya dihapus dari server. Kamu bisa menempelkannya lagi kapan saja.",
       tombolYa: "Putuskan",
       bahaya: true,
     });
     if (!setuju) return;
-    setSibukPlatform(platform);
+    setSibuk(p.id);
     try {
-      await apiFetch(`/api/sosmed/login/${platform}/${encodeURIComponent(nama)}`, {
-        method: "DELETE",
-      });
-      await muatSesi();
+      await apiFetch(`/api/sosmed/accounts/${a.id}`, { method: "DELETE" });
+      setDipilih((lama) => lama.filter((x) => x !== p.id));
+      await muatAkun();
     } finally {
-      setSibukPlatform("");
+      setSibuk("");
     }
   }
 
@@ -227,7 +293,7 @@ export default function AutoUploadPage() {
     })();
   }, [muatPosts]);
 
-  // Selama ada yang masih berjalan atau terjadwal, riwayat disegarkan sendiri.
+  // Selama ada yang masih berjalan, riwayat disegarkan sendiri.
   const adaYangJalan = posts.some((p) => p.status === "running" || p.status === "pending");
   useEffect(() => {
     if (!adaYangJalan) return;
@@ -237,17 +303,10 @@ export default function AutoUploadPage() {
 
   // ===== KIRIM =====
 
-  const punyaSesi = (p: Platform) => sesi.find((s) => s.platform === p)?.has_session ?? false;
-
   const alasanBelumSiap = (() => {
     if (!berkas) return "Pilih dulu video atau fotonya.";
     if (!caption.trim()) return "Caption wajib diisi.";
     if (dipilih.length === 0) return "Centang dulu minimal satu platform tujuan.";
-    const tanpaSesi = dipilih.filter((p) => !punyaSesi(p));
-    if (tanpaSesi.length > 0) {
-      const nama = tanpaSesi.map((p) => PLATFORM.find((x) => x.id === p)?.nama).join(", ");
-      return `Hubungkan dulu akun ${nama} di panel kiri.`;
-    }
     return "";
   })();
 
@@ -279,7 +338,7 @@ export default function AutoUploadPage() {
     }
   }
 
-  const terhubung = sesi.filter((s) => s.has_session).length;
+  const terhubung = PLATFORM.filter((p) => akunDari(p.id)).length;
 
   return (
     <div className={styles.page}>
@@ -301,89 +360,119 @@ export default function AutoUploadPage() {
         <section className={styles.panel}>
           <div className={styles.panelHead}>
             <h2>Akun Sosmed</h2>
-            <span className={styles.headStatus}>{terhubung} / {PLATFORM.length}</span>
+            <span className={styles.headStatus}>
+              {terhubung} / {PLATFORM.length}
+            </span>
           </div>
 
           <p className={styles.hint}>
-            Login sekali lewat jendela browser sungguhan. Sesinya disimpan di laptop ini, jadi
-            tidak perlu mengulang tiap mengunggah.
+            Tempel Session ID dari cookie peramban tempat kamu sudah login. Tidak ada jendela
+            login yang perlu dibuka, dan satu tempelan berlaku sampai kamu keluar dari akun itu.
           </p>
 
           <div className={styles.daftarAkun}>
-            {memuatSesi &&
-              [0, 1, 2].map((i) => <div key={i} className={styles.rangka} />)}
+            {memuatAkun && [0, 1, 2].map((i) => <div key={i} className={styles.rangka} />)}
 
-            {!memuatSesi &&
+            {!memuatAkun &&
               PLATFORM.map((p) => {
-                const s = sesi.find((x) => x.platform === p.id);
-                const sibuk = sibukPlatform === p.id;
+                const a = akunDari(p.id);
+                const lagi = sibuk === p.id;
+                const terbuka = buka === p.id;
                 return (
                   <div key={p.id} className={styles.akunBaris}>
-                    <span className={styles.titik} style={{ background: p.warna }} aria-hidden="true" />
-                    <div className={styles.akunTeks}>
-                      <strong>{p.nama}</strong>
-                      <span className={s?.has_session ? styles.sambung : styles.putus}>
-                        {s?.running
-                          ? "Jendela login terbuka"
-                          : s?.has_session
-                            ? `Terhubung · ${s.sessions.join(", ")}`
-                            : "Belum terhubung"}
+                    <div className={styles.akunUtama}>
+                      <span
+                        className={a ? styles.logo : `${styles.logo} ${styles.logoMati}`}
+                        style={a ? { color: WARNA[p.id] } : undefined}
+                      >
+                        <LogoSosmed platform={p.id} ukuran={22} />
                       </span>
+                      <div className={styles.akunTeks}>
+                        <strong>{p.nama}</strong>
+                        <span className={a ? styles.sambung : styles.putus}>
+                          {a ? "Terhubung" : "Belum terhubung"}
+                        </span>
+                      </div>
+                      <div className={styles.akunAksi}>
+                        <button
+                          type="button"
+                          className={styles.btnSekunder}
+                          disabled={lagi}
+                          onClick={() => {
+                            setGalatAkun("");
+                            setSsid("");
+                            setBuka(terbuka ? "" : p.id);
+                          }}
+                        >
+                          {terbuka ? "Tutup" : a ? "Ganti" : "Hubungkan"}
+                        </button>
+                        {a && (
+                          <button
+                            type="button"
+                            className={styles.btnBahaya}
+                            disabled={lagi}
+                            onClick={() => void putuskan(p, a)}
+                          >
+                            Putuskan
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div className={styles.akunAksi}>
-                      {s?.running ? (
-                        <>
+
+                    {terbuka && (
+                      <div className={styles.ssidKotak}>
+                        <label className={styles.ssidLabel}>
+                          <span>Session ID</span>
+                          <input
+                            autoFocus
+                            value={ssid}
+                            spellCheck={false}
+                            placeholder={p.cookie.join(" | ")}
+                            onChange={(e) => setSsid(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void simpanSsid(p);
+                            }}
+                          />
+                        </label>
+                        <p className={styles.ssidPetunjuk}>{p.petunjuk}</p>
+                        <div className={styles.aksi}>
                           <button
                             type="button"
                             className={styles.btnUtama}
-                            disabled={sibuk}
-                            onClick={() => void aksiLogin(p.id, "finish")}
+                            disabled={lagi || !ssid.trim()}
+                            onClick={() => void simpanSsid(p)}
                           >
-                            Selesai
+                            {lagi ? "Menyimpan..." : "Simpan"}
                           </button>
                           <button
                             type="button"
                             className={styles.btnSekunder}
-                            disabled={sibuk}
-                            onClick={() => void aksiLogin(p.id, "cancel")}
+                            onClick={() => {
+                              setBuka("");
+                              setSsid("");
+                              setGalatAkun("");
+                            }}
                           >
                             Batal
                           </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className={styles.btnSekunder}
-                            disabled={sibuk}
-                            onClick={() => void aksiLogin(p.id, "start")}
-                          >
-                            {sibuk ? "..." : s?.has_session ? "Login ulang" : "Hubungkan"}
-                          </button>
-                          {s?.has_session &&
-                            s.sessions.map((n) => (
-                              <button
-                                key={n}
-                                type="button"
-                                className={styles.btnBahaya}
-                                disabled={sibuk}
-                                title={`Putuskan sesi ${n}`}
-                                onClick={() => void hapusSesi(p.id, n)}
-                              >
-                                Putuskan
-                              </button>
-                            ))}
-                        </>
-                      )}
-                    </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
           </div>
 
-          {sesi.find((s) => s.running)?.message && (
-            <p className={styles.pesan}>{sesi.find((s) => s.running)?.message}</p>
+          {galatAkun && (
+            <p className={styles.galat} role="alert">
+              {galatAkun}
+            </p>
           )}
+
+          <p className={styles.catatan}>
+            Session ID setara password: siapa pun yang memilikinya bisa memakai akunmu. Ia
+            disimpan di basis data di laptop ini, bukan dikirim ke mana-mana.
+          </p>
         </section>
 
         {/* ================= POSTINGAN ================= */}
@@ -402,7 +491,9 @@ export default function AutoUploadPage() {
                   <span>Berkas</span>
                   <input readOnly value={namaBerkas || "(belum ada berkas)"} />
                 </label>
-                <label className={unggahan ? `${styles.uploadBtn} ${styles.nonaktif}` : styles.uploadBtn}>
+                <label
+                  className={unggahan ? `${styles.uploadBtn} ${styles.nonaktif}` : styles.uploadBtn}
+                >
                   {berkas ? "Ganti" : "Pilih"}
                   <input
                     type="file"
@@ -463,24 +554,30 @@ export default function AutoUploadPage() {
                   <button
                     type="button"
                     className={styles.btnSekunder}
-                    onClick={() => setDipilih(PLATFORM.filter((p) => punyaSesi(p.id)).map((p) => p.id))}
+                    onClick={() =>
+                      setDipilih(PLATFORM.filter((p) => akunDari(p.id)).map((p) => p.id))
+                    }
                   >
                     Pilih semua
                   </button>
-                  <button type="button" className={styles.btnSekunder} onClick={() => setDipilih([])}>
+                  <button
+                    type="button"
+                    className={styles.btnSekunder}
+                    onClick={() => setDipilih([])}
+                  >
                     Kosongkan
                   </button>
                 </div>
               </div>
               <div className={styles.daftarCek}>
                 {PLATFORM.map((p) => {
-                  const bisa = punyaSesi(p.id);
+                  const bisa = !!akunDari(p.id);
                   const aktif = dipilih.includes(p.id);
                   return (
                     <label
                       key={p.id}
                       className={`${styles.cekItem} ${aktif ? styles.cekAktif : ""} ${bisa ? "" : styles.cekMati}`}
-                      title={bisa ? "" : "Hubungkan akunnya dulu di panel kiri"}
+                      title={bisa ? "" : "Tempel dulu Session ID-nya di panel kiri"}
                     >
                       <input
                         type="checkbox"
@@ -492,7 +589,9 @@ export default function AutoUploadPage() {
                           )
                         }
                       />
-                      <span className={styles.titik} style={{ background: p.warna }} aria-hidden="true" />
+                      <span className={styles.logoKecil} style={{ color: WARNA[p.id] }}>
+                        <LogoSosmed platform={p.id} ukuran={15} />
+                      </span>
                       {p.nama}
                     </label>
                   );
@@ -543,20 +642,30 @@ export default function AutoUploadPage() {
 
             {hasil && (
               <div className={styles.hasilKirim}>
-                {hasil.map((r) => (
-                  <div key={r.platform} className={styles.hasilBaris}>
-                    <span className={r.status === "success" ? styles.sambung : styles.putus}>
-                      {PLATFORM.find((p) => p.id === r.platform)?.nama || r.platform}
-                    </span>
-                    {r.url ? (
-                      <a href={r.url} target="_blank" rel="noreferrer" className={styles.tautan}>
-                        Lihat postingan
-                      </a>
-                    ) : (
-                      <span className={styles.hint}>{r.error || labelStatus(r.status)}</span>
-                    )}
-                  </div>
-                ))}
+                {hasil.map((r) => {
+                  const p = PLATFORM.find((x) => x.id === r.platform);
+                  return (
+                    <div key={r.platform} className={styles.hasilBaris}>
+                      <span className={styles.hasilNama}>
+                        {p && (
+                          <span className={styles.logoKecil} style={{ color: WARNA[p.id] }}>
+                            <LogoSosmed platform={p.id} ukuran={15} />
+                          </span>
+                        )}
+                        <span className={r.status === "success" ? styles.sambung : styles.putus}>
+                          {p?.nama || r.platform}
+                        </span>
+                      </span>
+                      {r.url ? (
+                        <a href={r.url} target="_blank" rel="noreferrer" className={styles.tautan}>
+                          Lihat postingan
+                        </a>
+                      ) : (
+                        <span className={styles.hint}>{r.error || labelStatus(r.status)}</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -591,20 +700,33 @@ export default function AutoUploadPage() {
                 </div>
                 <p className={styles.postCaption}>{p.caption || "(tanpa caption)"}</p>
                 <div className={styles.postSasaran}>
-                  {p.targets.map((t) => (
-                    <span
-                      key={t.platform}
-                      className={`${styles.sasaran} ${t.status === "success" ? styles.sasaranOk : t.status === "failed" ? styles.sasaranGagal : ""}`}
-                      title={t.error || ""}
-                    >
-                      {PLATFORM.find((x) => x.id === t.platform)?.nama || t.platform}
-                      {t.url && (
-                        <a href={t.url} target="_blank" rel="noreferrer" className={styles.tautanKecil}>
-                          buka
-                        </a>
-                      )}
-                    </span>
-                  ))}
+                  {p.targets.map((t) => {
+                    const pf = PLATFORM.find((x) => x.id === t.platform);
+                    return (
+                      <span
+                        key={t.platform}
+                        className={`${styles.sasaran} ${t.status === "success" ? styles.sasaranOk : t.status === "failed" ? styles.sasaranGagal : ""}`}
+                        title={t.error || ""}
+                      >
+                        {pf && (
+                          <span className={styles.logoKecil} style={{ color: WARNA[pf.id] }}>
+                            <LogoSosmed platform={pf.id} ukuran={13} />
+                          </span>
+                        )}
+                        {pf?.nama || t.platform}
+                        {t.url && (
+                          <a
+                            href={t.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={styles.tautanKecil}
+                          >
+                            buka
+                          </a>
+                        )}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             ))}
