@@ -20,7 +20,14 @@ ROLE="${ROLE:-all}"
 # Default aman untuk server (bisa di-override lewat Environment Variable)
 export LIVE_HEADLESS="${LIVE_HEADLESS:-true}"
 export COMMENT_STATE_DIR="${COMMENT_STATE_DIR:-/tmp/comment-state}"
+# Berapa video dirender BERSAMAAN. Tidak ada batas atas di kode; angkanya
+# semata-mata ditentukan di sini. Bawaannya 1 karena container kecil kehabisan
+# memori begitu ada dua ffmpeg sekaligus. Di server sendiri yang kuat, isi
+# sebanyak inti yang mau dipakai.
 export CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-1}"
+# "threads" cocok karena kerja beratnya ada di ffmpeg sebagai proses terpisah,
+# jadi tidak terganjal GIL. "prefork" tersedia kalau suatu saat dibutuhkan.
+export CELERY_POOL="${CELERY_POOL:-threads}"
 export LOG_LEVEL="${LOG_LEVEL:-WARNING}"
 
 # Railway / Render / dsb. meng-inject variabel PORT otomatis.
@@ -39,7 +46,7 @@ jalankan_worker() {
   # dan itu tidak memperlambat apa pun di sini karena kerja beratnya ada di
   # ffmpeg yang berjalan sebagai proses terpisah.
   celery -A celery_app.celery_app worker --loglevel="$LOG_LEVEL" \
-    --pool=threads --concurrency="$CELERY_CONCURRENCY"
+    --pool="$CELERY_POOL" --concurrency="$CELERY_CONCURRENCY"
 }
 
 jalankan_api() {

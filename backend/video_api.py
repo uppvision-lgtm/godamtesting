@@ -25,10 +25,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
-# Render memakan CPU penuh, jadi jumlah job yang boleh menunggu dibatasi.
-# Berapa render yang benar-benar berjalan bersamaan ditentukan CELERY_CONCURRENCY
-# pada worker. Di sini cukup dibatasi panjang antreannya supaya tidak tanpa akhir.
-MAX_QUEUED_JOBS = max(1, int(os.getenv("VIDEO_MAX_QUEUED_JOBS", "200")))
+# Berapa render yang benar-benar berjalan BERSAMAAN ditentukan sepenuhnya oleh
+# CELERY_CONCURRENCY pada worker, bukan oleh berkas ini. Di sini hanya ada dua
+# pembatas, dan keduanya BAWAANNYA TANPA BATAS:
+#
+#   VIDEO_MAX_QUEUED_JOBS  panjang antrean yang boleh menunggu
+#   VIDEO_MAX_BATCH        berapa template boleh dikirim dalam satu permintaan
+#
+# Isi dengan angka di atas nol kalau suatu saat perlu direm, misalnya di server
+# kecil. Kosong atau nol berarti tidak dibatasi sama sekali — itulah keadaan
+# yang diinginkan di server sendiri yang kuat.
+MAX_QUEUED_JOBS = max(0, int(os.getenv("VIDEO_MAX_QUEUED_JOBS", "0")))
+MAX_BATCH = max(0, int(os.getenv("VIDEO_MAX_BATCH", "0")))
 MAX_ASSET_MB = float(os.getenv("VIDEO_MAX_ASSET_MB", "200"))
 # Sisi terpanjang gambar layer setelah dirapikan. Berkas desain kerap jauh
 # lebih besar dari kanvas 720x1280 — satu berkas 3375x5706 memakan 77 MB
@@ -86,7 +94,9 @@ class BatchBody(BaseModel):
     """Satu link dirender dengan banyak set layer sekaligus."""
 
     url: str = Field(min_length=5, max_length=2000)
-    template_ids: list[str] = Field(min_length=1, max_length=200)
+    # Tanpa batas atas kecuali VIDEO_MAX_BATCH diisi: satu kali kirim boleh
+    # berisi berapa pun template.
+    template_ids: list[str] = Field(min_length=1, max_length=MAX_BATCH or None)
     texts: dict[str, str] = {}
     session_id: str = ""
 
@@ -539,7 +549,14 @@ def mulai_job(
 
 
 def _pastikan_antrean_muat(tambahan: int) -> None:
-    semua = vt.daftar_job(500)
+    """Tolak kalau antrean sudah penuh. Tanpa MAX_QUEUED_JOBS, tidak pernah menolak.
+
+    Saat tidak dibatasi, pemeriksaannya dilewati sama sekali — jadi mengirim
+    banyak job tidak perlu membaca seluruh antrean lebih dulu.
+    """
+    if MAX_QUEUED_JOBS <= 0:
+        return
+    semua = vt.daftar_job(MAX_QUEUED_JOBS + tambahan + 1)
     antre = [j for j in semua if j.get("status") == "queued"]
     if len(antre) + tambahan > MAX_QUEUED_JOBS:
         raise HTTPException(
@@ -611,8 +628,10 @@ def mulai_banyak_job(
 ) -> dict[str, Any]:
     """Buat satu job per set layer untuk link yang sama.
 
-    Worker mengerjakannya berurutan, dan video sumbernya diunduh sekali lalu
-    dipakai ulang dari cache, jadi 100 set tidak berarti 100 unduhan.
+    Jumlah template tidak dibatasi. Berapa yang dikerjakan bersamaan mengikuti
+    CELERY_CONCURRENCY di worker; sisanya menunggu giliran di antrean. Video
+    sumbernya diunduh sekali lalu dipakai ulang dari cache, jadi 100 set tidak
+    berarti 100 unduhan.
     """
     ids: list[str] = []
     for tid in body.template_ids:

@@ -1716,6 +1716,16 @@ def render(
             proses.wait()
 
     if proses.returncode != 0 or not keluaran.is_file():
+        # Kode -9 berarti prosesnya ditembak SIGKILL. ffmpeg tidak pernah
+        # melakukan itu pada dirinya sendiri, jadi penyebabnya hampir selalu
+        # kehabisan memori. Tanpa penjelasan ini yang terbaca cuma "keluar
+        # dengan kode -9", dan orang tidak punya petunjuk apa pun.
+        if proses.returncode == -9:
+            raise VideoError(
+                "Render dihentikan sistem karena server kehabisan memori. "
+                "Turunkan CELERY_CONCURRENCY supaya lebih sedikit video "
+                "dirender bersamaan, atau pakai server dengan RAM lebih besar."
+            )
         pesan = berkas_log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
         detail = pesan[-1] if pesan else f"ffmpeg keluar dengan kode {proses.returncode}"
         raise VideoError(f"Gagal menyusun video: {detail[:300]}")
