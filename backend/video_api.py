@@ -18,7 +18,7 @@ import storage
 import video_edit as ve
 import video_hook as vh
 import video_tasks as vt
-from auth_api import pengguna_opsional, pengguna_wajib
+from auth_api import bersihkan_id_tamu, identitas
 
 logger = logging.getLogger(__name__)
 
@@ -214,10 +214,11 @@ def _tangani(error: ve.VideoError) -> HTTPException:
 #  SIAPA BOLEH APA
 # ============================================================
 #
-# Template punya pemilik (username) atau kosong = template bawaan. Tamu hanya
-# melihat template bawaan dan boleh merender dengannya, tetapi tidak bisa
-# menyimpan apa pun. Job pun dicatat pemiliknya, jadi riwayat satu akun tidak
-# terlihat akun lain.
+# Template punya pemilik: username akun, "guest:xxx" untuk tamu, atau kosong
+# untuk template bawaan. Tamu bekerja seperti profil tamu di peramban — semua
+# fitur jalan, termasuk membuat dan menyunting template — tetapi miliknya
+# tidak pernah naik ke Supabase dan dibuang otomatis setelah beberapa jam.
+# Job pun dicatat pemiliknya, jadi milik satu orang tidak terlihat orang lain.
 
 
 def _nama_akun(pengguna: dict[str, Any] | None) -> str | None:
@@ -241,7 +242,9 @@ def _periksa_ubah(data: dict[str, Any], pengguna: dict[str, Any] | None) -> None
     if not ve.boleh_lihat(data, nama):
         raise HTTPException(status_code=404, detail=f"Template '{data.get('id')}' tidak ditemukan")
     if not pengguna:
-        raise HTTPException(status_code=401, detail="Masuk dulu untuk mengubah template.")
+        raise HTTPException(
+            status_code=401, detail="Muat ulang halaman, lalu coba lagi."
+        )
     if not ve.boleh_ubah(data, nama):
         raise HTTPException(
             status_code=403,
@@ -312,7 +315,7 @@ async def buat_hook(body: HookBody) -> dict[str, Any]:
 
 @router.get("/templates")
 def daftar_template(
-    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     """Template milik akun yang masuk; untuk tamu, template bawaan saja."""
     return {"templates": ve.list_templates(owner=_nama_akun(pengguna))}
@@ -322,7 +325,7 @@ def daftar_template(
 def buat_template(
     body: TemplateBody,
     template_id: str | None = None,
-    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     """Buat atau perbarui template. Tamu tidak bisa menyimpan apa pun."""
     ada: dict[str, Any] | None = None
@@ -334,7 +337,7 @@ def buat_template(
     if ada is not None:
         _periksa_ubah(ada, pengguna)
     elif not pengguna:
-        raise HTTPException(status_code=401, detail="Masuk dulu untuk menyimpan template.")
+        raise HTTPException(status_code=401, detail="Muat ulang halaman, lalu coba lagi.")
     try:
         return ve.save_template(body.model_dump(), template_id, owner=_nama_akun(pengguna))
     except ve.VideoError as error:
@@ -343,7 +346,7 @@ def buat_template(
 
 @router.get("/templates/{template_id}")
 def ambil_template(
-    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     data = _template_terlihat(template_id, pengguna)
     aset = sorted(
@@ -362,7 +365,7 @@ def ambil_template(
 
 @router.get("/templates/{template_id}/preview.png")
 def pratinjau_template(
-    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> Response:
     """Gambar komposit layer statis template (tanpa video), untuk halaman."""
     import io
@@ -380,7 +383,7 @@ def pratinjau_template(
 
 @router.post("/templates/{template_id}/detect-box")
 def deteksi_kotak(
-    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     """Tebak posisi kotak teks dari layer gambar template."""
     template = _template_terlihat(template_id, pengguna)
@@ -395,13 +398,16 @@ def deteksi_kotak(
 
 @router.post("/templates/{template_id}/duplicate")
 def duplikat_template(
-    template_id: str, body: DuplikatBody, pengguna: dict[str, Any] = Depends(pengguna_wajib)
+    template_id: str, body: DuplikatBody, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     """Buat set layer baru dengan isi yang sama, hanya namanya berbeda.
 
-    Salinannya menjadi milik akun yang menyalin, juga saat sumbernya template
-    bawaan. Itulah cara menyunting template bawaan.
+    Salinannya menjadi milik yang menyalin, juga saat sumbernya template
+    bawaan. Itulah cara menyunting template bawaan, baik sebagai akun maupun
+    sebagai tamu.
     """
+    if not pengguna:
+        raise HTTPException(status_code=401, detail="Muat ulang halaman, lalu coba lagi.")
     _template_terlihat(template_id, pengguna)
     try:
         hasil = ve.duplicate_template(template_id, body.name, owner=pengguna["username"])
@@ -415,7 +421,7 @@ def duplikat_template(
 
 @router.delete("/templates/{template_id}")
 def hapus_template(
-    template_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, bool]:
     _template_milik(template_id, pengguna)
     ve.delete_template(template_id)
@@ -426,7 +432,7 @@ def hapus_template(
 async def unggah_aset(
     template_id: str,
     file: UploadFile = File(...),
-    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     """Terima satu berkas layer (PNG overlay, intro, atau outro)."""
     _template_milik(template_id, pengguna)
@@ -469,7 +475,7 @@ async def unggah_aset(
 
 @router.delete("/templates/{template_id}/assets/{nama}")
 def hapus_aset(
-    template_id: str, nama: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    template_id: str, nama: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, bool]:
     _template_milik(template_id, pengguna)
     berkas = ve.template_path(template_id) / "assets" / ve._aman(nama)
@@ -484,7 +490,7 @@ def hapus_aset(
 
 @router.post("/jobs")
 def mulai_job(
-    body: JobBody, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    body: JobBody, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     _template_terlihat(body.template_id, pengguna)
 
@@ -560,7 +566,7 @@ async def unggah_sumber(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @router.post("/jobs/batch")
 def mulai_banyak_job(
-    body: BatchBody, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    body: BatchBody, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     """Buat satu job per set layer untuk link yang sama.
 
@@ -590,24 +596,24 @@ def mulai_banyak_job(
 
 @router.get("/jobs")
 def daftar_job(
-    limit: int = 20, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    limit: int = 20, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
-    """Riwayat render akun yang masuk. Tamu tidak punya riwayat."""
-    if not pengguna:
+    """Riwayat render akun yang masuk. Tamu tidak punya riwayat tersimpan."""
+    if not pengguna or pengguna.get("tamu"):
         return {"jobs": []}
     return {"jobs": vt.daftar_job(max(1, min(100, limit)), owner=pengguna["username"])}
 
 
 @router.get("/jobs/{job_id}")
 def status_job(
-    job_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     return _job_terjangkau(job_id, pengguna)
 
 
 @router.get("/jobs/{job_id}/file")
 def berkas_job(
-    job_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> FileResponse:
     status = _job_terjangkau(job_id, pengguna)
     if not status.get("output"):
@@ -625,11 +631,13 @@ class BersihkanBody(BaseModel):
     """Daftar job yang hasil videonya sudah tidak dipakai."""
 
     job_ids: list[str] = Field(default_factory=list, max_length=500)
+    # sendBeacon tidak bisa mengirim header, jadi tamu menitipkan idnya di sini.
+    guest_id: str = ""
 
 
 @router.delete("/jobs/{job_id}")
 def hapus_job(
-    job_id: str, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, bool]:
     _job_terjangkau(job_id, pengguna)
     ve.hapus_hasil_job(job_id)
@@ -639,7 +647,7 @@ def hapus_job(
 
 @router.post("/jobs/cleanup")
 def bersihkan_job(
-    body: BersihkanBody, pengguna: dict[str, Any] | None = Depends(pengguna_opsional)
+    body: BersihkanBody, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, int]:
     """Buang hasil render yang sudah tidak ditampilkan lagi.
 
@@ -647,6 +655,10 @@ def bersihkan_job(
     POST, bukan DELETE, supaya bisa dikirim lewat sendBeacon ketika tab
     ditutup — permintaan biasa sering keburu dibatalkan peramban.
     """
+    if not pengguna and body.guest_id:
+        tamu = bersihkan_id_tamu(body.guest_id)
+        if tamu:
+            pengguna = {"user_id": tamu, "username": tamu, "tamu": True}
     dihapus = 0
     for job_id in body.job_ids[:500]:
         job_id = str(job_id).strip()

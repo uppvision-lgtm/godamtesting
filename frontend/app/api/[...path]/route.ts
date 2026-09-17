@@ -20,6 +20,10 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   // halaman dimuat ulang, karena /api/auth/me tidak menerima tokennya.
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
+  // Identitas tamu (orang yang belum masuk). Tanpa ini, tamu tidak bisa
+  // membuat atau menyunting templatenya sendiri.
+  const guestId = request.headers.get("x-guest-id");
+  if (guestId) headers.set("x-guest-id", guestId);
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
   try {

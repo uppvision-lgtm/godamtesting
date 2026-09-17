@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, simpanForm } from "../components/formStore";
 import LoginButton from "../components/LoginButton";
-import { akunSekarang, apiFetch, useAkun, useSudahHidrasi } from "../components/auth";
+import { apiFetch, idTamu, useAkun, useSudahHidrasi } from "../components/auth";
 
 /**
  * Auto Edit Video.
@@ -479,12 +479,6 @@ export default function EditVideoPage() {
     } catch {
       // lanjut ke pembuatan di bawah
     }
-    if (!akunSekarang()) {
-      // Tamu tidak punya template sendiri; yang bisa dibuka hanya template bawaan.
-      setSusunan(null);
-      setPesanLayer("Template tidak ditemukan. Masuk atau daftar untuk membuat template sendiri.");
-      return;
-    }
     try {
       const res = await apiFetch(`/api/video/templates?template_id=${id}`, {
         method: "POST",
@@ -752,10 +746,6 @@ export default function EditVideoPage() {
 
   /** Buat template baru yang kosong. */
   async function buatSetBaru() {
-    if (!akun) {
-      setPesanLayer("Masuk dulu untuk membuat template sendiri.");
-      return;
-    }
     const nama = (window.prompt("Nama template baru:", "") || "").trim();
     if (!nama) return;
     // Id dibuat dari namanya supaya mudah dikenali di penyimpanan, dengan
@@ -997,15 +987,20 @@ export default function EditVideoPage() {
   // ditinggalkan. Hasil milik akun dibiarkan; server membersihkannya sendiri.
   const jobsRef = useRef<JobStatus[]>([]);
   jobsRef.current = jobs;
+  const akunRef = useRef("");
+  akunRef.current = akun;
   useEffect(() => {
     const saatKeluar = () => {
-      if (akunSekarang()) return;
+      if (akunRef.current) return;
       const ids = jobsRef.current.map((j) => j.job_id);
       if (ids.length === 0) return;
       try {
         navigator.sendBeacon(
           "/api/video/jobs/cleanup",
-          new Blob([JSON.stringify({ job_ids: ids })], { type: "application/json" })
+          // sendBeacon tidak bisa memasang header, jadi id tamu ikut di badan.
+          new Blob([JSON.stringify({ job_ids: ids, guest_id: idTamu() })], {
+            type: "application/json",
+          })
         );
       } catch {
         // tidak apa-apa; pembersihan berkala di server tetap jalan
@@ -1115,12 +1110,18 @@ export default function EditVideoPage() {
             <span className={styles.headStatus}>720 × 1280</span>
           </div>
 
-          {kunci && (
+          {kunci ? (
             <p className={styles.kunciInfo}>
-              {akun
-                ? "Ini template bawaan dan tidak bisa diubah. Tekan Duplikat untuk membuat salinan yang bisa kamu sunting."
-                : "Kamu belum masuk, jadi template ini hanya bisa dipakai, tidak bisa diubah. Video tetap bisa dibuat. Masuk atau daftar untuk menyimpan template sendiri."}
+              Ini template bawaan dan tidak bisa diubah. Tekan Duplikat untuk membuat
+              salinan yang bisa kamu sunting{akun ? "" : ", atau + Baru untuk mulai dari kosong"}.
             </p>
+          ) : (
+            !akun && (
+              <p className={styles.tamuInfo}>
+                Kamu memakai mode tamu. Semua fitur bisa dipakai, tapi template ini hilang
+                saat tab ditutup. Masuk atau daftar supaya tersimpan.
+              </p>
+            )
           )}
 
           <div className={styles.form}>
@@ -1145,8 +1146,7 @@ export default function EditVideoPage() {
                 type="button"
                 className={styles.ghostBtn}
                 onClick={buatSetBaru}
-                disabled={!akun}
-                title={akun ? "Buat template kosong" : "Masuk dulu untuk membuat template"}
+                title="Buat template kosong"
               >
                 + Baru
               </button>
@@ -1154,8 +1154,8 @@ export default function EditVideoPage() {
                 type="button"
                 className={styles.ghostBtn}
                 onClick={duplikatSet}
-                disabled={!susunan || !akun}
-                title={akun ? "Salin set ini dengan nama baru" : "Masuk dulu untuk menyalin template"}
+                disabled={!susunan}
+                title="Salin set ini dengan nama baru"
               >
                 Duplikat
               </button>

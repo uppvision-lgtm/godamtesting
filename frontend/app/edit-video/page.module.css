@@ -809,3 +809,16 @@
   opacity: 0.45;
   pointer-events: none;
 }
+
+/* Mode tamu: pemberitahuan biasa, bukan peringatan. */
+.tamuInfo {
+  margin: 0;
+  padding: var(--sela-3) var(--sela-4);
+  border: 1px solid #26404a;
+  border-radius: var(--bulat-kecil);
+  background: #121b1f;
+  color: #9fd2e6;
+  font-size: var(--teks-isi);
+  font-weight: 600;
+  line-height: 1.6;
+}

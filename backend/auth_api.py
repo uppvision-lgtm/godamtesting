@@ -283,6 +283,38 @@ def pengguna_wajib(
     return pengguna
 
 
+# Id tamu dibuat peramban dan dikirim lewat header. Bentuknya dibatasi ketat
+# karena nilainya dipakai sebagai nama pemilik template di disk.
+AWALAN_TAMU = "guest:"
+POLA_ID_TAMU = re.compile(r"^[a-z0-9]{8,40}$")
+
+
+def bersihkan_id_tamu(nilai: str) -> str:
+    """Ubah header tamu jadi nama pemilik yang aman, atau string kosong."""
+    nilai = str(nilai or "").strip().lower()
+    nilai = nilai.removeprefix(AWALAN_TAMU)
+    if not POLA_ID_TAMU.match(nilai):
+        return ""
+    return AWALAN_TAMU + nilai
+
+
+def identitas(
+    pengguna: dict[str, Any] | None = Depends(pengguna_opsional),
+    x_guest_id: str = Header(default=""),
+) -> dict[str, Any] | None:
+    """Siapa pemilik isi ini: akun yang masuk, atau tamu dari header.
+
+    Tamu diperlakukan seperti profil tamu di peramban — semua fitur jalan,
+    tetapi apa pun yang dibuat tidak ikut tersimpan permanen.
+    """
+    if pengguna:
+        return {**pengguna, "tamu": False}
+    tamu = bersihkan_id_tamu(x_guest_id)
+    if tamu:
+        return {"user_id": tamu, "username": tamu, "tamu": True}
+    return None
+
+
 # ============================================================
 #  ENDPOINT
 # ============================================================

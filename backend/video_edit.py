@@ -42,6 +42,15 @@ ID_TEMPLATE_BAWAAN = os.getenv("TEMPLATE_BAWAAN_ID", "bawaan-tv-rakyat")
 # Template dari masa sebelum ada akun tidak menyimpan pemilik. Semuanya
 # dianggap milik akun ini.
 PEMILIK_LAMA = os.getenv("TEMPLATE_PEMILIK_LAMA", "godam").strip().lower()
+
+# Pemilik yang diawali ini adalah tamu: orang yang belum masuk. Mereka boleh
+# memakai semua fitur, persis seperti profil tamu di peramban, tetapi
+# templatenya hanya hidup di disk server ini — tidak pernah naik ke Supabase,
+# dan dihapus otomatis setelah beberapa jam.
+AWALAN_TAMU = "guest:"
+TAMU_SIMPAN_JAM = float(os.getenv("VIDEO_GUEST_RETENTION_HOURS", "12"))
+# Batas jumlah template per tamu, supaya satu peramban tidak bisa memenuhi disk.
+MAKS_TEMPLATE_TAMU = int(os.getenv("VIDEO_GUEST_MAX_TEMPLATES", "20"))
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 
@@ -234,6 +243,11 @@ def pemilik_template(template: dict[str, Any]) -> str:
     return str(template.get("owner") or "").strip().lower()
 
 
+def is_tamu(pemilik: str | None) -> bool:
+    """True kalau pemilik ini tamu (belum masuk), bukan akun terdaftar."""
+    return bool(pemilik) and str(pemilik).startswith(AWALAN_TAMU)
+
+
 def boleh_lihat(template: dict[str, Any], username: str | None) -> bool:
     """Template bawaan terlihat oleh semua; selain itu hanya oleh pemiliknya."""
     pemilik = pemilik_template(template)
@@ -246,9 +260,17 @@ def boleh_ubah(template: dict[str, Any], username: str | None) -> bool:
 
 
 def _masuk_daftar(template: dict[str, Any], username: str | None) -> bool:
-    """Daftar akun berisi miliknya saja; daftar tamu berisi template bawaan saja."""
+    """Isi daftar template menurut siapa yang membukanya.
+
+    Akun terdaftar: miliknya sendiri. Tamu: miliknya sendiri ditambah template
+    bawaan, karena template bawaan itulah titik awal untuk diduplikat.
+    """
     pemilik = pemilik_template(template)
-    return pemilik == username if username else pemilik == PEMILIK_BAWAAN
+    if not username:
+        return pemilik == PEMILIK_BAWAAN
+    if is_tamu(username):
+        return pemilik in (username, PEMILIK_BAWAAN)
+    return pemilik == username
 
 
 def list_templates(owner: str | None = None, semua: bool = False) -> list[dict[str, Any]]:
@@ -257,6 +279,7 @@ def list_templates(owner: str | None = None, semua: bool = False) -> list[dict[s
     ``semua=True`` mengabaikan pemilik; dipakai skrip perawatan, bukan API.
     """
     sinkron_template_dari_storage(paksa=not any(templates_dir().iterdir()))
+    bersihkan_template_tamu()
     hasil = []
     for folder in sorted(templates_dir().iterdir()):
         if not folder.is_dir():
@@ -318,6 +341,59 @@ def nama_set_unik(nama: str, kecuali_id: str = "", owner: str | None = None) -> 
     return calon
 
 
+def _baca_template_mentah(folder: Path) -> dict[str, Any] | None:
+    berkas = folder / "template.json"
+    if not folder.is_dir() or not berkas.is_file():
+        return None
+    try:
+        return json.loads(berkas.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _jumlah_template(owner: str) -> int:
+    jumlah = 0
+    for folder in templates_dir().iterdir():
+        isi = _baca_template_mentah(folder)
+        if isi is not None and str(isi.get("owner") or "").strip().lower() == owner:
+            jumlah += 1
+    return jumlah
+
+
+_bersih_tamu_terakhir = 0.0
+
+
+def bersihkan_template_tamu(paksa: bool = False) -> int:
+    """Buang template milik tamu yang sudah lewat batas simpan.
+
+    Tamu tidak punya tempat penyimpanan permanen, jadi templatenya hanya
+    menumpang di disk server. Tanpa ini, tiap peramban yang mampir
+    meninggalkan folder yang tidak pernah dibuang.
+    """
+    global _bersih_tamu_terakhir
+    sekarang = time.time()
+    if not paksa and sekarang - _bersih_tamu_terakhir < 300:
+        return 0
+    _bersih_tamu_terakhir = sekarang
+    batas = sekarang - TAMU_SIMPAN_JAM * 3600
+    dihapus = 0
+    for folder in list(templates_dir().iterdir()):
+        isi = _baca_template_mentah(folder)
+        if isi is None or not is_tamu(str(isi.get("owner") or "")):
+            continue
+        berkas = folder / "template.json"
+        try:
+            if berkas.stat().st_mtime >= batas:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        dihapus += 1
+    if dihapus:
+        logger.info("%d template tamu kedaluwarsa dibuang", dihapus)
+    return dihapus
+
+
 def save_template(
     data: dict[str, Any], template_id: str | None = None, owner: str | None = None
 ) -> dict[str, Any]:
@@ -341,6 +417,11 @@ def save_template(
         pemilik = str(lama.get("owner", PEMILIK_LAMA) or "").strip().lower()
     else:
         pemilik = str((owner if owner is not None else data.get("owner")) or "").strip().lower()
+    if not lama and is_tamu(pemilik) and _jumlah_template(pemilik) >= MAKS_TEMPLATE_TAMU:
+        raise VideoError(
+            f"Tamu hanya bisa punya {MAKS_TEMPLATE_TAMU} template sekaligus. "
+            "Hapus salah satu, atau masuk supaya templatemu tersimpan."
+        )
     nama = " ".join(str(data.get("name") or "").split())
     bentrok = _nama_set_terpakai(nama, template_id, pemilik)
     if bentrok:
@@ -359,7 +440,8 @@ def save_template(
     (folder / "template.json").write_text(
         json.dumps(isi, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    if storage.enabled():
+    # Template tamu sengaja tidak naik ke Supabase: itulah arti "tidak tersimpan".
+    if storage.enabled() and not is_tamu(pemilik):
         try:
             storage.upload(
                 f"templates/{template_id}/template.json",
@@ -419,7 +501,7 @@ def duplicate_template(
         tujuan.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(sumber, tujuan)
         disalin += 1
-        if storage.enabled():
+        if storage.enabled() and not is_tamu(owner if owner is not None else pemilik_template(asal)):
             try:
                 storage.upload(f"templates/{id_baru}/{nama}", tujuan)
             except storage.StorageError as error:
@@ -479,10 +561,14 @@ def hapus_hasil_job(job_id: str) -> None:
 
 
 def delete_template(template_id: str) -> None:
-    shutil.rmtree(template_path(template_id), ignore_errors=True)
+    folder = template_path(template_id)
+    isi = _baca_template_mentah(folder)
+    tamu = isi is not None and is_tamu(str(isi.get("owner") or ""))
+    shutil.rmtree(folder, ignore_errors=True)
     # Salinan di Supabase ikut dihapus; kalau tidak, set ini muncul lagi
-    # begitu container baru menyinkronkan template dari penyimpanan.
-    if not storage.enabled():
+    # begitu container baru menyinkronkan template dari penyimpanan. Template
+    # tamu tidak pernah ada di sana, jadi tidak perlu dicari.
+    if not storage.enabled() or tamu:
         return
     awalan = f"templates/{_aman(template_id)}"
     try:

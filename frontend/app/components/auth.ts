@@ -54,12 +54,44 @@ export function hapusSesi() {
   if (sebelum) umumkan();
 }
 
-/** `fetch` yang otomatis membawa token login, kalau ada. */
+/**
+ * Id tamu: dipakai orang yang belum masuk supaya tetap bisa membuat dan
+ * menyunting template, persis seperti profil tamu di peramban.
+ *
+ * Disimpan di sessionStorage, bukan localStorage, karena memang tidak boleh
+ * tersimpan: begitu tab ditutup, idnya hilang dan server membuang templatenya.
+ * Dibuat saat pertama dibutuhkan, jadi sekadar membuka halaman tidak
+ * meninggalkan apa pun di server.
+ */
+const KUNCI_TAMU = "ig-tools-guest";
+
+export function idTamu(): string {
+  try {
+    const ada = window.sessionStorage.getItem(KUNCI_TAMU);
+    if (ada) return ada;
+    const acak = new Uint8Array(12);
+    window.crypto.getRandomValues(acak);
+    const baru = Array.from(acak, (b) => b.toString(16).padStart(2, "0")).join("");
+    window.sessionStorage.setItem(KUNCI_TAMU, baru);
+    return baru;
+  } catch {
+    // sessionStorage diblokir: tanpa id tamu, halaman jadi hanya-baca.
+    return "";
+  }
+}
+
+/**
+ * `fetch` yang membawa identitas: token login kalau sudah masuk, atau id tamu
+ * kalau belum.
+ */
 export function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const token = ambilToken();
   const headers = new Headers(init.headers || {});
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (token) {
+    if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+  } else if (!headers.has("X-Guest-Id")) {
+    const tamu = idTamu();
+    if (tamu) headers.set("X-Guest-Id", tamu);
   }
   return fetch(input, { ...init, headers });
 }
