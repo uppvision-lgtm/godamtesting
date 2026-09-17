@@ -759,3 +759,17 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Sesi tersimpan tetapi sudah tidak berlaku: merah. */
+.mati {
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: var(--merah);
+}
+
+/* Tersimpan tetapi belum pernah dibuktikan. */
+.belum {
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: var(--kuning);
+}

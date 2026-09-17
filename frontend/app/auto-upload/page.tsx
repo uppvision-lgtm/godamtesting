@@ -34,6 +34,10 @@ type Akun = {
   session_name: string;
   has_session_id: boolean;
   has_browser_session: boolean;
+  /** null = belum pernah diperiksa. true = beranda akunnya terbuka. */
+  verified: boolean | null;
+  verified_at: string | null;
+  verify_message: string;
 };
 
 type Postingan = {
@@ -79,14 +83,14 @@ const PLATFORM: {
     nama: "YouTube",
     batas: 5000,
     cookie: ["SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"],
-    petunjuk: "Buka youtube.com, salin ketujuh cookie di atas, pisahkan dengan tanda |.",
+    petunjuk: "Buka youtube.com, salin ketujuh cookie di bawah satu per satu.",
   },
   {
     id: "facebook",
     nama: "Facebook",
     batas: 5000,
     cookie: ["c_user", "xs"],
-    petunjuk: "Buka facebook.com, salin c_user dan xs, pisahkan dengan tanda |.",
+    petunjuk: "Buka facebook.com, salin c_user dan xs ke kotaknya masing-masing.",
   },
   {
     id: "threads",
@@ -150,9 +154,13 @@ export default function AutoUploadPage() {
   const [akun, setAkun] = useState<Akun[]>([]);
   const [memuatAkun, setMemuatAkun] = useState(true);
   const [sibuk, setSibuk] = useState<string>("");
-  // Platform yang kotak Session ID-nya sedang terbuka, beserta isiannya.
+  // Platform yang kotak Session ID-nya sedang terbuka. Isiannya dipisah per
+  // cookie, bukan satu kotak berisi nilai yang digabung tanda "|": Facebook
+  // butuh dua cookie dan YouTube tujuh, dan menyatukannya membuat orang salah
+  // hitung tanpa tahu di mana letak kesalahannya.
   const [buka, setBuka] = useState<PlatformId | "">("");
-  const [ssid, setSsid] = useState("");
+  const [nilaiCookie, setNilaiCookie] = useState<Record<string, string>>({});
+  const [memeriksa, setMemeriksa] = useState<string>("");
   const [galatAkun, setGalatAkun] = useState("");
 
   const [berkas, setBerkas] = useState<Berkas | null>(null);
@@ -195,14 +203,13 @@ export default function AutoUploadPage() {
   const akunDari = (p: PlatformId) =>
     akun.filter((a) => a.platform === p && a.has_session_id).slice(-1)[0] || null;
 
+  const lengkap = (p: (typeof PLATFORM)[number]) =>
+    p.cookie.every((c) => (nilaiCookie[c] || "").trim());
+
   async function simpanSsid(p: (typeof PLATFORM)[number]) {
-    const nilai = ssid.trim();
-    if (!nilai) return;
-    const bagian = nilai.split("|").length;
-    if (bagian !== p.cookie.length) {
-      setGalatAkun(
-        `${p.nama} butuh ${p.cookie.length} nilai (${p.cookie.join(" | ")}), yang ditempel ${bagian}.`
-      );
+    const kosong = p.cookie.filter((c) => !(nilaiCookie[c] || "").trim());
+    if (kosong.length > 0) {
+      setGalatAkun(`Masih kosong: ${kosong.join(", ")}.`);
       return;
     }
     setSibuk(p.id);
@@ -215,18 +222,37 @@ export default function AutoUploadPage() {
           platform: p.id,
           display_name: p.nama,
           session_name: "ssid",
-          session_id: nilai,
+          // Server menerimanya sebagai satu untai dipisah "|", urutannya
+          // mengikuti daftar cookie tiap platform.
+          session_id: p.cookie.map((c) => (nilaiCookie[c] || "").trim()).join("|"),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Gagal menyimpan Session ID.");
-      setSsid("");
+      setNilaiCookie({});
       setBuka("");
       await muatAkun();
+      // Langsung dibuktikan: beranda akunnya dibuka memakai cookie ini.
+      if (data.id) await periksa(p.id, Number(data.id));
     } catch (err) {
       setGalatAkun(err instanceof Error ? err.message : "Gagal menyimpan Session ID.");
     } finally {
       setSibuk("");
+    }
+  }
+
+  /** Buka beranda akunnya dengan Session ID ini; hijau kalau terbuka. */
+  async function periksa(platform: PlatformId, id: number) {
+    setMemeriksa(platform);
+    try {
+      const res = await apiFetch(`/api/sosmed/accounts/${id}/verify`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setGalatAkun(data.detail || "Gagal memeriksa sesi.");
+      await muatAkun();
+    } catch {
+      setGalatAkun("Gagal memeriksa sesi.");
+    } finally {
+      setMemeriksa("");
     }
   }
 
@@ -389,8 +415,27 @@ export default function AutoUploadPage() {
                       </span>
                       <div className={styles.akunTeks}>
                         <strong>{p.nama}</strong>
-                        <span className={a ? styles.sambung : styles.putus}>
-                          {a ? "Terhubung" : "Belum terhubung"}
+                        <span
+                          className={
+                            !a
+                              ? styles.putus
+                              : a.verified === true
+                                ? styles.sambung
+                                : a.verified === false
+                                  ? styles.mati
+                                  : styles.belum
+                          }
+                          title={a?.verify_message || ""}
+                        >
+                          {!a
+                            ? "Belum terhubung"
+                            : memeriksa === p.id
+                              ? "Memeriksa beranda akunnya..."
+                              : a.verified === true
+                                ? "Aktif — beranda akunnya terbuka"
+                                : a.verified === false
+                                  ? a.verify_message || "Sesinya sudah tidak berlaku"
+                                  : "Tersimpan, belum diperiksa"}
                         </span>
                       </div>
                       <div className={styles.akunAksi}>
@@ -400,56 +445,73 @@ export default function AutoUploadPage() {
                           disabled={lagi}
                           onClick={() => {
                             setGalatAkun("");
-                            setSsid("");
+                            setNilaiCookie({});
                             setBuka(terbuka ? "" : p.id);
                           }}
                         >
                           {terbuka ? "Tutup" : a ? "Ganti" : "Hubungkan"}
                         </button>
                         {a && (
-                          <button
-                            type="button"
-                            className={styles.btnBahaya}
-                            disabled={lagi}
-                            onClick={() => void putuskan(p, a)}
-                          >
-                            Putuskan
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              className={styles.btnSekunder}
+                              disabled={lagi || memeriksa === p.id}
+                              title="Buka beranda akunnya sekali untuk memastikan sesinya masih hidup"
+                              onClick={() => void periksa(p.id, a.id)}
+                            >
+                              {memeriksa === p.id ? "Memeriksa..." : "Periksa"}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnBahaya}
+                              disabled={lagi}
+                              onClick={() => void putuskan(p, a)}
+                            >
+                              Putuskan
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
 
                     {terbuka && (
                       <div className={styles.ssidKotak}>
-                        <label className={styles.ssidLabel}>
-                          <span>Session ID</span>
-                          <input
-                            autoFocus
-                            value={ssid}
-                            spellCheck={false}
-                            placeholder={p.cookie.join(" | ")}
-                            onChange={(e) => setSsid(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") void simpanSsid(p);
-                            }}
-                          />
-                        </label>
                         <p className={styles.ssidPetunjuk}>{p.petunjuk}</p>
+                        {/* Satu kotak per cookie: jelas mana yang masih kosong,
+                            dan tidak ada yang perlu menghitung tanda pemisah. */}
+                        {p.cookie.map((c, i) => (
+                          <label key={c} className={styles.ssidLabel}>
+                            <span>{c}</span>
+                            <input
+                              autoFocus={i === 0}
+                              value={nilaiCookie[c] || ""}
+                              spellCheck={false}
+                              placeholder={`nilai cookie ${c}`}
+                              onChange={(e) =>
+                                setNilaiCookie((lama) => ({ ...lama, [c]: e.target.value }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && lengkap(p)) void simpanSsid(p);
+                              }}
+                            />
+                          </label>
+                        ))}
                         <div className={styles.aksi}>
                           <button
                             type="button"
                             className={styles.btnUtama}
-                            disabled={lagi || !ssid.trim()}
+                            disabled={lagi || !lengkap(p)}
                             onClick={() => void simpanSsid(p)}
                           >
-                            {lagi ? "Menyimpan..." : "Simpan"}
+                            {lagi ? "Menyimpan..." : "Simpan & periksa"}
                           </button>
                           <button
                             type="button"
                             className={styles.btnSekunder}
                             onClick={() => {
                               setBuka("");
-                              setSsid("");
+                              setNilaiCookie({});
                               setGalatAkun("");
                             }}
                           >

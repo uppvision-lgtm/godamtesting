@@ -22,6 +22,7 @@ from autoupload.browser import session_names
 from autoupload.config import MAX_FILE_SIZE, PLATFORMS, UPLOAD_DIR
 from autoupload.db import Post, SocialAccount, get_db
 from autoupload.service import create_post, run_post
+from autoupload.verify import periksa_sesi
 
 # Awalan alamat bisa digeser lewat environment. Dipakai saat paket ini
 # dipasang di dalam website utama, yang sudah punya "/api/upload" sendiri untuk
@@ -163,6 +164,11 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
             "session_name": a.session_name,
             "has_session_id": bool(a.session_id),
             "has_browser_session": a.session_name in session_names(a.platform),
+            # Hasil pemeriksaan terakhir, supaya halaman bisa menandai hijau
+            # atau merah tanpa memeriksa ulang tiap kali dibuka.
+            "verified": (a.extra or {}).get("verified"),
+            "verified_at": (a.extra or {}).get("verified_at"),
+            "verify_message": (a.extra or {}).get("verify_message", ""),
         }
         for a in accounts
     ]
@@ -183,6 +189,34 @@ def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
     db.commit()
     db.refresh(account)
     return {"id": account.id, "platform": account.platform}
+
+
+@router.post("/accounts/{account_id}/verify")
+async def verify_account(account_id: int, db: Session = Depends(get_db)) -> dict:
+    """Buka beranda platform memakai Session ID akun ini.
+
+    Terbuka sebagai akun yang sudah masuk berarti sesinya sah; dilempar ke
+    halaman login berarti sudah mati. Hasilnya disimpan supaya halaman bisa
+    menandainya tanpa memeriksa ulang setiap kali dibuka.
+    """
+    account = db.query(SocialAccount).filter(SocialAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(404, "Akun tidak ditemukan")
+    if not account.session_id:
+        raise HTTPException(400, "Akun ini tidak punya Session ID untuk diperiksa")
+
+    hasil = await periksa_sesi(account.platform, account.session_id)
+    extra = dict(account.extra or {})
+    extra.update(
+        {
+            "verified": bool(hasil["ok"]),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+            "verify_message": hasil["pesan"],
+        }
+    )
+    account.extra = extra
+    db.commit()
+    return {"ok": hasil["ok"], "message": hasil["pesan"], "url": hasil.get("url", "")}
 
 
 @router.delete("/accounts/{account_id}")
