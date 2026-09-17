@@ -773,3 +773,11 @@
   font-weight: 600;
   color: var(--kuning);
 }
+
+/* Penanda cookie yang boleh dikosongkan. */
+.opsional {
+  font-style: normal;
+  font-weight: 600;
+  color: #7c8a81;
+  text-transform: none;
+}

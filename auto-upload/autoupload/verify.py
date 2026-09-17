@@ -30,7 +30,7 @@ URL_CEK: dict[str, str] = {
     # Threads menampilkan isi publik walau belum masuk, jadi berandanya tidak
     # bisa dipakai menguji. Halaman pengaturan hanya bertahan kalau sesinya
     # sah; kalau tidak, ia dilempar balik ke beranda.
-    "threads": "https://www.threads.net/settings/account",
+    "threads": "https://www.threads.com/settings/account",
     "twitter": "https://x.com/home",
 }
 

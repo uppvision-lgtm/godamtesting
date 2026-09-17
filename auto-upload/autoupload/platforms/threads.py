@@ -18,7 +18,10 @@ from autoupload.browser import MediaKind, PlaywrightPlatform
 class Threads(PlaywrightPlatform):
     platform_key = "threads"
     start_url = "https://www.threads.net"
-    session_cookie_map = {"sessionid": ".threads.net"}
+    # Threads pindah dari threads.net ke threads.com; alamat lama masih
+    # mengalihkan ke sana. Cookie harus dipasang di KEDUA domain, kalau tidak
+    # sesinya hilang begitu pengalihan terjadi dan ia tampak seperti mati.
+    session_cookie_map = {"sessionid": [".threads.net", ".threads.com"]}
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options

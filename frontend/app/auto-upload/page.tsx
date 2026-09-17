@@ -62,6 +62,10 @@ const PLATFORM: {
   nama: string;
   batas: number;
   cookie: string[];
+  /** Cookie tambahan yang boleh dikosongkan. Server hanya menerima semuanya
+   *  atau tidak sama sekali, jadi ketiganya diisi bersama atau dibiarkan
+   *  kosong bersama. */
+  cookieOpsional?: string[];
   petunjuk: string;
 }[] = [
   {
@@ -83,7 +87,11 @@ const PLATFORM: {
     nama: "YouTube",
     batas: 5000,
     cookie: ["SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"],
-    petunjuk: "Buka youtube.com, salin ketujuh cookie di bawah satu per satu.",
+    cookieOpsional: ["__Secure-1PSIDTS", "__Secure-3PSIDTS", "LOGIN_INFO"],
+    petunjuk:
+      "Buka youtube.com, salin cookie-nya satu per satu. Google sering menolak " +
+      "sesi tanpa ketiga cookie tambahan di bawah, jadi isi juga kalau YouTube " +
+      "tetap merah.",
   },
   {
     id: "facebook",
@@ -203,13 +211,39 @@ export default function AutoUploadPage() {
   const akunDari = (p: PlatformId) =>
     akun.filter((a) => a.platform === p && a.has_session_id).slice(-1)[0] || null;
 
-  const lengkap = (p: (typeof PLATFORM)[number]) =>
-    p.cookie.every((c) => (nilaiCookie[c] || "").trim());
+  /** Boleh dipakai mengirim: sudah dihubungkan DAN tidak terbukti mati.
+   *
+   *  Yang belum sempat diperiksa tetap diizinkan; menutupnya berarti satu
+   *  pemeriksaan yang gagal karena jaringan bisa mengunci akun yang sebenarnya
+   *  sehat. Yang sudah terbukti merah yang ditutup. */
+  const bisaDipakai = (p: PlatformId) => {
+    const a = akunDari(p);
+    return !!a && a.verified !== false;
+  };
+
+  const isi = (c: string) => (nilaiCookie[c] || "").trim();
+
+  const lengkap = (p: (typeof PLATFORM)[number]) => {
+    if (!p.cookie.every(isi)) return false;
+    const ops = p.cookieOpsional || [];
+    const terisi = ops.filter(isi).length;
+    // Semua opsional diisi, atau tidak satu pun. Server hanya mengenali dua
+    // bentuk itu; jumlah di antaranya ditolaknya sebagai jumlah yang salah.
+    return terisi === 0 || terisi === ops.length;
+  };
 
   async function simpanSsid(p: (typeof PLATFORM)[number]) {
-    const kosong = p.cookie.filter((c) => !(nilaiCookie[c] || "").trim());
+    const kosong = p.cookie.filter((c) => !isi(c));
     if (kosong.length > 0) {
       setGalatAkun(`Masih kosong: ${kosong.join(", ")}.`);
+      return;
+    }
+    const ops = p.cookieOpsional || [];
+    const opsTerisi = ops.filter(isi);
+    if (opsTerisi.length > 0 && opsTerisi.length < ops.length) {
+      setGalatAkun(
+        `Cookie tambahan harus diisi semua atau dikosongkan semua. Yang belum: ${ops.filter((c) => !isi(c)).join(", ")}.`
+      );
       return;
     }
     setSibuk(p.id);
@@ -224,7 +258,9 @@ export default function AutoUploadPage() {
           session_name: "ssid",
           // Server menerimanya sebagai satu untai dipisah "|", urutannya
           // mengikuti daftar cookie tiap platform.
-          session_id: p.cookie.map((c) => (nilaiCookie[c] || "").trim()).join("|"),
+          session_id: [...p.cookie, ...(opsTerisi.length === ops.length ? ops : [])]
+            .map(isi)
+            .join("|"),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -364,7 +400,10 @@ export default function AutoUploadPage() {
     }
   }
 
-  const terhubung = PLATFORM.filter((p) => akunDari(p.id)).length;
+  // Yang dihitung adalah yang TERBUKTI bisa masuk, bukan sekadar tersimpan.
+  // Angka yang menghitung tempelan akan menyesatkan: akun yang sesinya mati
+  // tetap tersimpan, tetapi tidak bisa dipakai mengirim apa pun.
+  const aktif = PLATFORM.filter((p) => akunDari(p.id)?.verified === true).length;
 
   return (
     <div className={styles.page}>
@@ -376,7 +415,7 @@ export default function AutoUploadPage() {
         </Link>
         <span className={styles.brand}>IG · AUTO UPLOAD</span>
         <span className={styles.headStatus}>
-          {terhubung > 0 ? `${terhubung} akun terhubung` : "belum ada akun"}
+          {aktif > 0 ? `${aktif} akun aktif` : "belum ada akun aktif"}
         </span>
         <LoginButton />
       </header>
@@ -387,7 +426,7 @@ export default function AutoUploadPage() {
           <div className={styles.panelHead}>
             <h2>Akun Sosmed</h2>
             <span className={styles.headStatus}>
-              {terhubung} / {PLATFORM.length}
+              {aktif} / {PLATFORM.length} aktif
             </span>
           </div>
 
@@ -480,9 +519,14 @@ export default function AutoUploadPage() {
                         <p className={styles.ssidPetunjuk}>{p.petunjuk}</p>
                         {/* Satu kotak per cookie: jelas mana yang masih kosong,
                             dan tidak ada yang perlu menghitung tanda pemisah. */}
-                        {p.cookie.map((c, i) => (
+                        {[...p.cookie, ...(p.cookieOpsional || [])].map((c, i) => (
                           <label key={c} className={styles.ssidLabel}>
-                            <span>{c}</span>
+                            <span>
+                              {c}
+                              {(p.cookieOpsional || []).includes(c) && (
+                                <em className={styles.opsional}> opsional</em>
+                              )}
+                            </span>
                             <input
                               autoFocus={i === 0}
                               value={nilaiCookie[c] || ""}
@@ -616,9 +660,7 @@ export default function AutoUploadPage() {
                   <button
                     type="button"
                     className={styles.btnSekunder}
-                    onClick={() =>
-                      setDipilih(PLATFORM.filter((p) => akunDari(p.id)).map((p) => p.id))
-                    }
+                    onClick={() => setDipilih(PLATFORM.filter((p) => bisaDipakai(p.id)).map((p) => p.id))}
                   >
                     Pilih semua
                   </button>
@@ -633,17 +675,23 @@ export default function AutoUploadPage() {
               </div>
               <div className={styles.daftarCek}>
                 {PLATFORM.map((p) => {
-                  const bisa = !!akunDari(p.id);
-                  const aktif = dipilih.includes(p.id);
+                  const bisa = bisaDipakai(p.id);
+                  const dicentang = dipilih.includes(p.id);
                   return (
                     <label
                       key={p.id}
-                      className={`${styles.cekItem} ${aktif ? styles.cekAktif : ""} ${bisa ? "" : styles.cekMati}`}
-                      title={bisa ? "" : "Tempel dulu Session ID-nya di panel kiri"}
+                      className={`${styles.cekItem} ${dicentang ? styles.cekAktif : ""} ${bisa ? "" : styles.cekMati}`}
+                      title={
+                        bisa
+                          ? ""
+                          : akunDari(p.id)
+                            ? "Sesinya sudah tidak berlaku — tempel Session ID yang baru"
+                            : "Tempel dulu Session ID-nya di panel kiri"
+                      }
                     >
                       <input
                         type="checkbox"
-                        checked={aktif}
+                        checked={dicentang}
                         disabled={!bisa}
                         onChange={(e) =>
                           setDipilih((lama) =>
