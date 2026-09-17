@@ -209,9 +209,16 @@ export default function AutoUploadPage() {
     })();
   }, [muatAkun]);
 
-  /** Akun terbaru milik satu platform, atau null kalau belum dihubungkan. */
+  /** Akun terbaru milik satu platform, atau null kalau belum dihubungkan.
+   *
+   *  Dipilih berdasarkan id TERBESAR, bukan urutan dalam daftar: urutan yang
+   *  dikembalikan server tidak boleh jadi andalan, dan salah pilih di sini
+   *  berarti halaman menampilkan akun lama sementara pengunggah memakai yang
+   *  baru. */
   const akunDari = (p: PlatformId) =>
-    akun.filter((a) => a.platform === p && a.has_session_id).slice(-1)[0] || null;
+    akun
+      .filter((a) => a.platform === p && a.has_session_id)
+      .reduce<Akun | null>((pilih, a) => (!pilih || a.id > pilih.id ? a : pilih), null);
 
   /** Boleh dipakai mengirim: sudah dihubungkan DAN tidak terbukti mati.
    *

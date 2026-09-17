@@ -155,7 +155,14 @@ def list_posts(limit: int = 20, db: Session = Depends(get_db)) -> list[dict]:
 
 @router.get("/accounts")
 def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
-    accounts = db.query(SocialAccount).filter(SocialAccount.is_active.is_(True)).all()
+    # Diurutkan tegas menurut id. Tanpa ini urutannya tidak dijamin, dan
+    # halaman yang mengambil "yang terakhir" bisa menampilkan akun lama.
+    accounts = (
+        db.query(SocialAccount)
+        .filter(SocialAccount.is_active.is_(True))
+        .order_by(SocialAccount.id)
+        .all()
+    )
     return [
         {
             "id": a.id,
@@ -180,6 +187,15 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
 def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
     if req.platform not in PLATFORMS:
         raise HTTPException(400, f"Platform harus salah satu dari {PLATFORMS}")
+    # Satu platform hanya boleh punya satu akun aktif. Tanpa ini, menekan
+    # "Ganti" meninggalkan akun lama tetap hidup: halaman menampilkan salah
+    # satunya dan pengunggah memakai yang lain, sehingga Session ID ngawur
+    # bisa tampak hijau karena yang terbaca akun lama yang masih sah.
+    db.query(SocialAccount).filter(
+        SocialAccount.platform == req.platform,
+        SocialAccount.is_active.is_(True),
+    ).update({"is_active": False}, synchronize_session=False)
+
     account = SocialAccount(
         platform=req.platform,
         display_name=req.display_name,
