@@ -156,10 +156,7 @@ def bersihkan_job_lama() -> int:
     r = _r()
     lama = r.zrangebyscore(KUNCI_URUT, "-inf", batas)
     for job_id in lama:
-        hapus_hasil_job(job_id)
-        shutil.rmtree(jobs_dir() / job_id, ignore_errors=True)
-        r.delete(KUNCI_JOB + job_id)
-        r.zrem(KUNCI_URUT, job_id)
+        buang_job(job_id)
         dihapus += 1
 
     # Folder kerja yang statusnya sudah hangus di Redis tidak punya pemilik
@@ -180,6 +177,21 @@ def bersihkan_job_lama() -> int:
     if dihapus:
         logger.info("%d job kedaluwarsa dibuang", dihapus)
     return dihapus
+
+
+def buang_job(job_id: str) -> None:
+    """Hapus satu job seluruhnya: berkas, salinan Supabase, dan catatannya.
+
+    Sejak status pindah ke Redis, membuang berkasnya saja tidak cukup: tanpa
+    ini job yang sudah dihapus tetap muncul di daftar sampai catatannya
+    kedaluwarsa sendiri berjam-jam kemudian.
+    """
+    job_id = _aman_id(job_id)
+    hapus_hasil_job(job_id)
+    shutil.rmtree(jobs_dir() / job_id, ignore_errors=True)
+    r = _r()
+    r.delete(KUNCI_JOB + job_id)
+    r.zrem(KUNCI_URUT, job_id)
 
 
 def _bersihkan_berkas_kerja(folder: Path, hasil: Path | None, di_supabase: bool) -> None:

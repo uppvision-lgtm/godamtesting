@@ -684,7 +684,7 @@ def hapus_job(
     job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, bool]:
     _job_terjangkau(job_id, pengguna)
-    ve.hapus_hasil_job(job_id)
+    vt.buang_job(job_id)
     shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
     return {"ok": True}
 
@@ -712,7 +712,7 @@ def bersihkan_job(
             _job_terjangkau(job_id, pengguna)
         except HTTPException:
             continue  # bukan miliknya, atau sudah tidak ada
-        ve.hapus_hasil_job(job_id)
+        vt.buang_job(job_id)
         shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
         dihapus += 1
     return {"dihapus": dihapus}
