@@ -38,6 +38,8 @@ type Akun = {
   verified: boolean | null;
   verified_at: string | null;
   verify_message: string;
+  /** Nama akun yang terbaca dari profil saat pemeriksaan terakhir. */
+  nama_akun: string;
 };
 
 type Postingan = {
@@ -471,7 +473,11 @@ export default function AutoUploadPage() {
                             : memeriksa === p.id
                               ? "Memeriksa beranda akunnya..."
                               : a.verified === true
-                                ? "Aktif — beranda akunnya terbuka"
+                                ? // Nama akun dibaca dari profil yang terbuka, jadi
+                                  // yang tertulis benar-benar akun yang tertaut.
+                                  a.nama_akun
+                                  ? `Aktif — ${a.nama_akun}`
+                                  : "Aktif — beranda akunnya terbuka"
                                 : a.verified === false
                                   ? a.verify_message || "Sesinya sudah tidak berlaku"
                                   : "Tersimpan, belum diperiksa"}

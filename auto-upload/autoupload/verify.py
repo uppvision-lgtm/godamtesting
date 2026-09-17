@@ -24,7 +24,9 @@ log = logging.getLogger(__name__)
 # sesinya mati, platform melemparnya ke halaman masuk, dan itulah sinyalnya.
 URL_CEK: dict[str, str] = {
     "instagram": "https://www.instagram.com/",
-    "tiktok": "https://www.tiktok.com/tiktokstudio/upload",
+    # Halaman ringkasan TikTok Studio, bukan halaman unggahnya: keduanya
+    # sama-sama butuh login, tetapi yang ini juga menyebut nama akunnya.
+    "tiktok": "https://www.tiktok.com/tiktokstudio",
     "youtube": "https://studio.youtube.com/",
     "facebook": "https://www.facebook.com/me",
     # Threads menampilkan isi publik walau belum masuk, jadi berandanya tidak
@@ -57,6 +59,42 @@ HARUS_BERTAHAN: dict[str, str] = {
 # Judul halaman yang berarti belum masuk. Diperiksa huruf kecil semua.
 JUDUL_LOGIN = ("log in", "login", "sign in", "masuk", "sign up")
 
+# Cara membaca nama akun dari tiap platform. Tidak ada yang seragam: sebagian
+# menaruhnya di data halaman, sebagian di tautan profil, sebagian di tombol
+# pengalih akun. Dibaca setelah sesinya dinyatakan sah, dan gagal membacanya
+# tidak membatalkan hasil — statusnya tetap hijau, hanya tanpa nama.
+NAMA_JS: dict[str, str] = {
+    "instagram": """() => {
+        const m = document.documentElement.innerHTML.match(/"username":"([^"]{2,30})"/);
+        if (m) return m[1];
+        const img = document.querySelector('img[alt$="profile picture"]');
+        return img ? (img.alt || "").replace(/'s profile picture$/, "") : "";
+    }""",
+    "tiktok": """() => {
+        const a = document.querySelector('a[href^="/@"]');
+        return a ? a.getAttribute('href').slice(2) : "";
+    }""",
+    "twitter": """() => {
+        const e = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+        const m = e && (e.innerText || "").match(/@([A-Za-z0-9_]{1,20})/);
+        return m ? m[1] : "";
+    }""",
+    "facebook": """() => {
+        const m = document.documentElement.innerHTML.match(/"NAME":"([^"]{2,40})"/);
+        return m ? m[1] : "";
+    }""",
+    "threads": """() => {
+        const a = document.querySelector('a[href^="/@"]');
+        if (a) return a.getAttribute('href').slice(2);
+        const m = document.documentElement.innerHTML.match(/"username":"([^"]{2,30})"/);
+        return m ? m[1] : "";
+    }""",
+    "youtube": """() => {
+        const e = document.querySelector('#account-name, ytcp-account-section #name, #channel-title');
+        return e ? e.innerText.trim() : "";
+    }""",
+}
+
 TIMEOUT_MS = 25_000
 
 
@@ -66,17 +104,17 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
     if kelas is None:
         return {"ok": False, "pesan": f"Platform '{platform}' tidak dikenal.", "url": ""}
     if not session_id.strip():
-        return {"ok": False, "pesan": "Session ID kosong.", "url": ""}
+        return {"ok": False, "pesan": "Session ID kosong.", "url": "", "nama": ""}
 
     adapter = kelas(session_name="periksa", headless=True)
     try:
         cookies = adapter.session_cookies(session_id)
     except Exception as error:  # noqa: BLE001 - pesan aslinya sudah jelas
-        return {"ok": False, "pesan": str(error), "url": ""}
+        return {"ok": False, "pesan": str(error), "url": "", "nama": ""}
 
     url_awal = URL_CEK.get(platform) or getattr(adapter, "start_url", "")
     if not url_awal:
-        return {"ok": False, "pesan": "Tidak ada halaman untuk diperiksa.", "url": ""}
+        return {"ok": False, "pesan": "Tidak ada halaman untuk diperiksa.", "url": "", "nama": ""}
 
     from playwright.async_api import async_playwright
 
@@ -100,6 +138,13 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
                 # pun; yang membedakan hanya isi halamannya.
                 kotak_sandi = await halaman.locator('input[type="password"]').count()
                 judul = (await halaman.title() or "").lower()
+                nama = ""
+                js = NAMA_JS.get(platform)
+                if js:
+                    try:
+                        nama = (await halaman.evaluate(js) or "").strip()[:40]
+                    except Exception:  # noqa: BLE001 - nama hanyalah pelengkap
+                        nama = ""
             finally:
                 await konteks.close()
                 await peramban.close()
@@ -109,6 +154,7 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
             "ok": False,
             "pesan": f"Tidak bisa membuka halamannya: {type(error).__name__}",
             "url": "",
+            "nama": "",
         }
 
     if next((p for p in PENANDA_LOGIN if p in akhir), ""):
@@ -116,6 +162,7 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
             "ok": False,
             "pesan": "Sesinya sudah tidak berlaku: halaman melempar ke login.",
             "url": akhir,
+            "nama": "",
         }
     # Kalau platform punya halaman yang hanya bertahan saat sudah masuk,
     # itulah putusannya — dan tidak perlu menebak dari isi halaman lagi.
@@ -128,22 +175,31 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
                 "ok": True,
                 "pesan": "Halaman yang butuh login terbuka; sesinya sah.",
                 "url": akhir,
+                "nama": nama,
             }
         return {
             "ok": False,
             "pesan": "Sesinya sudah tidak berlaku: halamannya dilempar balik ke beranda.",
             "url": akhir,
+            "nama": "",
         }
     if kotak_sandi > 0:
         return {
             "ok": False,
             "pesan": "Sesinya sudah tidak berlaku: yang muncul formulir login.",
             "url": akhir,
+            "nama": "",
         }
     if any(j in judul for j in JUDUL_LOGIN):
         return {
             "ok": False,
             "pesan": f"Sesinya sudah tidak berlaku: judul halamannya \"{judul[:40]}\".",
             "url": akhir,
+            "nama": "",
         }
-    return {"ok": True, "pesan": "Beranda terbuka sebagai akun yang sudah masuk.", "url": akhir}
+    return {
+        "ok": True,
+        "pesan": "Beranda terbuka sebagai akun yang sudah masuk.",
+        "url": akhir,
+        "nama": nama,
+    }

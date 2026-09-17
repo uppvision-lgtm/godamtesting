@@ -169,6 +169,8 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
             "verified": (a.extra or {}).get("verified"),
             "verified_at": (a.extra or {}).get("verified_at"),
             "verify_message": (a.extra or {}).get("verify_message", ""),
+            # Nama akun yang terbaca saat pemeriksaan terakhir.
+            "nama_akun": (a.extra or {}).get("nama_akun", ""),
         }
         for a in accounts
     ]
@@ -212,11 +214,17 @@ async def verify_account(account_id: int, db: Session = Depends(get_db)) -> dict
             "verified": bool(hasil["ok"]),
             "verified_at": datetime.now(timezone.utc).isoformat(),
             "verify_message": hasil["pesan"],
+            "nama_akun": hasil.get("nama", ""),
         }
     )
     account.extra = extra
     db.commit()
-    return {"ok": hasil["ok"], "message": hasil["pesan"], "url": hasil.get("url", "")}
+    return {
+        "ok": hasil["ok"],
+        "message": hasil["pesan"],
+        "url": hasil.get("url", ""),
+        "nama_akun": hasil.get("nama", ""),
+    }
 
 
 @router.delete("/accounts/{account_id}")
