@@ -25,6 +25,7 @@ from video_api import router as video_router
 from upload_api import router as upload_router
 from auth_api import router as auth_router
 from forms_api import router as forms_router
+from admin_api import router as admin_router
 
 
 app = FastAPI(title="Instagram Auto Comment Bot API")
@@ -62,6 +63,7 @@ app.include_router(video_router)
 app.include_router(upload_router)
 app.include_router(auth_router)
 app.include_router(forms_router)
+app.include_router(admin_router)
 
 
 class JobRequest(BaseModel):

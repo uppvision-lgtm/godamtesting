@@ -6,6 +6,7 @@ import styles from "./page.module.css";
 import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
 import LoginButton from "../components/LoginButton";
 import { apiFetch, idTamu, useAkun, useSudahHidrasi } from "../components/auth";
+import { useDialog } from "../components/Dialog";
 
 /**
  * Auto Edit Video.
@@ -393,6 +394,7 @@ export default function EditVideoPage() {
   // Akun yang sedang masuk. Kosong = tamu: boleh membuat video dengan template
   // bawaan, tetapi tidak bisa menyimpan template maupun riwayat.
   const akun = useAkun();
+  const dialog = useDialog();
   // Data akun baru dibaca setelah hidrasi, supaya tamu dan akun tidak
   // sama-sama dimuat lalu saling menimpa.
   const siap = useSudahHidrasi();
@@ -591,8 +593,13 @@ export default function EditVideoPage() {
   /** Salin set yang sedang dibuka jadi set baru dengan nama lain. */
   async function duplikatSet() {
     if (!susunan) return;
-    const usul = `${namaSet} (salinan)`;
-    const nama = (window.prompt("Nama template salinan:", usul) || "").trim();
+    const nama = await dialog.tanya({
+      judul: "Duplikat template",
+      pesan: `Salinan dari "${namaSet}", lengkap dengan semua berkas layernya.`,
+      label: "Nama salinan",
+      nilaiAwal: `${namaSet} (salinan)`,
+      tombolYa: "Duplikat",
+    });
     if (!nama) return;
     setPesanLayer("Menyalin template ...");
     try {
@@ -616,7 +623,13 @@ export default function EditVideoPage() {
   async function hapusSet() {
     if (!susunan) return;
     const nama = namaSet;
-    if (!window.confirm(`Hapus template "${nama}"? Berkas layer di dalamnya ikut terhapus.`)) return;
+    const setuju = await dialog.konfirmasi({
+      judul: `Hapus template "${nama}"?`,
+      pesan: "Semua berkas layer di dalamnya ikut terhapus dan tidak bisa dikembalikan.",
+      tombolYa: "Hapus",
+      bahaya: true,
+    });
+    if (!setuju) return;
     try {
       const res = await apiFetch(`/api/video/templates/${idSet}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Gagal menghapus template.");
@@ -758,7 +771,15 @@ export default function EditVideoPage() {
 
   /** Buat template baru yang kosong. */
   async function buatSetBaru() {
-    const nama = (window.prompt("Nama template baru:", "") || "").trim();
+    const nama = await dialog.tanya({
+      judul: "Template baru",
+      label: "Nama template",
+      nilaiAwal: "",
+      petunjuk: akun
+        ? "Setelah dibuat, unggah berkas untuk tiap layernya."
+        : "Kamu memakai mode tamu, jadi template ini hilang saat tab ditutup.",
+      tombolYa: "Buat",
+    });
     if (!nama) return;
     // Id dibuat dari namanya supaya mudah dikenali di penyimpanan, dengan
     // akhiran acak agar dua set bernama mirip tidak saling menimpa.
@@ -1107,6 +1128,7 @@ export default function EditVideoPage() {
 
   return (
     <div className={styles.page}>
+      {dialog.simpul}
       <header className={styles.topbar}>
         <Link href="/" className={styles.back} title="Kembali ke beranda">←</Link>
         <span className={styles.brand}>IG · EDIT VIDEO</span>

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import subprocess
 import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -208,6 +209,40 @@ def _rapikan_video(path: Path) -> int | None:
 
 def _tangani(error: ve.VideoError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(error))
+
+
+# Berapa kali dorongan ke Supabase diulang kalau gagal. Dijalankan setelah
+# jawaban dikirim, jadi pengguna tidak menunggu.
+DORONG_ULANG = 3
+
+
+def _dorong_ke_storage(jalur: str, berkas: Path) -> None:
+    """Simpan aset ke Supabase di latar belakang, dengan pengulangan.
+
+    Aset layer berukuran puluhan MB dan mengunggahnya ke Supabase bisa makan
+    belasan detik. Dulu itu terjadi SEBELUM jawaban dikirim, jadi pengguna
+    menunggu dua kali: sekali mengirim berkas ke server, sekali lagi menunggu
+    server mengirimkannya ke Supabase. Berkasnya sudah ada di disk begitu
+    jawaban dikirim, jadi render dan pratinjau langsung bisa memakainya;
+    salinan di Supabase hanya perlu untuk bertahan melewati deploy ulang.
+    """
+    for percobaan in range(1, DORONG_ULANG + 1):
+        try:
+            storage.upload(jalur, berkas)
+            if percobaan > 1:
+                logger.info("Aset %s tersimpan ke Supabase pada percobaan ke-%d", jalur, percobaan)
+            return
+        except storage.StorageError as error:
+            if percobaan == DORONG_ULANG:
+                logger.error(
+                    "Aset %s GAGAL disimpan ke Supabase setelah %d percobaan: %s. "
+                    "Berkasnya masih ada di disk server, tetapi akan hilang saat "
+                    "container dijalankan ulang.",
+                    jalur, DORONG_ULANG, error,
+                )
+                return
+            logger.warning("Aset %s gagal ke Supabase (percobaan %d): %s", jalur, percobaan, error)
+            time.sleep(2 * percobaan)
 
 
 # ============================================================
@@ -431,6 +466,7 @@ def hapus_template(
 @router.post("/templates/{template_id}/assets")
 async def unggah_aset(
     template_id: str,
+    latar: BackgroundTasks,
     file: UploadFile = File(...),
     pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
@@ -463,13 +499,11 @@ async def unggah_aset(
 
     ukuran = _rapikan_gambar(tujuan) or _rapikan_video(tujuan) or ukuran
 
-    if storage.enabled():
-        try:
-            storage.upload(f"templates/{ve._aman(template_id)}/assets/{nama}", tujuan)
-        except storage.StorageError as error:
-            raise HTTPException(
-                status_code=502, detail=f"Aset gagal disimpan ke Supabase: {error}"
-            ) from error
+    # Template tamu memang tidak disimpan permanen, jadi tidak perlu didorong.
+    if storage.enabled() and not ve.is_tamu(_nama_akun(pengguna)):
+        latar.add_task(
+            _dorong_ke_storage, f"templates/{ve._aman(template_id)}/assets/{nama}", tujuan
+        )
     return {"file": f"assets/{nama}", "size": ukuran}
 
 

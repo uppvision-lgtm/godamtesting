@@ -69,7 +69,7 @@ PWNED_TIMEOUT = float(os.getenv("AUTH_PWNED_TIMEOUT", "4"))
 # Nomor sesi tiap akun diingat sebentar supaya polling halaman (tiap 2 detik)
 # tidak menghubungi Supabase pada setiap permintaan.
 SESI_CACHE_DETIK = 60.0
-_sesi_cache: dict[str, tuple[int | None, float]] = {}
+_sesi_cache: dict[str, tuple[int | None, str, float]] = {}
 
 
 def _kunci_tanda_tangan() -> bytes:
@@ -183,12 +183,16 @@ def _tolak_kalau_bocor(password: str) -> None:
 # ============================================================
 
 
-def buat_token(user_id: str, username: str, sesi: int = 0) -> str:
+PERAN_DEVELOPER = "developer"
+
+
+def buat_token(user_id: str, username: str, sesi: int = 0, peran: str = "pengguna") -> str:
     isi = json.dumps(
         {
             "sub": user_id,
             "username": username,
             "sesi": int(sesi),
+            "peran": peran,
             "exp": int(time.time()) + TOKEN_UMUR_DETIK,
         },
         separators=(",", ":"),
@@ -214,29 +218,37 @@ def baca_token(token: str) -> dict[str, Any] | None:
     return isi
 
 
-def _sesi_akun(username: str) -> int | None:
-    """Nomor sesi akun di database, atau None kalau akunnya tidak ada."""
+def _sesi_akun(username: str) -> tuple[int | None, str]:
+    """(nomor sesi, peran) akun di database. Sesi None berarti akunnya tidak ada.
+
+    Peran sengaja dibaca dari database, bukan dipercaya dari token: kalau
+    tidak, mencabut status developer tidak berlaku sampai tokennya kedaluwarsa.
+    """
     sekarang = time.time()
     tersimpan = _sesi_cache.get(username)
-    if tersimpan and tersimpan[1] > sekarang:
-        return tersimpan[0]
+    if tersimpan and tersimpan[2] > sekarang:
+        return tersimpan[0], tersimpan[1]
     try:
         baris = db.select(
-            TABEL, {"username": f"eq.{username}", "select": "sesi", "limit": "1"}
+            TABEL, {"username": f"eq.{username}", "select": "sesi,peran", "limit": "1"}
         )
     except db.DbError as error:
         logger.warning("Gagal membaca sesi akun %s: %s", username, error)
         # Database sedang bermasalah: pakai nilai lama kalau pernah ada, dan
         # kalau belum pernah, percayai tokennya supaya orang tidak terlempar
-        # keluar hanya karena Supabase sempat tidak menjawab.
-        return tersimpan[0] if tersimpan else -1
-    sesi = int(baris[0].get("sesi") or 0) if baris else None
-    _sesi_cache[username] = (sesi, sekarang + SESI_CACHE_DETIK)
-    return sesi
+        # keluar hanya karena Supabase sempat tidak menjawab. Perannya
+        # diturunkan ke pengguna biasa: saat ragu, beri wewenang paling kecil.
+        return (tersimpan[0], tersimpan[1]) if tersimpan else (-1, "pengguna")
+    if not baris:
+        return None, "pengguna"
+    sesi = int(baris[0].get("sesi") or 0)
+    peran = str(baris[0].get("peran") or "pengguna").strip().lower()
+    _sesi_cache[username] = (sesi, peran, sekarang + SESI_CACHE_DETIK)
+    return sesi, peran
 
 
-def _ingat_sesi(username: str, sesi: int) -> None:
-    _sesi_cache[username] = (sesi, time.time() + SESI_CACHE_DETIK)
+def _ingat_sesi(username: str, sesi: int, peran: str = "pengguna") -> None:
+    _sesi_cache[username] = (sesi, peran, time.time() + SESI_CACHE_DETIK)
 
 
 # ============================================================
@@ -261,18 +273,18 @@ def pengguna_opsional(authorization: str = Header(default="")) -> dict[str, Any]
         # Akun dari environment tidak punya baris di tabel, jadi tidak ada
         # nomor sesi yang bisa dicocokkan.
         if AKUN_USERNAME and username == AKUN_USERNAME:
-            return {"user_id": user_id, "username": username}
+            return {"user_id": user_id, "username": username, "peran": PERAN_DEVELOPER}
         return None
 
     if not db.enabled():
         return None
-    sesi = _sesi_akun(username)
+    sesi, peran = _sesi_akun(username)
     if sesi is None:
         return None
     if sesi != -1 and int(isi.get("sesi") or 0) != sesi:
         # Password sudah diganti setelah token ini dibuat.
         return None
-    return {"user_id": user_id, "username": username}
+    return {"user_id": user_id, "username": username, "peran": peran}
 
 
 def pengguna_wajib(
@@ -280,6 +292,16 @@ def pengguna_wajib(
 ) -> dict[str, Any]:
     if not pengguna:
         raise HTTPException(status_code=401, detail="Masuk dulu untuk melakukan ini.")
+    return pengguna
+
+
+def developer_wajib(
+    pengguna: dict[str, Any] = Depends(pengguna_wajib),
+) -> dict[str, Any]:
+    """Hanya akun berperan developer. Dipakai halaman pemantauan."""
+    if str(pengguna.get("peran") or "") != PERAN_DEVELOPER:
+        # 404, bukan 403: keberadaan halaman pemantauan tidak perlu diumumkan.
+        raise HTTPException(status_code=404, detail="Tidak ditemukan.")
     return pengguna
 
 
@@ -393,11 +415,12 @@ def daftar(body: AkunBody) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail="Username ini sudah dipakai.") from error
         logger.exception("Gagal mendaftarkan akun")
         raise HTTPException(status_code=502, detail=f"Gagal menyimpan akun: {error}") from error
-    _ingat_sesi(username, 0)
+    _ingat_sesi(username, 0, "pengguna")
     _siapkan_template_awal(username)
     return {
-        "token": buat_token(str(akun.get("id")), username, 0),
+        "token": buat_token(str(akun.get("id")), username, 0, "pengguna"),
         "username": username,
+        "peran": "pengguna",
     }
 
 
@@ -409,7 +432,11 @@ def masuk(body: AkunBody) -> dict[str, Any]:
     if AKUN_USERNAME and AKUN_HASH and username == AKUN_USERNAME:
         if not cek_password(body.password, AKUN_HASH):
             raise HTTPException(status_code=401, detail="Username atau password salah.")
-        return {"token": buat_token("pemilik", AKUN_USERNAME), "username": AKUN_USERNAME}
+        return {
+            "token": buat_token("pemilik", AKUN_USERNAME, 0, PERAN_DEVELOPER),
+            "username": AKUN_USERNAME,
+            "peran": PERAN_DEVELOPER,
+        }
 
     if not db.enabled():
         # Tanpa database, satu-satunya akun yang ada adalah akun pemilik.
@@ -420,7 +447,7 @@ def masuk(body: AkunBody) -> dict[str, Any]:
             TABEL,
             {
                 "username": f"eq.{username}",
-                "select": "id,username,password_hash,sesi",
+                "select": "id,username,password_hash,sesi,peran",
                 "limit": "1",
             },
         )
@@ -444,10 +471,12 @@ def masuk(body: AkunBody) -> dict[str, Any]:
         pass  # catatan waktu login bukan hal kritis
 
     sesi = int(akun.get("sesi") or 0)
-    _ingat_sesi(username, sesi)
+    peran = str(akun.get("peran") or "pengguna").strip().lower()
+    _ingat_sesi(username, sesi, peran)
     return {
-        "token": buat_token(str(akun["id"]), str(akun["username"]), sesi),
+        "token": buat_token(str(akun["id"]), str(akun["username"]), sesi, peran),
         "username": akun["username"],
+        "peran": peran,
     }
 
 
@@ -491,14 +520,23 @@ def ganti_password(
     except db.DbError as error:
         logger.exception("Gagal mengganti password")
         raise HTTPException(status_code=502, detail=f"Gagal menyimpan password: {error}") from error
-    _ingat_sesi(username, sesi_baru)
+    peran = str(pengguna.get("peran") or "pengguna")
+    _ingat_sesi(username, sesi_baru, peran)
     # Token baru untuk perangkat ini; token lama di mana pun sudah tidak cocok
     # dengan nomor sesi yang baru.
-    return {"token": buat_token(str(akun["id"]), username, sesi_baru), "username": username}
+    return {
+        "token": buat_token(str(akun["id"]), username, sesi_baru, peran),
+        "username": username,
+        "peran": peran,
+    }
 
 
 @router.get("/me")
 def siapa(pengguna: dict[str, Any] | None = Depends(pengguna_opsional)) -> dict[str, Any]:
     if not pengguna:
         raise HTTPException(status_code=401, detail="Sesi tidak berlaku, silakan masuk lagi.")
-    return {"username": pengguna["username"], "user_id": pengguna["user_id"]}
+    return {
+        "username": pengguna["username"],
+        "user_id": pengguna["user_id"],
+        "peran": pengguna.get("peran") or "pengguna",
+    }

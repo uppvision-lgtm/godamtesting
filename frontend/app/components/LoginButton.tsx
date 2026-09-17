@@ -3,7 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./LoginButton.module.css";
 import { bersihkanForm } from "./formStore";
-import { PERISTIWA_AKUN, akunSekarang, ambilToken, apiFetch, hapusSesi, simpanSesi } from "./auth";
+import {
+  PERAN_DEVELOPER,
+  PERISTIWA_AKUN,
+  akunSekarang,
+  ambilToken,
+  apiFetch,
+  hapusSesi,
+  peranSekarang,
+  simpanSesi,
+} from "./auth";
+import PanelDeveloper from "./PanelDeveloper";
 
 type Mode = "masuk" | "daftar" | "ganti";
 
@@ -70,6 +80,8 @@ export default function LoginButton() {
   const [passwordLama, setPasswordLama] = useState("");
   const [passwordBaru, setPasswordBaru] = useState("");
   const [akun, setAkun] = useState("");
+  const [peran, setPeran] = useState("pengguna");
+  const [panelDev, setPanelDev] = useState(false);
   const [menuTerbuka, setMenuTerbuka] = useState(false);
   const [galat, setGalat] = useState("");
   const [sukses, setSukses] = useState("");
@@ -87,14 +99,16 @@ export default function LoginButton() {
         if (res.ok) {
           const data = await res.json();
           setAkun(data.username || "");
+          setPeran(data.peran || "pengguna");
           // Pastikan nama akun ikut tersimpan, supaya isian formulir yang
           // dikunci per akun tetap terbaca setelah halaman dimuat ulang.
-          simpanSesi(token, data.username || "");
+          simpanSesi(token, data.username || "", data.peran || "pengguna");
         } else if (res.status === 401) {
           // Token hangus: kedaluwarsa, atau password sudah diganti dari
           // perangkat lain.
           hapusSesi();
           setAkun("");
+          setPeran("pengguna");
         }
       } catch {
         // backend sedang mati; biarkan tombol Masuk seperti biasa
@@ -104,7 +118,10 @@ export default function LoginButton() {
 
   // Komponen lain (mis. halaman edit video) bisa saja mengubah sesi.
   useEffect(() => {
-    const sinkron = () => setAkun(akunSekarang());
+    const sinkron = () => {
+      setAkun(akunSekarang());
+      setPeran(peranSekarang());
+    };
     window.addEventListener(PERISTIWA_AKUN, sinkron);
     return () => window.removeEventListener(PERISTIWA_AKUN, sinkron);
   }, []);
@@ -157,8 +174,9 @@ export default function LoginButton() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal. Coba lagi.");
-      simpanSesi(data.token, data.username);
+      simpanSesi(data.token, data.username, data.peran || "pengguna");
       setAkun(data.username);
+      setPeran(data.peran || "pengguna");
       setTerbuka(false);
       setUsername("");
       setPassword("");
@@ -194,7 +212,7 @@ export default function LoginButton() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Gagal mengganti password.");
       // Token baru untuk perangkat ini; sesi di perangkat lain sudah keluar.
-      simpanSesi(data.token, data.username);
+      simpanSesi(data.token, data.username, data.peran || peran);
       setPasswordLama("");
       setPasswordBaru("");
       setSukses("Password diganti. Perangkat lain yang masih masuk sudah dikeluarkan.");
@@ -203,7 +221,7 @@ export default function LoginButton() {
     } finally {
       setSibuk(false);
     }
-  }, [passwordLama, passwordBaru]);
+  }, [passwordLama, passwordBaru, peran]);
 
   function keluar() {
     // Isian formulir milik akun ini ikut dibersihkan supaya tidak tertinggal
@@ -211,6 +229,8 @@ export default function LoginButton() {
     bersihkanForm(akun);
     hapusSesi();
     setAkun("");
+    setPeran("pengguna");
+    setPanelDev(false);
     setMenuTerbuka(false);
   }
 
@@ -228,10 +248,24 @@ export default function LoginButton() {
             aria-expanded={menuTerbuka}
           >
             @{akun}
+            {peran === PERAN_DEVELOPER && <span className={styles.lencanaDev}>dev</span>}
             <span className={styles.panah} aria-hidden="true">▾</span>
           </button>
           {menuTerbuka && (
             <span className={styles.menu} role="menu">
+              {peran === PERAN_DEVELOPER && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`${styles.menuItem} ${styles.menuDev}`}
+                  onClick={() => {
+                    setMenuTerbuka(false);
+                    setPanelDev(true);
+                  }}
+                >
+                  Pantau akun
+                </button>
+              )}
               <button type="button" role="menuitem" className={styles.menuItem} onClick={() => buka("ganti")}>
                 Ganti password
               </button>
@@ -246,6 +280,8 @@ export default function LoginButton() {
           Masuk
         </button>
       )}
+
+      {panelDev && <PanelDeveloper onTutup={() => setPanelDev(false)} />}
 
       {terbuka && (
         <div className={styles.backdrop} onClick={() => setTerbuka(false)}>

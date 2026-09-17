@@ -11,6 +11,8 @@ import { useSyncExternalStore } from "react";
 
 export const KUNCI_TOKEN = "ig-tools-token";
 export const KUNCI_AKUN = "ig-tools-user";
+export const KUNCI_PERAN = "ig-tools-peran";
+export const PERAN_DEVELOPER = "developer";
 /** Dipancarkan di `window` tiap kali ada yang masuk atau keluar. */
 export const PERISTIWA_AKUN = "ig-tools-akun";
 
@@ -26,6 +28,19 @@ export function akunSekarang(): string {
     return window.localStorage.getItem(KUNCI_AKUN) || "";
   } catch {
     return "";
+  }
+}
+
+/**
+ * Peran akun yang sedang masuk. Dipakai halaman hanya untuk memutuskan apakah
+ * menu pemantauan perlu ditampilkan; yang menentukan boleh-tidaknya tetap
+ * server, yang membaca peran dari database pada setiap permintaan.
+ */
+export function peranSekarang(): string {
+  try {
+    return window.localStorage.getItem(KUNCI_PERAN) || "pengguna";
+  } catch {
+    return "pengguna";
   }
 }
 
@@ -45,15 +60,17 @@ function umumkan() {
   }
 }
 
-export function simpanSesi(token: string, username: string) {
+export function simpanSesi(token: string, username: string, peran = "pengguna") {
   const sebelum = akunSekarang();
+  const peranSebelum = peranSekarang();
   try {
     window.localStorage.setItem(KUNCI_TOKEN, token);
     window.localStorage.setItem(KUNCI_AKUN, username);
+    window.localStorage.setItem(KUNCI_PERAN, peran || "pengguna");
   } catch {
     // localStorage bisa diblokir (mode privat) — sesi jadi sebatas halaman ini.
   }
-  if (sebelum !== username) umumkan();
+  if (sebelum !== username || peranSebelum !== (peran || "pengguna")) umumkan();
 }
 
 export function hapusSesi() {
@@ -61,6 +78,7 @@ export function hapusSesi() {
   try {
     window.localStorage.removeItem(KUNCI_TOKEN);
     window.localStorage.removeItem(KUNCI_AKUN);
+    window.localStorage.removeItem(KUNCI_PERAN);
   } catch {
     // abaikan
   }
@@ -127,6 +145,11 @@ const tanpaLangganan = () => () => {};
  */
 export function useAkun(): string {
   return useSyncExternalStore(langgananAkun, akunSekarang, () => "");
+}
+
+/** Peran akun yang sedang masuk, selalu mutakhir. Kosong saat render server. */
+export function usePeran(): string {
+  return useSyncExternalStore(langgananAkun, peranSekarang, () => "pengguna");
 }
 
 /** false selama render server dan hidrasi, true setelah halaman hidup di browser. */
