@@ -104,20 +104,42 @@ def _siapkan_bucket() -> None:
 
 
 def upload(path: str, sumber: Path | bytes, content_type: str | None = None) -> str:
-    """Simpan berkas ke Supabase. ``path`` relatif terhadap bucket."""
+    """Simpan berkas ke Supabase. ``path`` relatif terhadap bucket.
+
+    Berkas dari disk dikirim mengalir langsung dari berkasnya, tidak dibaca
+    utuh ke memori dulu. Aset layer bisa puluhan MB, dan container tempat ini
+    berjalan juga menjalankan ffmpeg — pernah ada render yang dimatikan sistem
+    karena kehabisan memori.
+    """
     if not enabled():
         raise StorageError("Supabase belum dikonfigurasi")
     _siapkan_bucket()
-    isi = sumber.read_bytes() if isinstance(sumber, Path) else sumber
     if content_type is None:
         nama = str(sumber) if isinstance(sumber, Path) else path
         content_type = mimetypes.guess_type(nama)[0] or "application/octet-stream"
-    with httpx.Client(timeout=TIMEOUT) as client:
-        respons = client.post(
-            _api(f"/object/{SUPABASE_BUCKET}/{path.lstrip('/')}"),
-            headers=_headers({"Content-Type": content_type, "x-upsert": "true"}),
-            content=isi,
+    alamat = _api(f"/object/{SUPABASE_BUCKET}/{path.lstrip('/')}")
+
+    if isinstance(sumber, Path):
+        ukuran = sumber.stat().st_size
+        # Content-Length diisi sendiri: tanpa itu httpx memakai pengiriman
+        # berpotong (chunked), dan Supabase Storage menolaknya.
+        kepala = _headers(
+            {
+                "Content-Type": content_type,
+                "x-upsert": "true",
+                "Content-Length": str(ukuran),
+            }
         )
+        with httpx.Client(timeout=TIMEOUT) as client:
+            with sumber.open("rb") as berkas:
+                respons = client.post(alamat, headers=kepala, content=berkas)
+    else:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            respons = client.post(
+                alamat,
+                headers=_headers({"Content-Type": content_type, "x-upsert": "true"}),
+                content=sumber,
+            )
     _periksa(respons, f"Mengunggah {path}")
     return path
 

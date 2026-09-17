@@ -29,7 +29,16 @@ handler = logging.StreamHandler()
 handler.setFormatter(JsonFormatter())
 logging.getLogger().handlers.clear()
 logging.getLogger().addHandler(handler)
-logging.getLogger().setLevel(os.getenv("LOG_LEVEL", "INFO"))
+# Dinaikkan ke huruf besar dan disaring: logging Python hanya menerima nama
+# level huruf besar, jadi LOG_LEVEL=warning (ejaan yang lazim dipakai Celery
+# dan uvicorn) dulu membuat seluruh aplikasi gagal dijalankan.
+_TINGKAT_SAH = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+_tingkat = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+if _tingkat == "WARN":
+    _tingkat = "WARNING"
+if _tingkat not in _TINGKAT_SAH:
+    _tingkat = "INFO"
+logging.getLogger().setLevel(_tingkat)
 
 celery_app = Celery("instagram_worker", broker=redis_url, backend=redis_url)
 celery_app.conf.update(

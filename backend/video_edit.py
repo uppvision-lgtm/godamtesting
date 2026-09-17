@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -76,6 +77,9 @@ SOURCE_CACHE_SECONDS = float(os.getenv("VIDEO_SOURCE_CACHE_SECONDS", "21600"))
 # besar membuat unggahannya sendiri lama dan rawan putus.
 MAX_SOURCE_UPLOAD_MB = float(os.getenv("VIDEO_MAX_SOURCE_UPLOAD_MB", "100"))
 AWALAN_UNGGAHAN = "upload://"
+# Tempat video unggahan disimpan di Supabase, supaya worker yang berjalan
+# sebagai layanan terpisah tetap bisa mengambilnya.
+AWALAN_UNGGAHAN_STORAGE = "uploads/"
 
 # yt-dlp dipasang sebagai paket Python. Di image Docker ia ada di PATH, tapi
 # saat dijalankan dari virtualenv (mode lokal) sering tidak. Jadi dicari dulu,
@@ -147,14 +151,83 @@ def uploads_dir() -> Path:
     return path
 
 
+def cache_dir() -> Path:
+    path = MEDIA_DIR / "cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def bersihkan_cache_unduhan(batas_detik: float | None = None) -> int:
+    """Hapus unduhan sumber yang sudah melewati umur cache.
+
+    SOURCE_CACHE_SECONDS selama ini hanya dipakai untuk menilai apakah sebuah
+    unduhan masih layak dipakai ulang, tidak pernah untuk membuangnya. Tanpa
+    ini foldernya tumbuh terus: satu video sumber puluhan MB per link yang
+    pernah dirender.
+    """
+    batas = time.time() - (SOURCE_CACHE_SECONDS if batas_detik is None else batas_detik)
+    dihapus = 0
+    for isi in list(cache_dir().iterdir()):
+        try:
+            # Kunci unduhan (folder .lock) yang basi ikut dibuang; kalau tidak,
+            # link yang gagal di tengah jalan bisa terkunci selamanya.
+            if isi.stat().st_mtime >= batas:
+                continue
+        except OSError:
+            continue
+        if isi.is_dir():
+            shutil.rmtree(isi, ignore_errors=True)
+        else:
+            isi.unlink(missing_ok=True)
+        dihapus += 1
+    if dihapus:
+        logger.info("%d unduhan sumber kedaluwarsa dibuang dari cache", dihapus)
+    return dihapus
+
+
+def _tarik_unggahan_dari_storage(id_unggahan: str, folder: Path) -> list[Path]:
+    """Ambil video sumber unggahan dari Supabase ke disk ini."""
+    if not storage.enabled():
+        return []
+    awalan = f"{AWALAN_UNGGAHAN_STORAGE}{id_unggahan}"
+    try:
+        isi = storage.list_prefix(awalan)
+    except storage.StorageError as error:
+        logger.warning("Gagal melihat unggahan %s di Supabase: %s", id_unggahan, error)
+        return []
+    for item in isi:
+        nama = str(item.get("name") or "")
+        if not nama.startswith("source."):
+            continue
+        tujuan = folder / _aman(nama)
+        if _tarik_dari_storage(f"{awalan}/{nama}", tujuan):
+            return [tujuan]
+    return []
+
+
 def bersihkan_unggahan_lama(batas_detik: float) -> int:
     """Hapus video sumber unggahan yang lebih tua dari batas."""
     dihapus = 0
     for folder in uploads_dir().iterdir():
         if folder.is_dir() and time.time() - folder.stat().st_mtime > batas_detik:
+            _hapus_unggahan_di_storage(folder.name)
             shutil.rmtree(folder, ignore_errors=True)
             dihapus += 1
     return dihapus
+
+
+def _hapus_unggahan_di_storage(id_unggahan: str) -> None:
+    """Buang salinan unggahan di Supabase; kalau tidak, ia menumpuk selamanya."""
+    if not storage.enabled():
+        return
+    awalan = f"{AWALAN_UNGGAHAN_STORAGE}{_aman(id_unggahan)}"
+    try:
+        for item in storage.list_prefix(awalan):
+            nama = str(item.get("name") or "")
+            if nama:
+                storage.delete(f"{awalan}/{nama}")
+    except storage.StorageError as error:
+        logger.warning("Unggahan %s gagal dibuang dari Supabase: %s", id_unggahan, error)
 
 
 def _aman(nama: str) -> str:
@@ -189,7 +262,18 @@ def _tarik_dari_storage(path_relatif: str, tujuan: Path) -> bool:
     return False
 
 
+# Worker render tidak pernah membuka daftar template; ia hanya menarik berkas
+# yang benar-benar dipakai. Menyalakan sinkronisasi di sana cuma menambah
+# permintaan ke Supabase tanpa guna. start.sh mematikannya untuk peran worker.
+SINKRON_TEMPLATE_AKTIF = os.getenv("TEMPLATE_SYNC", "on").strip().lower() not in (
+    "0",
+    "off",
+    "false",
+    "no",
+)
+
 _sinkron_terakhir = 0.0
+_sinkron_jalan = threading.Lock()
 
 
 def sinkron_template_dari_storage(paksa: bool = False) -> int:
@@ -201,10 +285,12 @@ def sinkron_template_dari_storage(paksa: bool = False) -> int:
     daftar berkali-kali tidak membanjiri Supabase dengan permintaan.
     """
     global _sinkron_terakhir
-    if not storage.enabled():
+    if not storage.enabled() or not SINKRON_TEMPLATE_AKTIF:
         return 0
     if not paksa and time.time() - _sinkron_terakhir < SINKRON_JEDA_DETIK:
         return 0
+    if not _sinkron_jalan.acquire(blocking=False):
+        return 0  # sudah ada yang menyinkronkan; tidak perlu dua-duanya
     _sinkron_terakhir = time.time()
     ditarik = 0
     try:
@@ -219,7 +305,28 @@ def sinkron_template_dari_storage(paksa: bool = False) -> int:
                 ditarik += 1
     except storage.StorageError as error:
         logger.warning("Gagal menyinkronkan template dari Supabase: %s", error)
+    finally:
+        _sinkron_jalan.release()
     return ditarik
+
+
+def sinkron_di_latar(paksa: bool = False) -> None:
+    """Jalankan sinkronisasi tanpa menahan permintaan yang sedang dilayani.
+
+    Sinkronisasi memakan ratusan milidetik karena menunggu Supabase, sedangkan
+    bagian lokalnya cuma sepersekian itu. Membuka halaman tidak seharusnya ikut
+    menunggu; daftar terbaru cukup muncul pada pembukaan berikutnya.
+    """
+    if not storage.enabled() or not SINKRON_TEMPLATE_AKTIF:
+        return
+    if _sinkron_jalan.locked():
+        return
+    threading.Thread(
+        target=sinkron_template_dari_storage,
+        kwargs={"paksa": paksa},
+        name="sinkron-template",
+        daemon=True,
+    ).start()
 
 
 def load_template(template_id: str) -> dict[str, Any]:
@@ -278,7 +385,12 @@ def list_templates(owner: str | None = None, semua: bool = False) -> list[dict[s
 
     ``semua=True`` mengabaikan pemilik; dipakai skrip perawatan, bukan API.
     """
-    sinkron_template_dari_storage(paksa=not any(templates_dir().iterdir()))
+    # Hanya saat disk benar-benar kosong (container baru) daftar perlu
+    # menunggu Supabase; selebihnya disegarkan di latar belakang.
+    if not any(templates_dir().iterdir()):
+        sinkron_template_dari_storage(paksa=True)
+    else:
+        sinkron_di_latar()
     bersihkan_template_tamu()
     hasil = []
     for folder in sorted(templates_dir().iterdir()):
@@ -968,8 +1080,13 @@ def download_source(
     # disalin ke folder job. Disalin, bukan dipindah, karena satu unggahan bisa
     # dipakai banyak job (satu per template) yang berjalan terpisah.
     if url.startswith(AWALAN_UNGGAHAN):
-        folder = uploads_dir() / _aman(url[len(AWALAN_UNGGAHAN):])
+        id_unggahan = _aman(url[len(AWALAN_UNGGAHAN):])
+        folder = uploads_dir() / id_unggahan
         berkas = sorted(p for p in folder.glob("source.*") if p.is_file()) if folder.is_dir() else []
+        if not berkas:
+            # Tidak ada di disk ini: worker bisa jadi layanan lain, atau
+            # containernya baru dijalankan ulang. Ambil dari Supabase.
+            berkas = _tarik_unggahan_dari_storage(id_unggahan, folder)
         if not berkas:
             raise VideoError(
                 "Video sumber unggahan sudah tidak ada di server (mungkin sudah "
@@ -985,7 +1102,7 @@ def download_source(
         raise VideoError("Link video harus diawali http:// atau https://")
     keluaran = tujuan / "source.%(ext)s"
 
-    cache = MEDIA_DIR / "cache" / hashlib.sha1(url.encode("utf-8")).hexdigest()
+    cache = cache_dir() / hashlib.sha1(url.encode("utf-8")).hexdigest()
 
     def dari_cache() -> Path | None:
         for tersimpan in sorted(cache.glob("source.*")):

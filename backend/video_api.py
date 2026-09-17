@@ -552,7 +552,7 @@ def _pastikan_antrean_muat(tambahan: int) -> None:
 
 
 @router.post("/sources")
-async def unggah_sumber(file: UploadFile = File(...)) -> dict[str, Any]:
+async def unggah_sumber(latar: BackgroundTasks, file: UploadFile = File(...)) -> dict[str, Any]:
     """Terima video sumber dari komputer pengguna.
 
     Mengembalikan alamat "upload://<id>" yang dipakai persis seperti link:
@@ -588,6 +588,13 @@ async def unggah_sumber(file: UploadFile = File(...)) -> dict[str, Any]:
     except ve.VideoError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=415, detail=f"Berkas bukan video yang bisa dibaca: {error}")
+    # Didorong ke Supabase supaya worker render bisa mengambilnya walaupun
+    # berjalan sebagai layanan terpisah yang tidak berbagi disk dengan API.
+    # Seperti aset layer, dorongannya menyusul setelah jawaban dikirim.
+    if storage.enabled():
+        latar.add_task(
+            _dorong_ke_storage, f"{ve.AWALAN_UNGGAHAN_STORAGE}{id_unggahan}/{tujuan.name}", tujuan
+        )
     return {
         "url": f"{ve.AWALAN_UNGGAHAN}{id_unggahan}",
         "name": nama,
@@ -652,11 +659,14 @@ def berkas_job(
     status = _job_terjangkau(job_id, pengguna)
     if not status.get("output"):
         raise HTTPException(status_code=409, detail="Video belum selesai disusun")
+    # Supabase didahulukan. Mengalirkan video lewat backend berarti tiap
+    # pemutaran dan tiap unduhan memakai bandwidth serta memori container,
+    # padahal Supabase sudah menyajikannya langsung ke peramban. Berkas lokal
+    # hanya dipakai kalau salinan di Supabase memang tidak ada.
+    if status.get("url"):
+        return RedirectResponse(str(status["url"]))
     berkas = vt.job_path(job_id) / str(status["output"])
     if not berkas.is_file():
-        # Cache lokal sudah dibersihkan; ambil lagi dari Supabase.
-        if status.get("url"):
-            return RedirectResponse(str(status["url"]))
         raise HTTPException(status_code=404, detail="Berkas hasil sudah tidak ada")
     return FileResponse(berkas, media_type="video/mp4", filename=f"{job_id}.mp4")
 
