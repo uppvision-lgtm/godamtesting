@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
-import { bacaForm, simpanForm } from "../components/formStore";
+import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
+import { useAkun } from "../components/auth";
 
 type BotResult = {
   comments_posted?: number;
@@ -100,23 +101,36 @@ export default function Home() {
   const botsRef = useRef<BotSlot[]>(bots);
 
   // ===== ISIAN TERSIMPAN PER AKUN =====
-  // Dimuat setelah render pertama supaya HTML server dan browser tetap sama.
+  // Dua lapis. Salinan lokal dipasang lebih dulu supaya isian langsung tampil,
+  // lalu isian dari server menyusul dan menimpanya — itulah yang membuat
+  // isian tetap ada setelah ganti peramban atau pindah laptop. Tamu tidak
+  // punya lapisan server, jadi isiannya hilang begitu tab ditutup.
+  const akun = useAkun();
   useEffect(() => {
-    const tersimpan = bacaForm<{ botCount: number; values: FormValues[] } | null>(
-      "auto-comment",
-      null as never
+    // Isian dipasang setelah render pertama, bukan lewat nilai awal useState,
+    // supaya HTML dari server dan dari browser tetap sama (penyimpanan
+    // peramban tidak ada di sisi server).
+    const terapkan = (t: { botCount: number; values: FormValues[] } | null) => {
+      if (!t?.values?.length) return;
+      setBotCount(t.botCount || t.values.length);
+      setBots(
+        t.values.map((values, i) => ({
+          ...createBot(i + 1),
+          values: { ...initialValues(), ...values },
+        }))
+      );
+    };
+    terapkan(bacaForm<{ botCount: number; values: FormValues[] } | null>("auto-comment", null as never));
+    let batal = false;
+    void muatFormDariServer<{ botCount: number; values: FormValues[] }>("auto-comment").then(
+      (dariServer) => {
+        if (!batal) terapkan(dariServer);
+      }
     );
-    if (!tersimpan?.values?.length) return;
-    /* eslint-disable react-hooks/set-state-in-effect -- memulihkan isian
-       tersimpan hanya sekali saat halaman dibuka. Sengaja dilakukan setelah
-       render pertama, bukan lewat nilai awal useState, supaya HTML dari server
-       dan dari browser tetap sama (localStorage tidak ada di server). */
-    setBotCount(tersimpan.botCount || tersimpan.values.length);
-    setBots(
-      tersimpan.values.map((values, i) => ({ ...createBot(i + 1), values: { ...initialValues(), ...values } }))
-    );
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, []);
+    return () => {
+      batal = true;
+    };
+  }, [akun]);
 
   // Penyimpanan sengaja dipicu dari aksi pengetikan, bukan dari useEffect:
   // efek yang memantau state akan berjalan dengan nilai lama saat halaman baru

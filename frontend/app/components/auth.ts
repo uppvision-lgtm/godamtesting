@@ -8,13 +8,26 @@
  */
 
 import { useSyncExternalStore } from "react";
-import { KUNCI_AKUN, akunSekarang } from "./formStore";
 
 export const KUNCI_TOKEN = "ig-tools-token";
+export const KUNCI_AKUN = "ig-tools-user";
 /** Dipancarkan di `window` tiap kali ada yang masuk atau keluar. */
 export const PERISTIWA_AKUN = "ig-tools-akun";
 
-export { akunSekarang };
+/**
+ * Nama akun yang sedang masuk, atau string kosong kalau belum login.
+ *
+ * Sengaja tinggal di sini, bukan di formStore: formStore perlu `apiFetch`
+ * dari berkas ini, jadi kalau berkas ini juga mengambil sesuatu dari sana,
+ * keduanya saling mengimpor.
+ */
+export function akunSekarang(): string {
+  try {
+    return window.localStorage.getItem(KUNCI_AKUN) || "";
+  } catch {
+    return "";
+  }
+}
 
 export function ambilToken(): string {
   try {

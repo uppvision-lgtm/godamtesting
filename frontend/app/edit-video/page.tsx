@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
-import { bacaForm, simpanForm } from "../components/formStore";
+import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
 import LoginButton from "../components/LoginButton";
 import { apiFetch, idTamu, useAkun, useSudahHidrasi } from "../components/auth";
 
@@ -402,6 +402,18 @@ export default function EditVideoPage() {
   useEffect(() => {
     simpanForm("edit-video", { link });
   }, [link]);
+
+  // Link tersimpan di server juga, supaya tidak perlu ditempel ulang setelah
+  // tab ditutup. Tamu tidak ikut: isiannya hilang bersama tabnya.
+  useEffect(() => {
+    let batal = false;
+    void muatFormDariServer<{ link?: string }>("edit-video").then((dariServer) => {
+      if (!batal && dariServer?.link) setLink(dariServer.link);
+    });
+    return () => {
+      batal = true;
+    };
+  }, [akun]);
 
   // ===== SET LAYER =====
 

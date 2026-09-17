@@ -63,8 +63,22 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       status: response.status,
       headers: { "content-type": responseType },
     });
-  } catch {
-    return NextResponse.json({ detail: "Backend FastAPI tidak merespons." }, { status: 502 });
+  } catch (error) {
+    // Sebabnya ikut disebut. Tanpa ini, "backend mati", "salah alamat", dan
+    // "koneksi diputus di tengah jalan" tampak sama persis di halaman, dan
+    // tidak ada apa pun di log yang bisa dipakai menelusuri.
+    const sebab =
+      (error as { cause?: { code?: string } } | undefined)?.cause?.code ||
+      (error instanceof Error ? error.name : "");
+    console.error(`[proxy] ${request.method} ${destination} gagal:`, error);
+    // Saat mengembangkan di laptop, alamat tujuan ikut disebut supaya salah
+    // isi BACKEND_API_URL langsung ketahuan. Di produksi alamat internal
+    // tidak dibocorkan ke pengunjung.
+    const tujuan = process.env.NODE_ENV === "production" ? "" : ` -> ${destination}`;
+    return NextResponse.json(
+      { detail: `Backend FastAPI tidak merespons${sebab ? ` (${sebab})` : ""}.${tujuan}` },
+      { status: 502 }
+    );
   }
 }
 

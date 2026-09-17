@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
-import { bacaForm, simpanForm } from "../components/formStore";
+import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
+import { useAkun } from "../components/auth";
 
 type LiveStatus = {
   status: string;
@@ -39,17 +40,30 @@ export default function AutoUploadPage() {
   const tokenRef = useRef("");
 
   // ===== ISIAN TERSIMPAN PER AKUN (berkas video tidak bisa ikut disimpan) =====
+  // Salinan lokal dipasang dulu supaya langsung tampil, lalu isian dari server
+  // menyusul. Tamu tidak punya lapisan server: isiannya hilang saat tab ditutup.
+  const akun = useAkun();
   useEffect(() => {
-    const tersimpan = bacaForm("auto-upload", { username: "", sessionId: "", caption: "" });
-    /* eslint-disable react-hooks/set-state-in-effect -- memulihkan isian
-       tersimpan hanya sekali saat halaman dibuka. Sengaja dilakukan setelah
-       render pertama, bukan lewat nilai awal useState, supaya HTML dari server
-       dan dari browser tetap sama (localStorage tidak ada di server). */
-    if (tersimpan.username) setUsername(tersimpan.username);
-    if (tersimpan.sessionId) setSessionId(tersimpan.sessionId);
-    if (tersimpan.caption) setCaption(tersimpan.caption);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, []);
+    // Isian dipasang setelah render pertama, bukan lewat nilai awal useState,
+    // supaya HTML dari server dan dari browser tetap sama (penyimpanan
+    // peramban tidak ada di sisi server).
+    const terapkan = (t: { username?: string; sessionId?: string; caption?: string } | null) => {
+      if (!t) return;
+      if (t.username) setUsername(t.username);
+      if (t.sessionId) setSessionId(t.sessionId);
+      if (t.caption) setCaption(t.caption);
+    };
+    terapkan(bacaForm("auto-upload", { username: "", sessionId: "", caption: "" }));
+    let batal = false;
+    void muatFormDariServer<{ username?: string; sessionId?: string; caption?: string }>(
+      "auto-upload"
+    ).then((dariServer) => {
+      if (!batal) terapkan(dariServer);
+    });
+    return () => {
+      batal = true;
+    };
+  }, [akun]);
 
   // Disimpan saat diketik (bukan lewat useEffect) supaya isian tersimpan tidak
   // tertimpa nilai kosong ketika halaman baru dimuat.

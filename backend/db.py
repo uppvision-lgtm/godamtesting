@@ -24,7 +24,7 @@ from storage import SUPABASE_SERVICE_KEY, SUPABASE_URL
 
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 
-__all__ = ["enabled", "select", "insert", "update", "DbError"]
+__all__ = ["enabled", "select", "insert", "upsert", "update", "delete", "DbError"]
 
 REST_URL = os.getenv("DB_REST_URL", "").strip().rstrip("/")
 SERVICE_KEY = os.getenv("DB_SERVICE_KEY", "").strip()
@@ -82,7 +82,35 @@ def insert(tabel: str, data: dict[str, Any]) -> dict[str, Any]:
     return hasil[0] if hasil else {}
 
 
+def upsert(tabel: str, data: dict[str, Any], on_conflict: str = "") -> dict[str, Any]:
+    """Simpan baris; kalau kuncinya sudah ada, isinya ditimpa.
+
+    ``on_conflict`` diisi nama kolom kunci yang dipisah koma, sesuai aturan
+    PostgREST. Tanpa itu, PostgREST memakai kunci utama tabel.
+    """
+    params = {"on_conflict": on_conflict} if on_conflict else {}
+    with httpx.Client(timeout=TIMEOUT) as client:
+        respons = client.post(
+            _url(tabel),
+            headers=_headers({"Prefer": "return=representation,resolution=merge-duplicates"}),
+            params=params,
+            json=data,
+        )
+    hasil = _periksa(respons, f"Menyimpan ke {tabel}") or []
+    return hasil[0] if hasil else {}
+
+
 def update(tabel: str, params: dict[str, str], data: dict[str, Any]) -> None:
     with httpx.Client(timeout=TIMEOUT) as client:
         respons = client.patch(_url(tabel), headers=_headers(), params=params, json=data)
     _periksa(respons, f"Memperbarui {tabel}")
+
+
+def delete(tabel: str, params: dict[str, str]) -> None:
+    # PostgREST menolak DELETE tanpa penyaring, jadi ini juga jadi pengaman
+    # supaya tidak ada yang tak sengaja mengosongkan seluruh tabel.
+    if not params:
+        raise DbError(f"Menghapus {tabel} tanpa penyaring ditolak")
+    with httpx.Client(timeout=TIMEOUT) as client:
+        respons = client.delete(_url(tabel), headers=_headers(), params=params)
+    _periksa(respons, f"Menghapus dari {tabel}")
