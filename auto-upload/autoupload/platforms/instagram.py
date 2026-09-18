@@ -15,7 +15,13 @@ import os  # noqa: S404 - baca env IG_OFFSCREEN
 import subprocess  # noqa: S404 - osascript untuk membawa Chrome ke depan
 from pathlib import Path
 
-from autoupload.browser import MediaKind, PlatformError, PlaywrightPlatform
+from autoupload.browser import (
+    MediaKind,
+    PlatformError,
+    PlaywrightPlatform,
+    tautan_baru,
+    tautan_profil,
+)
 
 try:  # pyautogui mengirim event HID nyata (CGEventPost) di macOS
     import pyautogui
@@ -24,6 +30,9 @@ except Exception:  # noqa: BLE001 - HEADLESS/severe env tanpa display
 
 # Label tombol entry + baris popover, EN + ID
 _PLUS_LABELS = ("Buat", "Create", "New post", "Postingan baru")
+
+# Video diposting sebagai reel, foto sebagai /p/ - keduanya dicari.
+_PEMILIH_POST = 'a[href*="/reel/"], a[href*="/p/"]'
 
 
 async def _hid_click(page, box: dict, label: str) -> None:
@@ -108,6 +117,12 @@ class Instagram(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
+        nama = str(options.get("nama_akun") or "").lstrip("@")
+        url_profil = f"https://www.instagram.com/{nama}/" if nama else ""
+        sebelum: set[str] = set()
+        if url_profil:
+            sebelum = await tautan_profil(page, url_profil, _PEMILIH_POST)
+
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(4_000)
 
@@ -426,4 +441,9 @@ class Instagram(PlaywrightPlatform):
             except Exception:  # noqa: BLE001
                 await page.wait_for_timeout(8_000)
         await dismiss_dialogs()
-        return "https://www.instagram.com/"
+        if url_profil:
+            tautan = await tautan_baru(page, url_profil, _PEMILIH_POST, sebelum)
+            if tautan:
+                print(f"[ig] tautan: {tautan}", flush=True)
+                return tautan
+        return url_profil or "https://www.instagram.com/"

@@ -102,6 +102,56 @@ window.chrome = window.chrome || { runtime: {} };
 VIEWPORT = {"width": 1366, "height": 900}
 
 
+# Ragam tautan yang menunjuk ke postingan yang sama tetapi bukan alamat
+# postingannya: X memberi versi /analytics untuk pemiliknya, dan beberapa
+# platform memberi /photo/1 untuk tiap lampiran.
+_BUKAN_ALAMAT_POST = r"/(analytics|photo|video|likes|retweets|reposts)(/|$)"
+
+
+async def _tautan_di_halaman(page, pemilih: str) -> list[str]:
+    return await page.evaluate(
+        """([sel, buang]) => {
+            const re = new RegExp(buang);
+            return [...new Set([...document.querySelectorAll(sel)].map(a => a.href))]
+                     .filter(u => u && !re.test(u));
+        }""",
+        [pemilih, _BUKAN_ALAMAT_POST],
+    )
+
+
+async def tautan_profil(page, url_profil: str, pemilih: str) -> set[str]:
+    """Daftar tautan postingan yang SUDAH ada di profil, sebelum upload."""
+    try:
+        await page.goto(url_profil, wait_until="domcontentloaded", timeout=60_000)
+        await page.wait_for_timeout(5_000)
+        return set(await _tautan_di_halaman(page, pemilih))
+    except Exception:  # noqa: BLE001 - tanpa daftar awal pun upload tetap jalan
+        return set()
+
+
+async def tautan_baru(
+    page, url_profil: str, pemilih: str, sebelum: set[str], percobaan: int = 8
+) -> str | None:
+    """Tautan postingan yang baru muncul di profil setelah upload.
+
+    Dibandingkan dengan daftar sebelum upload, bukan sekadar mengambil yang
+    paling atas: profil bisa punya postingan tersemat yang selalu di urutan
+    pertama, dan itu akan salah dilaporkan sebagai hasil upload. Diulang
+    beberapa kali karena postingan baru tidak selalu langsung tampil.
+    """
+    for _ in range(percobaan):
+        try:
+            await page.goto(url_profil, wait_until="domcontentloaded", timeout=60_000)
+            await page.wait_for_timeout(5_000)
+            baru = [t for t in await _tautan_di_halaman(page, pemilih) if t not in sebelum]
+            if baru:
+                return baru[0]
+        except Exception:  # noqa: BLE001 - coba lagi
+            pass
+        await page.wait_for_timeout(4_000)
+    return None
+
+
 def profile_dir(platform: str, session_name: str = "default") -> Path:
     return PROFILES_DIR / platform / session_name
 

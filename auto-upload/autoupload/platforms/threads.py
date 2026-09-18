@@ -19,7 +19,13 @@ bahasa (Inggris dan Indonesia).
 import re
 from pathlib import Path
 
-from autoupload.browser import MediaKind, PlatformError, PlaywrightPlatform
+from autoupload.browser import (
+    MediaKind,
+    PlatformError,
+    PlaywrightPlatform,
+    tautan_baru,
+    tautan_profil,
+)
 
 # Kata status yang berarti postingan SUDAH terbit. Dicocokkan sebagai kata
 # utuh: status "Posting..." muncul selama video masih diunggah dan tidak boleh
@@ -31,6 +37,8 @@ _SUDAH_TERBIT = re.compile(
 # Label tombol, EN + ID.
 _BUKA_KOMPOSER = ("New thread", "Utas baru")
 _KIRIM = ("Post", "Kirim")
+
+_PEMILIH_POST = 'a[href*="/post/"]'
 
 # Kolom tulis inline di atas beranda. aria-label-nya deskriptif dan stabil;
 # dipakai lebih dulu karena tidak bergantung pada teks tombol sidebar.
@@ -52,6 +60,14 @@ class Threads(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
     ) -> str | None:
+        nama = str(options.get("nama_akun") or "").lstrip("@")
+        url_profil = f"https://www.threads.com/@{nama}" if nama else ""
+        # Daftar postingan sebelum upload, supaya tautan hasilnya dipastikan
+        # yang baru dan bukan postingan lama di urutan atas.
+        sebelum: set[str] = set()
+        if url_profil:
+            sebelum = await tautan_profil(page, url_profil, _PEMILIH_POST)
+
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(4_000)
 
@@ -168,8 +184,12 @@ class Threads(PlaywrightPlatform):
             )
         print("[threads] terkirim", flush=True)
 
-        nama = options.get("username") or ""
-        return f"https://www.threads.com/@{nama}" if nama else self.start_url
+        if url_profil:
+            tautan = await tautan_baru(page, url_profil, _PEMILIH_POST, sebelum)
+            if tautan:
+                print(f"[threads] tautan: {tautan}", flush=True)
+                return tautan
+        return url_profil or self.start_url
 
     async def _tunggu_terbit(self, page) -> bool:
         """Tunggu Threads memberi tahu bahwa postingannya sudah terbit.

@@ -608,6 +608,26 @@
   font-weight: 700;
 }
 
+/* Tautan hasil beserta alamat lengkapnya, ditumpuk rata kanan. */
+.hasilTautan {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  /* Tanpa ini alamat yang panjang memaksa baris melebar, bukan membungkus. */
+  min-width: 0;
+  text-align: right;
+}
+
+.alamatPost {
+  font-size: var(--teks-kecil);
+  font-weight: 500;
+  color: #8fa095;
+  line-height: 1.5;
+  /* Alamat postingan tidak punya spasi, jadi harus boleh putus di mana saja. */
+  word-break: break-all;
+}
+
 .tautan {
   color: var(--hijau);
   font-size: var(--teks-isi);

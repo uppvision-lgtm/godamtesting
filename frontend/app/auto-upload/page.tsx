@@ -780,9 +780,12 @@ export default function AutoUploadPage() {
                         </span>
                       </span>
                       {r.url ? (
-                        <a href={r.url} target="_blank" rel="noreferrer" className={styles.tautan}>
-                          Lihat postingan
-                        </a>
+                        <span className={styles.hasilTautan}>
+                          <a href={r.url} target="_blank" rel="noreferrer" className={styles.tautan}>
+                            Lihat postingan
+                          </a>
+                          <span className={styles.alamatPost}>{r.url}</span>
+                        </span>
                       ) : (
                         <span className={styles.hint}>{r.error || labelStatus(r.status)}</span>
                       )}
