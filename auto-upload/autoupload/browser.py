@@ -301,15 +301,18 @@ class PlaywrightPlatform(ABC):
         _clear_stale_profile_locks(self.profile)
 
         async with async_playwright() as pw:
-            # Platform boleh menonaktifkan emulasi viewport (None): IG butuh
-            # jendela NYATA karena klik HID-nya dihitung dari koordinat CSS ->
-            # layar (emulasi viewport menskalakan halaman & merusak pemetaan).
+            # Platform boleh menonaktifkan emulasi viewport dengan None.
             viewport = getattr(self, "viewport_override", VIEWPORT)
             launch_kwargs: dict = dict(
                 user_data_dir=str(self.profile),
                 headless=self.headless,
                 args=STEALTH_ARGS + list(getattr(self, "extra_args", [])),
             )
+            # Konteks berlayar sentuh: Instagram mengabaikan event mouse
+            # sintetis pada tombol entry-nya, tetapi menerima event sentuh.
+            # Tanpa ini, Playwright tidak mengizinkan tap() sama sekali.
+            if getattr(self, "has_touch", False):
+                launch_kwargs["has_touch"] = True
             if self.headless:
                 launch_kwargs["user_agent"] = CHROME_UA  # lihat CHROME_UA
             if viewport is None:

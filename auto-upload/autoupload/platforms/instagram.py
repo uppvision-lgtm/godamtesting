@@ -1,19 +1,22 @@
 """Instagram uploader via browser session (web create-post flow).
 
-CATATAN PENTING (terbukti lewat pengujian nyata, 2026-09-16):
-IG melakukan "trust check" pada TOMBOL ENTRY saja - tombol "Buat" (+) di
-sidebar dan baris "Postingan" pada popover-nya. Klik yang dikirim lewat
-CDP/Playwright DIABAIKAN diam-diam (tanpa error, tanpa request jaringan),
-sementara klik level OS (HID/CGEvent, mis. pyautogui) diterima normal.
+CATATAN PENTING (terbukti lewat pengujian nyata, 2026-09-18):
+IG melakukan "trust check" pada TOMBOL ENTRY, yaitu tombol Buat (+) di sidebar.
+Yang ditolaknya adalah event MOUSE sintetis: locator.click(), page.mouse
+down/up, focus+Enter, maupun dispatchEvent semuanya diabaikan diam-diam tanpa
+error dan tanpa permintaan jaringan.
+
+Yang DITERIMA adalah event SENTUH. Dengan konteks berlayar sentuh
+(has_touch=True) lalu tap(), komposer terbuka normal - termasuk dalam mode
+headless. Karena itu upload Instagram tidak lagi butuh jendela terlihat,
+pyautogui, izin Accessibility macOS, ataupun kursor yang bergerak, dan kini
+bisa dijalankan di server Linux seperti platform lain.
+
 Setelah komposer terbuka, semua langkah berikutnya (file chooser, Pangkas,
-Edit, caption, Bagikan) bisa dikendalikan lewat Playwright biasa.
-Karena itu upload Instagram WAJIB headful (jendela Chrome terlihat).
+caption, Bagikan) dikendalikan lewat Playwright biasa.
 """
 
-import asyncio
-import os  # noqa: S404 - baca env IG_OFFSCREEN
-import sys
-import subprocess  # noqa: S404 - osascript untuk membawa Chrome ke depan
+import re
 from pathlib import Path
 
 from autoupload.browser import (
@@ -24,11 +27,6 @@ from autoupload.browser import (
     tautan_profil,
 )
 
-try:  # pyautogui mengirim event HID nyata (CGEventPost) di macOS
-    import pyautogui
-except Exception:  # noqa: BLE001 - HEADLESS/severe env tanpa display
-    pyautogui = None
-
 # Label tombol entry + baris popover, EN + ID
 _PLUS_LABELS = ("Buat", "Create", "New post", "Postingan baru")
 
@@ -36,53 +34,19 @@ _PLUS_LABELS = ("Buat", "Create", "New post", "Postingan baru")
 _PEMILIH_POST = 'a[href*="/reel/"], a[href*="/p/"]'
 
 
-async def _hid_click(page, box: dict, label: str) -> None:
-    """Klik level-OS pada koordinat layar yang dihitung dari bounding box."""
-    if pyautogui is None:
-        raise PlatformError(
-            "pyautogui tidak tersedia; upload Instagram butuh mode headful "
-            "di desktop macOS dengan pyautogui terpasang."
-        )
-    geo = await page.evaluate(
-        "({sx: window.screenX, sy: window.screenY, oh: window.outerHeight,"
-        " ih: window.innerHeight})"
-    )
-    if geo["oh"] <= geo["ih"]:
-        raise PlatformError(
-            "Viewport IG teremulasi (bukan jendela nyata) - pemetaan "
-            "koordinat klik HID tidak valid. Launch IG tanpa viewport."
-        )
-    sx = geo["sx"] + box["x"] + box["width"] / 2
-    sy = geo["sy"] + (geo["oh"] - geo["ih"]) + box["y"] + box["height"] / 2
-    # Pastikan jendela Chrome fokus sebelum mengirim klik HID.
-    for _ in range(5):
-        if await page.evaluate("document.hasFocus()"):
-            break
-        subprocess.run(
-            ["osascript", "-e", 'tell application "Google Chrome" to activate'],
-            check=False, capture_output=True,
-        )
-        await page.wait_for_timeout(1_000)
+async def _tap(page, target, label: str) -> None:
+    """Ketuk dengan event sentuh - satu-satunya yang diterima tombol entry IG.
+
+    `target` boleh sebuah Locator, atau dict bounding box untuk elemen yang
+    hanya diketahui posisinya (mis. baris popover hasil pemindaian).
+    """
+    if isinstance(target, dict):
+        x = target["x"] + target["width"] / 2
+        y = target["y"] + target["height"] / 2
+        await page.touchscreen.tap(x, y)
     else:
-        raise PlatformError(
-            "Jendela Chrome tidak fokus - klik HID akan mendarat di aplikasi "
-            "lain. Jangan minimalkan Chrome saat upload IG berjalan."
-        )
-    cx = sx - geo["sx"]
-    cy = sy - geo["sy"] - (geo["oh"] - geo["ih"])
-    await asyncio.to_thread(pyautogui.moveTo, sx, sy, 0.25)
-    await page.wait_for_timeout(300)
-    under = await page.evaluate(
-        """([cx, cy]) => {
-            const e = document.elementFromPoint(cx, cy);
-            return e ? (e.tagName + '|' + (e.innerText || '').trim().slice(0, 30))
-                     : null;
-        }""",
-        [cx, cy],
-    )
-    print(f"[ig] HID {label} di ({sx:.0f},{sy:.0f}); elemen di bawah kursor: {under}",
-          flush=True)
-    await asyncio.to_thread(pyautogui.click, sx, sy)
+        await target.tap(timeout=10_000)
+    print(f"[ig] tap {label}", flush=True)
 
 
 class Instagram(PlaywrightPlatform):
@@ -93,49 +57,14 @@ class Instagram(PlaywrightPlatform):
     start_url = "https://www.instagram.com/"
     # Session ID shortcut: the Instagram "sessionid" browser cookie.
     session_cookie_map = {"sessionid": ".instagram.com"}
-    # Jendela NYATA tanpa emulasi viewport: koordinat klik HID dihitung dari
-    # koordinat CSS halaman, dan emulasi viewport Playwright merusak
-    # pemetaan tersebut (outerHeight < innerHeight -> klik mendarat melenceng).
-    viewport_override = None
-    # Posisi jendela deterministik agar klik HID selalu jatuh di layar.
-    extra_args = ["--window-position=0,0"]
-
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)
-        # Tombol entry IG hanya merespons klik HID nyata -> wajib headful.
-        self.headless = False
-        # Mode latar belakang (IG_OFFSCREEN=1): jendela nyata dipindah KELUAR
-        # layar sehingga upload tidak mengganggu pengguna. Klik HID tetap
-        # valid karena koordinat layar dihitung dari window.screenX/screenY
-        # jendela itu sendiri (nilai screenX negatif -> klik di koordinat
-        # global negatif, tetap diterima window server macOS). Jendela tetap
-        # harus headful: IG menolak klik CDP pada tombol entry, jadi headless
-        # murni tidak mungkin.
-        if os.environ.get("IG_OFFSCREEN", "").strip().lower() in ("1", "true", "yes"):
-            self.extra_args = ["--window-position=-3200,0"]
-
+    # Konteks harus punya layar sentuh: tombol Buat (+) mengabaikan event
+    # mouse sintetis dan hanya menanggapi event sentuh. Tanpa ini Playwright
+    # juga menolak memanggil tap() sama sekali.
+    has_touch = True
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
-        # Gagal SEKARANG kalau lingkungannya tidak mungkin, jangan setelah
-        # meluncurkan browser: di server Linux tanpa layar, Chromium headful
-        # gagal dengan pesan yang tidak menjelaskan apa pun. Instagram
-        # mengabaikan klik Playwright pada tombol Buat (+) dan hanya menerima
-        # klik tingkat sistem, jadi upload IG memang mustahil di kontainer.
-        if sys.platform != "darwin":
-            raise PlatformError(
-                "Upload Instagram hanya bisa dijalankan dari laptop macOS, "
-                "bukan dari server. Tombol Buat (+) menolak klik Playwright "
-                "dan hanya menerima klik tingkat sistem lewat jendela nyata. "
-                "Platform lain tetap bisa dijalankan dari server."
-            )
-        if pyautogui is None:
-            raise PlatformError(
-                "pyautogui tidak tersedia; upload Instagram butuh mode headful "
-                "di desktop macOS dengan pyautogui terpasang."
-            )
-
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.instagram.com/{nama}/" if nama else ""
         sebelum: set[str] = set()
@@ -195,15 +124,9 @@ class Instagram(PlaywrightPlatform):
 
         await dismiss_dialogs()
 
-        # 1. Open the composer via the nav "Create" (+). The nav renders
-        #    late, so WAIT for it. IG trust-checks the entry buttons, so the
-        #    clicks MUST be real OS-level (HID) events, not CDP clicks.
-        subprocess.run(
-            ["osascript", "-e", 'tell application "Google Chrome" to activate'],
-            check=False, capture_output=True,
-        )
-        await page.bring_to_front()
-        await page.wait_for_timeout(800)
+        # 1. Buka komposer lewat tombol Buat (+) di navigasi. Navigasinya
+        #    dirender belakangan, jadi ditunggu. Tombol ini di-trust-check
+        #    Instagram: harus event SENTUH, bukan klik mouse sintetis.
 
         # Pilih tombol + yang BENAR-BENAR visible (layout lebar pakai
         # "Buat" expanded; svg "Postingan baru" hanya ada di layout sempit
@@ -230,10 +153,10 @@ class Instagram(PlaywrightPlatform):
         plus_box = await item.bounding_box()
         if plus_box is None:
             raise PlatformError(
-                "Tombol Buat (+) Instagram tidak terlihat di layar - "
-                "pastikan jendela Chrome tampil di monitor."
+                "Tombol Buat (+) Instagram tidak punya posisi di halaman; "
+                "tata letaknya mungkin berubah."
             )
-        await _hid_click(page, plus_box, "tombol Buat (+)")
+        await _tap(page, item, "tombol Buat (+)")
         await page.wait_for_timeout(2_500)
 
         # 1b. Tombol + punya DUA perilaku, tergantung versi tampilan yang
@@ -261,19 +184,26 @@ class Instagram(PlaywrightPlatform):
         }"""
 
         async def komposer_terbuka() -> bool:
-            """Dialog unggah sudah tampil? Dikenali dari ajakan pilih berkas."""
+            """Dialog unggah sudah tampil?
+
+            Dikenali dari adanya input berkas DI DALAM dialog, bukan dari
+            kata-kata tombolnya. Teksnya berubah-ubah - pernah "Pilih dari
+            komputer", sekarang "Pilih dari perangkat" - dan menebaknya dari
+            teks membuat kode mengira komposer belum terbuka, lalu menap
+            tombol + sekali lagi sehingga komposernya justru tertutup.
+            """
             return await page.locator(
-                'div[role="dialog"]:has-text("Seret foto"), '
-                'div[role="dialog"]:has-text("Drag photos"), '
-                'div[role="dialog"]:has-text("Pilih dari komputer"), '
-                'div[role="dialog"]:has-text("Select from computer")'
+                'div[role="dialog"]:has(input[type="file"])'
             ).count() > 0
 
         row_box = None
         komposer = False
         for percobaan in range(4):
-            if percobaan:  # klik pertama sudah dilakukan di atas
-                await _hid_click(page, plus_box, "tombol Buat (+) (ulang)")
+            if percobaan:  # ketukan pertama sudah dilakukan di atas
+                try:
+                    await _tap(page, item, "tombol Buat (+) (ulang)")
+                except Exception:  # noqa: BLE001 - tombol bisa tertutup dialog
+                    pass          # keadaannya diperiksa lagi di bawah
                 await page.wait_for_timeout(2_000)
             if await komposer_terbuka():
                 komposer = True
@@ -291,7 +221,7 @@ class Instagram(PlaywrightPlatform):
                 "penuh dan tidak tertutup jendela lain."
             )
         if row_box is not None:
-            await _hid_click(page, row_box, "baris Postingan")
+            await _tap(page, row_box, "baris Postingan")
 
         dialog_seen = False
         for _ in range(10):
@@ -311,7 +241,9 @@ class Instagram(PlaywrightPlatform):
         #    it, so no native dialog shows up). The chooser trigger only
         #    exists AFTER the composer opens.
         try:
-            pick = page.get_by_text("Pilih dari komputer", exact=False).first
+            pick = page.get_by_text(
+                re.compile(r"Pilih dari (komputer|perangkat)|Select from (computer|device)"),
+            ).first
             async with page.expect_file_chooser(timeout=8_000) as fc_info:
                 await pick.click(timeout=5_000)
             chooser = await fc_info.value
