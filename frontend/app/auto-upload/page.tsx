@@ -40,6 +40,9 @@ type Akun = {
   verify_message: string;
   /** Nama akun yang terbaca dari profil saat pemeriksaan terakhir. */
   nama_akun: string;
+  /** Ringkasan Session ID per cookie, SUDAH disamarkan server. Nilai utuhnya
+   *  sengaja tidak pernah dikirim: /api/sosmed tidak punya autentikasi. */
+  cookie_terisi: { nama: string; pratinjau: string; panjang: number }[];
 };
 
 type Postingan = {
@@ -172,6 +175,8 @@ export default function AutoUploadPage() {
   // butuh dua cookie dan YouTube tujuh, dan menyatukannya membuat orang salah
   // hitung tanpa tahu di mana letak kesalahannya.
   const [buka, setBuka] = useState<PlatformId | "">("");
+  // Baris yang panel rincian Session ID-nya sedang dibentang.
+  const [rincian, setRincian] = useState<PlatformId | "">("");
   const [nilaiCookie, setNilaiCookie] = useState<Record<string, string>>({});
   const [memeriksa, setMemeriksa] = useState<string>("");
   const [galatAkun, setGalatAkun] = useState("");
@@ -455,9 +460,33 @@ export default function AutoUploadPage() {
                 const a = akunDari(p.id);
                 const lagi = sibuk === p.id;
                 const terbuka = buka === p.id;
+                const dibentang = rincian === p.id && !!a;
                 return (
                   <div key={p.id} className={styles.akunBaris}>
                     <div className={styles.akunUtama}>
+                      <button
+                        type="button"
+                        className={`${styles.panah} ${dibentang ? styles.panahBuka : ""}`}
+                        aria-expanded={dibentang}
+                        aria-label={`${dibentang ? "Tutup" : "Lihat"} Session ID ${p.nama}`}
+                        title={a ? "Lihat Session ID yang tersimpan" : "Belum ada Session ID"}
+                        disabled={!a}
+                        onClick={() => setRincian(dibentang ? "" : p.id)}
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M6 9l6 6 6-6" />
+                        </svg>
+                      </button>
                       <span
                         className={a ? styles.logo : `${styles.logo} ${styles.logoMati}`}
                         style={a ? { color: WARNA[p.id] } : undefined}
@@ -529,6 +558,29 @@ export default function AutoUploadPage() {
                         )}
                       </div>
                     </div>
+
+                    {dibentang && a && (
+                      <div className={styles.rincianKotak}>
+                        {a.cookie_terisi.length === 0 ? (
+                          <p className={styles.hint}>
+                            Session ID tersimpan, tetapi rinciannya tidak terbaca.
+                          </p>
+                        ) : (
+                          a.cookie_terisi.map((c) => (
+                            <div key={c.nama} className={styles.rincianBaris}>
+                              <span className={styles.rincianNama}>{c.nama}</span>
+                              <span className={styles.rincianNilai}>{c.pratinjau}</span>
+                              <span className={styles.rincianPanjang}>{c.panjang} huruf</span>
+                            </div>
+                          ))
+                        )}
+                        <p className={styles.hint}>
+                          Hanya pangkal dan ujungnya yang ditampilkan. Session ID setara
+                          password, dan alamat /api/sosmed ini belum berpengaman, jadi nilai
+                          utuhnya sengaja tidak pernah dikirim ke halaman.
+                        </p>
+                      </div>
+                    )}
 
                     {terbuka && (
                       <div className={styles.ssidKotak}>

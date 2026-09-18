@@ -573,6 +573,83 @@
   line-height: 1.6;
 }
 
+/* ---- Panah pembentang rincian Session ID ---- */
+.panah {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #232a24;
+  border-radius: var(--bulat-kecil);
+  background: transparent;
+  color: #8fa095;
+  cursor: pointer;
+  /* Hanya panahnya yang berputar; transisi pada `all` ikut menganimasikan
+     warna saat baris berganti status dan membuatnya terlihat berkedip. */
+  transition: transform 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.panah:hover:not(:disabled) {
+  color: var(--hijau);
+  border-color: var(--hijau);
+}
+
+.panah:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.panahBuka {
+  transform: rotate(180deg);
+  color: var(--hijau);
+  border-color: var(--hijau);
+}
+
+.rincianKotak {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-2);
+  margin-top: var(--sela-2);
+  padding: var(--sela-3);
+  border: 1px solid #232a24;
+  border-radius: var(--bulat-kecil);
+  background: #0f1310;
+}
+
+.rincianBaris {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sela-2);
+  flex-wrap: wrap;
+}
+
+.rincianNama {
+  min-width: 118px;
+  font-size: var(--teks-kecil);
+  font-weight: 700;
+  color: #8fa095;
+}
+
+.rincianNilai {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--teks-isi);
+  font-weight: 600;
+  color: var(--hijau);
+  /* Nilainya tidak punya spasi, jadi harus boleh putus di mana saja. */
+  word-break: break-all;
+}
+
+.rincianPanjang {
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: #6c7a70;
+}
+
 /* Catatan penjadwalan: keterangan umum + peringatan per platform. */
 .catatanJadwal {
   display: flex;

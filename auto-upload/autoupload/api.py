@@ -21,6 +21,7 @@ from autoupload import login
 from autoupload.browser import session_names
 from autoupload.config import MAX_FILE_SIZE, PLATFORMS, UPLOAD_DIR
 from autoupload.db import Post, SocialAccount, get_db
+from autoupload.platforms import REGISTRY
 from autoupload.service import create_post, run_post
 from autoupload.verify import periksa_sesi
 
@@ -153,6 +154,40 @@ def list_posts(limit: int = 20, db: Session = Depends(get_db)) -> list[dict]:
 
 # ---------------------------------------------------------------- akun
 
+def _pratinjau_cookie(platform: str, session_id: str) -> list[dict]:
+    """Ringkasan Session ID per cookie, SUDAH DISAMARKAN.
+
+    Halaman perlu memperlihatkan "sudah diisi apa" supaya orang tidak harus
+    menekan Ganti hanya untuk memastikan. Tetapi Session ID setara password dan
+    router ini tidak punya autentikasi, jadi nilai utuhnya tidak boleh
+    dikirimkan: yang keluar hanya pangkal, ujung, dan panjangnya - cukup untuk
+    mengenali nilai, tidak cukup untuk memakai akunnya.
+    """
+    kelas = REGISTRY.get(platform)
+    if kelas is None or not session_id:
+        return []
+    nama = list(getattr(kelas, "session_cookie_map", {}) or {})
+    opsional = set(getattr(kelas, "session_cookie_optional", ()) or ())
+    inti = [n for n in nama if n not in opsional]
+
+    bagian = session_id.split("|") if "|" in session_id else [session_id]
+    if len(bagian) == len(nama):
+        dipakai = nama
+    elif len(bagian) == len(inti):
+        dipakai = inti
+    else:
+        # Jumlahnya tidak cocok dengan pemetaan mana pun: tampilkan apa adanya
+        # supaya tetap terlihat, tanpa menebak nama cookie-nya.
+        dipakai = [f"nilai {i + 1}" for i in range(len(bagian))]
+
+    hasil = []
+    for label, nilai in zip(dipakai, bagian):
+        nilai = nilai.strip()
+        samar = f"{nilai[:6]}…{nilai[-4:]}" if len(nilai) > 14 else "…"
+        hasil.append({"nama": label, "pratinjau": samar, "panjang": len(nilai)})
+    return hasil
+
+
 @router.get("/accounts")
 def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
     # Diurutkan tegas menurut id. Tanpa ini urutannya tidak dijamin, dan
@@ -178,6 +213,8 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
             "verify_message": (a.extra or {}).get("verify_message", ""),
             # Nama akun yang terbaca saat pemeriksaan terakhir.
             "nama_akun": (a.extra or {}).get("nama_akun", ""),
+            # Sudah disamarkan; lihat _pratinjau_cookie.
+            "cookie_terisi": _pratinjau_cookie(a.platform, a.session_id or ""),
         }
         for a in accounts
     ]
