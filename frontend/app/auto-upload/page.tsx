@@ -681,7 +681,7 @@ export default function AutoUploadPage() {
                 const a = akunDari(p.id);
                 const lagi = sibuk === p.id;
                 const terbuka = buka === p.id;
-                const dibentang = rincian === p.id && !!a;
+                const dibentang = rincian === p.id && akunSemua(p.id).length > 0;
                 return (
                   <div key={p.id} className={styles.akunBaris}>
                     <div className={styles.akunUtama}>
@@ -838,26 +838,34 @@ export default function AutoUploadPage() {
                       </div>
                     )}
 
-                    {dibentang && a && (
+                    {dibentang && (
                       <div className={styles.rincianKotak}>
-                        {a.cookie_terisi.length === 0 ? (
-                          <p className={styles.hint}>
-                            Session ID tersimpan, tetapi rinciannya tidak terbaca.
-                          </p>
-                        ) : (
-                          a.cookie_terisi.map((c) => (
-                            <div key={c.nama} className={styles.rincianBaris}>
-                              <span className={styles.rincianNama}>{c.nama}</span>
-                              <span className={styles.rincianNilai}>{c.pratinjau}</span>
-                              <span className={styles.rincianPanjang}>{c.panjang} huruf</span>
+                        {/* Satu blok per AKUN. Platform bisa punya beberapa akun,
+                            dan menampilkan Session ID milik satu akun saja
+                            membuat orang mengira yang lain tidak terisi. */}
+                        {akunSemua(p.id).map((s) => (
+                          <div key={s.id} className={styles.rincianAkun}>
+                            <div className={styles.rincianJudul}>
+                              <span className={styles.sesiNama}>{s.session_name}</span>
+                              <span className={styles.rincianPanjang}>
+                                {s.nama_akun || "belum diperiksa"}
+                              </span>
                             </div>
-                          ))
-                        )}
-                        <p className={styles.hint}>
-                          Hanya pangkal dan ujungnya yang ditampilkan. Session ID setara
-                          password, dan alamat /api/sosmed ini belum berpengaman, jadi nilai
-                          utuhnya sengaja tidak pernah dikirim ke halaman.
-                        </p>
+                            {s.cookie_terisi.length === 0 ? (
+                              <p className={styles.hint}>Rinciannya tidak terbaca.</p>
+                            ) : (
+                              s.cookie_terisi.map((c) => (
+                                <div key={c.nama} className={styles.rincianBaris}>
+                                  <span className={styles.rincianNama}>{c.nama}</span>
+                                  <span className={styles.rincianNilai}>{c.pratinjau}</span>
+                                  <span className={styles.rincianPanjang}>
+                                    {c.panjang} huruf
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        ))}
                       </div>
                     )}
 
