@@ -235,6 +235,15 @@ def bersihkan_riwayat(hari: int = RIWAYAT_SIMPAN_HARI) -> int:
     return len(jalur)
 
 
+# Ekstensi yang boleh dibuang oleh pembersih. Berkas lain di folder unggahan
+# (mis. .gitkeep) bukan milik kita.
+EKST_MEDIA = {
+    ".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv",
+    ".mpg", ".mpeg", ".3gp", ".flv", ".wmv", ".ts", ".m2ts",
+    ".jpg", ".jpeg", ".png", ".webp",
+}
+
+
 def bersihkan_berkas_yatim(hari: int = 2) -> int:
     """Buang berkas di uploads/ yang tidak lagi dirujuk post mana pun.
 
@@ -258,6 +267,10 @@ def bersihkan_berkas_yatim(hari: int = 2) -> int:
     if UPLOAD_DIR.is_dir():
         for berkas in UPLOAD_DIR.iterdir():
             if not berkas.is_file() or str(berkas) in dipakai:
+                continue
+            # Hanya berkas media. Folder ini juga memuat .gitkeep, dan
+            # menghapusnya membuat folder kosong itu hilang dari repo.
+            if berkas.suffix.lower() not in EKST_MEDIA:
                 continue
             try:
                 if berkas.stat().st_mtime < batas:
