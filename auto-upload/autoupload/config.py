@@ -14,6 +14,15 @@ PROFILES_DIR = DATA_DIR / "browser_profiles"   # profil Chrome per akun (sesi lo
 DEBUG_SHOTS_DIR = DATA_DIR / "debug_shots"     # screenshot saat upload gagal
 
 MAX_FILE_SIZE = int(os.getenv("AUTOUPLOAD_MAX_FILE_MB", "500")) * 1024 * 1024
-SCHEDULER_INTERVAL = int(os.getenv("AUTOUPLOAD_SCHEDULER_INTERVAL", "30"))
+# Upload yang lebih lama dari ini dianggap tidak akan selesai: prosesnya
+# mati di tengah jalan, dan barisnya harus dibereskan supaya tidak
+# menggantung di status "processing" selamanya.
+JOB_TIMEOUT_MENIT = int(os.getenv("AUTOUPLOAD_JOB_TIMEOUT_MENIT", "30"))
+# Riwayat lebih tua dari ini dibuang berikut berkas medianya.
+RIWAYAT_SIMPAN_HARI = int(os.getenv("AUTOUPLOAD_RIWAYAT_HARI", "30"))
+# Screenshot kegagalan yang disimpan; sisanya dibuang dari yang terlama.
+MAKS_DEBUG_SHOT = int(os.getenv("AUTOUPLOAD_MAKS_DEBUG_SHOT", "20"))
+# Panjang maksimum pesan galat yang disimpan ke basis data.
+MAKS_PANJANG_GALAT = int(os.getenv("AUTOUPLOAD_MAKS_GALAT", "240"))
 
 PLATFORMS = ("tiktok", "instagram", "facebook", "youtube", "threads", "twitter")

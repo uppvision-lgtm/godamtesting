@@ -888,3 +888,39 @@
   color: #7c8a81;
   text-transform: none;
 }
+
+/* Tanda platform yang alur unggahnya belum pernah diuji sampai terbit. */
+.tandaUji {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #2a2413;
+  color: var(--kuning);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Tombol hapus pada baris riwayat. Ditaruh paling kanan lewat margin auto
+   supaya tidak perlu mengubah tata letak .postHead yang sudah ada. */
+.hapusRiwayat {
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid #3a2626;
+  border-radius: var(--bulat-kecil);
+  background: transparent;
+  color: #b98a8a;
+  font-size: var(--teks-kecil);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hapusRiwayat:hover:not(:disabled) {
+  border-color: var(--merah, #e06c6c);
+  color: var(--merah, #e06c6c);
+}
+
+.hapusRiwayat:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

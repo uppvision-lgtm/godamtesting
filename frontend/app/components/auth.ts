@@ -139,14 +139,25 @@ export function apiFetch(input: string, init: RequestInit = {}): Promise<Respons
  * pemanggil sebaiknya menampilkan keadaan "sedang diproses" sampai
  * jawabannya datang.
  */
+/** Alamat backend untuk unggahan yang tidak boleh lewat proxy.
+ *
+ *  Proxy Next di Vercel adalah fungsi serverless dengan batas body beberapa
+ *  megabyte saja, jadi video besar tidak akan pernah sampai. Kalau
+ *  NEXT_PUBLIC_BACKEND_URL diisi, berkas dikirim langsung ke backend dan
+ *  batas itu tidak berlaku. Dibiarkan kosong (mis. di localhost), semuanya
+ *  tetap lewat proxy seperti semula.
+ */
+export const BASIS_BACKEND = (process.env.NEXT_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+
 export function apiUnggah(
   url: string,
   file: File,
-  onProgres: (persen: number) => void
+  onProgres: (persen: number) => void,
+  langsung = false
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
+    xhr.open("POST", langsung && BASIS_BACKEND ? `${BASIS_BACKEND}${url}` : url);
     const token = ambilToken();
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);

@@ -14,7 +14,7 @@ if sys.platform == "win32":
 import redis
 from celery.result import AsyncResult
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ from live_session import router as live_login_router
 from presence import router as presence_router
 from video_api import router as video_router
 from upload_api import router as upload_router
-from auth_api import router as auth_router
+from auth_api import pengguna_wajib, router as auth_router
 from forms_api import router as forms_router
 from admin_api import router as admin_router
 
@@ -65,7 +65,9 @@ if AUTOUPLOAD_DIR.is_dir():
     try:
         from autoupload import router as sosmed_router
         from autoupload import init_db as sosmed_init_db
-        from autoupload import start_scheduler as sosmed_start_scheduler
+        from autoupload import bereskan_job_nyangkut as sosmed_bereskan
+        from autoupload import bersihkan_riwayat as sosmed_bersihkan
+        from autoupload import bersihkan_berkas_yatim as sosmed_bersihkan_berkas
     except Exception as error:  # noqa: BLE001
         sosmed_alasan = f"{type(error).__name__}: {error}"
 else:
@@ -110,12 +112,19 @@ app.include_router(forms_router)
 app.include_router(admin_router)
 
 if sosmed_router is not None:
-    app.include_router(sosmed_router)
+    # WAJIB login. Session ID sosmed setara password akun, dan router ini
+    # bisa memposting, menghapus akun, serta membaca nama akun - tanpa
+    # penjaga, siapa pun yang tahu alamatnya bisa memakai akun pengguna.
+    # Penjaganya dipasang DI SINI, bukan di dalam paket autoupload, supaya
+    # paket itu tetap bisa dipakai berdiri sendiri tanpa sistem akun website.
+    app.include_router(sosmed_router, dependencies=[Depends(pengguna_wajib)])
     try:
         sosmed_init_db()
-        # Penjadwal berjalan di thread latar; ia yang mengirim postingan
-        # terjadwal begitu waktunya tiba.
-        sosmed_start_scheduler()
+        # Job yang tertinggal karena backend mati di tengah upload dibereskan
+        # di sini; tanpa ini halaman menampilkannya "sedang dikirim" selamanya.
+        sosmed_bereskan()
+        sosmed_bersihkan()
+        sosmed_bersihkan_berkas()
         logging.getLogger(__name__).info("Auto Upload sosmed aktif di /api/sosmed")
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception("Auto Upload sosmed gagal disiapkan")

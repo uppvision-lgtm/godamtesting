@@ -80,6 +80,9 @@ const PLATFORM: {
   alasanJadwal?: string;
   /** Batasan penjadwalan pada platform yang BISA dijadwalkan. */
   catatanJadwal?: string;
+  /** Alur unggahnya belum pernah diuji sampai terbit. Ditandai supaya tidak
+   *  dikira siap dipakai. */
+  belumTeruji?: boolean;
   /** Jeda minimum dari sekarang, dalam menit. TikTok menolak di bawah ini. */
   jedaMinimalMenit?: number;
   /** Batas terjauh jadwal, dalam hari. */
@@ -120,6 +123,7 @@ const PLATFORM: {
       "Buka youtube.com, salin cookie-nya satu per satu. Google sering menolak " +
       "sesi tanpa ketiga cookie tambahan di bawah, jadi isi juga kalau YouTube " +
       "tetap merah.",
+    belumTeruji: true,
     bisaJadwal: false,
     alasanJadwal: "penjadwalannya belum didukung di sini",
   },
@@ -129,6 +133,7 @@ const PLATFORM: {
     batas: 5000,
     cookie: ["c_user", "xs"],
     petunjuk: "Buka facebook.com, salin c_user dan xs ke kotaknya masing-masing.",
+    belumTeruji: true,
     bisaJadwal: false,
     alasanJadwal: "penjadwalannya belum didukung di sini",
   },
@@ -159,8 +164,13 @@ function labelStatus(status: string): string {
       return "Menunggu";
     case "scheduled":
       return "Terjadwal";
+    // Backend menulis "processing" dan "done". Tanpa dua baris ini keduanya
+    // jatuh ke default dan tampil apa adanya dalam bahasa Inggris.
+    case "processing":
     case "running":
       return "Sedang dikirim";
+    case "done":
+      return "Berhasil";
     case "success":
       return "Berhasil";
     case "partial":
@@ -207,6 +217,7 @@ export default function AutoUploadPage() {
   const [nilaiCookie, setNilaiCookie] = useState<Record<string, string>>({});
   const [memeriksa, setMemeriksa] = useState<string>("");
   const [galatAkun, setGalatAkun] = useState("");
+  const [perluLogin, setPerluLogin] = useState(false);
 
   const [berkas, setBerkas] = useState<Berkas | null>(null);
   const [namaBerkas, setNamaBerkas] = useState("");
@@ -230,6 +241,10 @@ export default function AutoUploadPage() {
   const muatAkun = useCallback(async () => {
     try {
       const res = await apiFetch("/api/sosmed/accounts", { cache: "no-store" });
+      // 401 = belum login. Session ID sosmed setara password, jadi halaman ini
+      // memang hanya untuk pemilik akun - tetapi diamnya daftar akun tanpa
+      // keterangan membuat orang mengira fiturnya rusak.
+      setPerluLogin(res.status === 401);
       if (res.ok) setAkun((await res.json()) as Akun[]);
     } catch {
       // backend sedang mati; daftar dibiarkan seperti adanya
@@ -367,8 +382,14 @@ export default function AutoUploadPage() {
     setBerkas(null);
     setUnggahan({ nama: file.name, persen: 0, diproses: false });
     try {
-      const { ok, data } = await apiUnggah("/api/sosmed/media", file, (persen) =>
-        setUnggahan((u) => (u ? { ...u, persen, diproses: persen >= 100 } : u))
+      // Argumen terakhir: kirim LANGSUNG ke backend kalau NEXT_PUBLIC_BACKEND_URL
+      // diset. Proxy Next di Vercel adalah fungsi serverless dengan batas body
+      // beberapa megabyte, jadi video besar tidak akan pernah sampai lewat situ.
+      const { ok, data } = await apiUnggah(
+        "/api/sosmed/media",
+        file,
+        (persen) => setUnggahan((u) => (u ? { ...u, persen, diproses: persen >= 100 } : u)),
+        true
       );
       if (!ok) throw new Error(String(data.detail || "Gagal mengunggah berkas."));
       setBerkas(data as unknown as Berkas);
@@ -437,6 +458,31 @@ export default function AutoUploadPage() {
     return "";
   })();
 
+  /** Tanyakan status sebuah post sampai selesai.
+   *
+   *  Upload berjalan menitan di latar belakang server, jadi halaman tidak
+   *  lagi menahan satu permintaan panjang - yang dulu membuatnya mustahil
+   *  lewat proxy Vercel (putus di 60 detik) dan membuat menutup tab berarti
+   *  kehilangan hasilnya.
+   */
+  async function pantau(postId: number) {
+    for (let i = 0; i < 240; i += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const res = await apiFetch(`/api/sosmed/posts/${postId}`, { cache: "no-store" });
+        if (!res.ok) continue;
+        const p = (await res.json()) as Postingan;
+        setHasil(p.targets);
+        if (["done", "failed", "partial"].includes(p.status)) {
+          void muatPosts();
+          return;
+        }
+      } catch {
+        // jaringan sesaat; coba lagi pada putaran berikutnya
+      }
+    }
+  }
+
   async function kirim() {
     if (!berkas) return;
     setMengirim(true);
@@ -456,12 +502,37 @@ export default function AutoUploadPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Gagal mengirim.");
-      if (data.results) setHasil(data.results as Sasaran[]);
       await muatPosts();
+      // Server hanya mengembalikan nomor jobnya; hasilnya ditanyakan berkala.
+      if (typeof data.post_id === "number") {
+        await pantau(data.post_id);
+      } else if (data.results) {
+        setHasil(data.results as Sasaran[]);
+      }
     } catch (err) {
       setGalat(err instanceof Error ? err.message : "Gagal mengirim.");
     } finally {
       setMengirim(false);
+    }
+  }
+
+  /** Hapus satu riwayat beserta berkas medianya di server. */
+  async function hapusRiwayat(p: Postingan) {
+    const ya = await dialog.konfirmasi({
+      judul: "Hapus riwayat ini?",
+      pesan: p.caption ? `"${p.caption.slice(0, 60)}"` : "(tanpa caption)",
+      tombolYa: "Hapus",
+    });
+    if (!ya) return;
+    try {
+      const res = await apiFetch(`/api/sosmed/posts/${p.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || "Gagal menghapus.");
+      }
+      await muatPosts();
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal menghapus.");
     }
   }
 
@@ -503,7 +574,13 @@ export default function AutoUploadPage() {
           <div className={styles.daftarAkun}>
             {memuatAkun && [0, 1, 2].map((i) => <div key={i} className={styles.rangka} />)}
 
-            {!memuatAkun &&
+            {perluLogin && (
+              <p className={styles.pesan}>
+                Masuk dulu untuk memakai Auto Upload. Session ID sosmed setara password
+                akunmu, jadi halaman ini hanya bisa dipakai setelah login.
+              </p>
+            )}
+            {!memuatAkun && !perluLogin &&
               PLATFORM.map((p) => {
                 const a = akunDari(p.id);
                 const lagi = sibuk === p.id;
@@ -799,7 +876,9 @@ export default function AutoUploadPage() {
                       className={`${styles.cekItem} ${dicentang ? styles.cekAktif : ""} ${bisa ? "" : styles.cekMati}`}
                       title={
                         bisa
-                          ? ""
+                          ? p.belumTeruji
+                            ? "Alur unggahnya belum pernah diuji sampai terbit — bisa gagal"
+                            : ""
                           : akunDari(p.id)
                             ? "Sesinya sudah tidak berlaku — tempel Session ID yang baru"
                             : "Tempel dulu Session ID-nya di panel kiri"
@@ -819,6 +898,7 @@ export default function AutoUploadPage() {
                         <LogoSosmed platform={p.id} ukuran={15} />
                       </span>
                       {p.nama}
+                      {p.belumTeruji && <span className={styles.tandaUji}>belum teruji</span>}
                     </label>
                   );
                 })}
@@ -953,6 +1033,15 @@ export default function AutoUploadPage() {
                       ? `Dijadwalkan ${waktuSingkat(p.scheduled_at)}`
                       : waktuSingkat(p.created_at)}
                   </span>
+                  <button
+                    type="button"
+                    className={styles.hapusRiwayat}
+                    title="Hapus riwayat ini beserta berkas medianya"
+                    disabled={p.status === "processing"}
+                    onClick={() => void hapusRiwayat(p)}
+                  >
+                    Hapus
+                  </button>
                 </div>
                 <p className={styles.postCaption}>{p.caption || "(tanpa caption)"}</p>
                 <div className={styles.postSasaran}>

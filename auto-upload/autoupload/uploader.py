@@ -8,11 +8,32 @@ Ini inti "script"-nya. Bisa dipakai langsung dari kode Python apa pun
 """
 
 import asyncio
+import logging
+import re
 from pathlib import Path
 
 from autoupload.browser import MediaKind, PlatformError, UploadResult, session_names
 from autoupload.caption import adapt_caption
 from autoupload.platforms import REGISTRY
+
+log = logging.getLogger("autoupload")
+
+
+
+# Galat yang wajar terjadi sesaat: jaringan putus, satu dialog telat muncul,
+# browser tertutup di tengah jalan. Diulang SEKALI. Kegagalan lain (sesi mati,
+# platform menolak jadwal, media ditolak) tidak diulang karena percobaan kedua
+# pasti gagal dengan cara yang sama - dan mengulangnya berarti mengunggah
+# videonya dua kali.
+_SESAAT = re.compile(
+    r"(timeout|timed out|net::|econnreset|econnrefused|target closed|"
+    r"browser has been closed|connection closed|temporarily)",
+    re.IGNORECASE,
+)
+
+
+def _layak_diulang(hasil) -> bool:
+    return not hasil.success and bool(_SESAAT.search(hasil.error or ""))
 
 
 async def upload_one(
@@ -64,6 +85,16 @@ async def fan_out_upload(
     memakainya lewat fitur penjadwalan bawaan platform masing-masing.
     """
     async def _run(t: dict) -> UploadResult:
+        t = dict(t)
+        hasil = await _sekali(t)
+        if _layak_diulang(hasil):
+            log.warning("%s gagal sesaat (%s); diulang sekali",
+                        t.get("platform"), (hasil.error or "")[:80])
+            await asyncio.sleep(5)
+            hasil = await _sekali(t)
+        return hasil
+
+    async def _sekali(t: dict) -> UploadResult:
         t = dict(t)
         return await upload_one(
             media_path,

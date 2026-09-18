@@ -10,8 +10,8 @@ Dua cara pakai:
 
 2. Sebagai REST API (FastAPI):
 
-    from autoupload import router, init_db, start_scheduler
-    init_db(); start_scheduler()
+    from autoupload import router, init_db
+    init_db()
     app.include_router(router)
 """
 
@@ -19,17 +19,24 @@ from autoupload.api import router
 from autoupload.browser import MediaKind, PlatformError, UploadResult, session_names
 from autoupload.caption import adapt_caption
 from autoupload.db import Post, PostTarget, SocialAccount, init_db
-from autoupload.service import create_post, dispatch_due_posts, run_post, start_scheduler
+from autoupload.service import (
+    bereskan_job_nyangkut,
+    bersihkan_berkas_yatim,
+    bersihkan_riwayat,
+    create_post,
+    run_post,
+)
 from autoupload.uploader import fan_out_upload, upload_one, upload_sync
 
 __all__ = [
     "router",
     "init_db",
-    "start_scheduler",
     "upload_sync",
     "upload_one",
     "fan_out_upload",
-    "dispatch_due_posts",
+    "bereskan_job_nyangkut",
+    "bersihkan_berkas_yatim",
+    "bersihkan_riwayat",
     "create_post",
     "run_post",
     "adapt_caption",

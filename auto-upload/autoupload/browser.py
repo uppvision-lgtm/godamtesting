@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from autoupload.config import DEBUG_SHOTS_DIR, PROFILES_DIR
+from autoupload.config import DEBUG_SHOTS_DIR, MAKS_DEBUG_SHOT, PROFILES_DIR
 
 
 class MediaKind(str, Enum):
@@ -181,6 +181,24 @@ async def tautan_baru(
     return None
 
 
+def _pangkas_debug_shots() -> None:
+    """Sisakan screenshot kegagalan terbaru saja.
+
+    Folder ini tidak pernah dibersihkan siapa pun dan hanya bertambah setiap
+    kali ada upload gagal.
+    """
+    try:
+        berkas = sorted(
+            (f for f in DEBUG_SHOTS_DIR.glob("*") if f.is_file()),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        for f in berkas[MAKS_DEBUG_SHOT * 2:]:  # *2: tiap kegagalan = .png + .txt
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass  # kebersihan tidak boleh menggagalkan upload
+
+
 def profile_dir(platform: str, session_name: str = "default") -> Path:
     return PROFILES_DIR / platform / session_name
 
@@ -336,19 +354,45 @@ class PlaywrightPlatform(ABC):
                 launch_kwargs["no_viewport"] = True
             else:
                 launch_kwargs["viewport"] = viewport
-            try:
-                context = await pw.chromium.launch_persistent_context(
-                    channel="chrome", **launch_kwargs
-                )
-            except Exception:  # Chrome asli tidak terpasang -> pakai Chromium
-                context = await pw.chromium.launch_persistent_context(**launch_kwargs)
+            session_id = str(options.get("session_id") or "")
+            peramban = None
 
-            await context.add_init_script(STEALTH_INIT_SCRIPT)
-            # Jalan pintas Session ID: inject cookie supaya user tak perlu
-            # jendela login sama sekali.
-            session_id = options.get("session_id")
             if session_id and self.session_cookie_map:
-                await context.add_cookies(self.session_cookies(str(session_id)))
+                # Konteks SEKALI PAKAI, bukan profil tersimpan. Dua alasannya:
+                #
+                # 1. Pemeriksaan Session ID ("Periksa") sudah memakai konteks
+                #    sekali pakai. Kalau upload memakai profil tersimpan, yang
+                #    diuji dan yang dipakai adalah keadaan cookie yang berbeda,
+                #    sehingga sesi bisa hijau saat diperiksa tapi gagal saat
+                #    dipakai.
+                # 2. Profil tersimpan menumpuk sampai ratusan megabyte padahal
+                #    tidak lagi berguna begitu semua platform memakai
+                #    Session ID.
+                luncur = {"headless": self.headless,
+                          "args": STEALTH_ARGS + list(getattr(self, "extra_args", []))}
+                try:
+                    peramban = await pw.chromium.launch(channel="chrome", **luncur)
+                except Exception:  # noqa: BLE001 - Chrome asli tidak terpasang
+                    peramban = await pw.chromium.launch(**luncur)
+                ctx_kwargs: dict = {"user_agent": CHROME_UA}
+                ctx_kwargs["viewport"] = viewport
+                if viewport is None:
+                    ctx_kwargs["no_viewport"] = True
+                if getattr(self, "has_touch", False):
+                    ctx_kwargs["has_touch"] = True
+                context = await peramban.new_context(**ctx_kwargs)
+                await context.add_init_script(STEALTH_INIT_SCRIPT)
+                await context.add_cookies(self.session_cookies(session_id))
+            else:
+                # Tanpa Session ID, satu-satunya sesi yang ada justru di profil
+                # tersimpan hasil login browser - jadi profilnya tetap dipakai.
+                try:
+                    context = await pw.chromium.launch_persistent_context(
+                        channel="chrome", **launch_kwargs
+                    )
+                except Exception:  # Chrome asli tidak terpasang -> pakai Chromium
+                    context = await pw.chromium.launch_persistent_context(**launch_kwargs)
+                await context.add_init_script(STEALTH_INIT_SCRIPT)
 
             page = context.pages[0] if context.pages else await context.new_page()
             try:
@@ -362,6 +406,8 @@ class PlaywrightPlatform(ABC):
                 return UploadResult(platform=self.platform_key, success=False, error=detail)
             finally:
                 await context.close()  # profil (termasuk cookie baru) disimpan saat close
+                if peramban is not None:
+                    await peramban.close()
 
     async def _save_debug_shot(self, page) -> Path | None:
         """Simpan screenshot + konteks halaman saat upload gagal, untuk melacak
@@ -369,6 +415,7 @@ class PlaywrightPlatform(ABC):
         try:
             DEBUG_SHOTS_DIR.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%H%M%S")
+            _pangkas_debug_shots()
             path = DEBUG_SHOTS_DIR / f"{self.platform_key}_{stamp}.png"
             await page.screenshot(path=str(path), full_page=False)
             buttons = await page.evaluate(

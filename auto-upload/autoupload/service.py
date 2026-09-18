@@ -6,12 +6,18 @@ untuk upload sekarang maupun upload terjadwal.
 
 import asyncio
 import logging
-import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from autoupload.browser import MediaKind
-from autoupload.config import SCHEDULER_INTERVAL
+from autoupload.config import (
+    JOB_TIMEOUT_MENIT,
+    MAKS_PANJANG_GALAT,
+    RIWAYAT_SIMPAN_HARI,
+    UPLOAD_DIR,
+)
 from autoupload.db import Post, PostTarget, SessionLocal, SocialAccount
+from autoupload.rahasia import buka
 from autoupload.uploader import fan_out_upload
 
 log = logging.getLogger("autoupload")
@@ -37,7 +43,7 @@ def _targets_payload(db, post: Post) -> list[dict]:
             {
                 "platform": t.platform,
                 "session_name": account.session_name if account else "default",
-                "session_id": account.session_id if account else "",
+                "session_id": buka(account.session_id) if account else "",
                 # Diteruskan ke adapter supaya ia memakai fitur jadwal bawaan
                 # platformnya. None = kirim sekarang.
                 # Disadarkan zonanya: SQLite mengembalikannya polos,
@@ -91,6 +97,155 @@ def create_post(
     return post
 
 
+def _ringkas_galat(pesan: str | None) -> str:
+    """Pangkas pesan galat sebelum masuk basis data.
+
+    Jejak Playwright bisa ribuan huruf dan tumpah apa adanya ke layar. Baris
+    pertamanya sudah memuat inti masalahnya; sisanya hanya berguna di log.
+    """
+    if not pesan:
+        return ""
+    baris = pesan.strip().splitlines()[0].strip()
+    if len(baris) <= MAKS_PANJANG_GALAT:
+        return baris
+    return baris[: MAKS_PANJANG_GALAT - 1].rstrip() + "…"
+
+
+def _buang_media(jalur: str | None) -> None:
+    """Hapus berkas media setelah tidak ada lagi post yang memakainya.
+
+    Tanpa ini folder uploads/ hanya bertambah: satu video tetap tersimpan
+    selamanya walau postingannya sudah lama terbit. Hanya berkas DI DALAM
+    UPLOAD_DIR yang disentuh, supaya berkas milik pengguna di tempat lain
+    tidak ikut terhapus.
+    """
+    if not jalur:
+        return
+    berkas = Path(jalur)
+    try:
+        berkas.relative_to(UPLOAD_DIR)
+    except ValueError:
+        return  # di luar folder unggahan -> bukan milik kita
+    db = SessionLocal()
+    try:
+        masih = (
+            db.query(Post)
+            .filter(Post.media_path == jalur)
+            .filter(Post.status.in_(("pending", "processing")))
+            .count()
+        )
+    finally:
+        db.close()
+    if masih:
+        return
+    try:
+        berkas.unlink(missing_ok=True)
+        log.info("Media %s dihapus setelah postingannya selesai", berkas.name)
+    except OSError as exc:
+        log.warning("Media %s gagal dihapus: %s", berkas.name, exc)
+
+
+def bereskan_job_nyangkut() -> int:
+    """Tandai gagal semua post yang tertinggal di status "processing".
+
+    Dipanggil saat aplikasi start. Kalau backend mati di tengah upload,
+    barisnya tidak pernah dibereskan siapa pun dan halaman menampilkannya
+    "sedang dikirim" selamanya.
+    """
+    batas = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=JOB_TIMEOUT_MENIT)
+    db = SessionLocal()
+    n = 0
+    try:
+        for post in db.query(Post).filter(Post.status == "processing").all():
+            dibuat = post.created_at
+            if dibuat is not None and dibuat.tzinfo is not None:
+                dibuat = dibuat.replace(tzinfo=None)
+            if dibuat is not None and dibuat > batas:
+                continue  # masih mungkin sedang berjalan
+            post.status = "failed"
+            for row in post.targets:
+                if row.status in ("pending", "running"):
+                    row.status = "failed"
+                    row.error = "Prosesnya berhenti sebelum selesai (backend mati di tengah jalan)."
+            n += 1
+        if n:
+            db.commit()
+            log.warning("%s post yang menggantung ditandai gagal", n)
+    finally:
+        db.close()
+    return n
+
+
+def bersihkan_riwayat(hari: int = RIWAYAT_SIMPAN_HARI) -> int:
+    """Buang riwayat lama berikut berkas medianya."""
+    batas = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=hari)
+    db = SessionLocal()
+    jalur: list[str] = []
+    try:
+        lama = [
+            p for p in db.query(Post).all()
+            if p.created_at
+            and (p.created_at.replace(tzinfo=None) if p.created_at.tzinfo else p.created_at) < batas
+        ]
+        for post in lama:
+            jalur.append(post.media_path)
+            db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
+            db.delete(post)
+        if lama:
+            db.commit()
+    finally:
+        db.close()
+    for j in jalur:
+        _buang_media(j)
+    if jalur:
+        log.info("%s riwayat lama dibuang", len(jalur))
+    return len(jalur)
+
+
+def bersihkan_berkas_yatim(hari: int = 2) -> int:
+    """Buang berkas di uploads/ yang tidak lagi dirujuk post mana pun.
+
+    Pembersihan setelah selesai hanya mengurus berkas yang lewat sejak
+    perubahan ini; berkas lama dan berkas dari upload yang gagal di tengah
+    jalan tidak pernah tersentuh siapa pun. Hanya yang lebih tua dari `hari`
+    yang dibuang, supaya berkas yang baru diunggah dan belum dipakai tidak
+    ikut hilang.
+    """
+    from autoupload.config import DEBUG_SHOTS_DIR, MAKS_DEBUG_SHOT
+
+    batas = datetime.now().timestamp() - hari * 86400
+    db = SessionLocal()
+    try:
+        dipakai = {p.media_path for p in db.query(Post).all() if p.media_path}
+    finally:
+        db.close()
+
+    n = 0
+    if UPLOAD_DIR.is_dir():
+        for berkas in UPLOAD_DIR.iterdir():
+            if not berkas.is_file() or str(berkas) in dipakai:
+                continue
+            try:
+                if berkas.stat().st_mtime < batas:
+                    berkas.unlink(missing_ok=True)
+                    n += 1
+            except OSError:
+                pass
+
+    # Sekalian pangkas screenshot kegagalan: tanpa ini tumpukan lama baru
+    # terpangkas saat ada kegagalan BARU, yang bisa lama sekali.
+    if DEBUG_SHOTS_DIR.is_dir():
+        berkas = sorted((f for f in DEBUG_SHOTS_DIR.glob("*") if f.is_file()),
+                        key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in berkas[MAKS_DEBUG_SHOT * 2:]:
+            f.unlink(missing_ok=True)
+            n += 1
+
+    if n:
+        log.info("%s berkas yatim dibuang", n)
+    return n
+
+
 async def run_post(post_id: int) -> list[dict]:
     """Jalankan upload untuk satu post dan catat hasilnya per platform.
 
@@ -120,13 +275,16 @@ async def run_post(post_id: int) -> list[dict]:
         for row, result in zip(rows, results):
             row.status = "success" if result.success else "failed"
             row.url = result.url or ""
-            row.error = result.error or ""
+            row.error = _ringkas_galat(result.error)
             row.attempts += 1
             ok += int(result.success)
         post.status = "done" if ok == len(results) else ("partial" if ok else "failed")
         db.commit()
+        jalur = post.media_path
     finally:
         db.close()
+
+    _buang_media(jalur)
 
     return [
         {"platform": r.platform, "success": r.success, "url": r.url, "error": r.error}
@@ -134,46 +292,3 @@ async def run_post(post_id: int) -> list[dict]:
     ]
 
 
-async def dispatch_due_posts() -> int:
-    """Jalankan semua post terjadwal yang waktunya sudah tiba. Kembalikan jumlahnya."""
-    db = SessionLocal()
-    try:
-        due_ids = [
-            p.id
-            for p in db.query(Post)
-            .filter(Post.status == "scheduled")
-            .filter(Post.scheduled_at <= datetime.now(timezone.utc))
-            .all()
-        ]
-    finally:
-        db.close()
-    for post_id in due_ids:
-        log.info("Menjalankan post terjadwal #%s", post_id)
-        try:
-            await run_post(post_id)
-        except Exception as exc:
-            log.error("Post terjadwal #%s gagal: %s", post_id, exc)
-    return len(due_ids)
-
-
-def start_scheduler(interval: int = SCHEDULER_INTERVAL) -> threading.Thread:
-    """Nyalakan dispatcher jadwal di thread latar (tanpa Redis/Celery).
-
-    Framework-agnostic: panggil sekali saat aplikasi start, dari FastAPI,
-    Flask, maupun Django.
-    """
-
-    def _loop() -> None:
-        while True:
-            try:
-                asyncio.run(dispatch_due_posts())
-            except Exception as exc:  # loop harus tetap hidup
-                log.error("Error loop penjadwal: %s", exc)
-            import time
-
-            time.sleep(interval)
-
-    thread = threading.Thread(target=_loop, daemon=True, name="autoupload-scheduler")
-    thread.start()
-    log.info("Dispatcher post terjadwal aktif (tiap %ss)", interval)
-    return thread

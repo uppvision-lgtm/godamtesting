@@ -9,6 +9,8 @@ Kalau Flask/Django: jalankan `python main.py` sebagai service kecil di port
 sendiri, atau panggil `upload_sync()` langsung dari view tanpa lewat HTTP.
 """
 
+import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +22,13 @@ from sqlalchemy.orm import Session
 from autoupload import login
 from autoupload.browser import session_names
 from autoupload.config import MAX_FILE_SIZE, PLATFORMS, UPLOAD_DIR
-from autoupload.db import Post, SocialAccount, get_db
+from autoupload.db import Post, PostTarget, SessionLocal, SocialAccount, get_db
 from autoupload.platforms import REGISTRY
-from autoupload.service import create_post, run_post
+from autoupload.rahasia import buka, sandikan
+from autoupload.service import _buang_media, bersihkan_riwayat, create_post, run_post
 from autoupload.verify import periksa_sesi
+
+log = logging.getLogger("autoupload")
 
 # Awalan alamat bisa digeser lewat environment. Dipakai saat paket ini
 # dipasang di dalam website utama, yang sudah punya "/api/upload" sendiri untuk
@@ -46,6 +51,9 @@ class UploadRequest(BaseModel):
     media_kind: str = Field("video", pattern="^(video|photo)$")
     scheduled_at: str | None = None          # ISO datetime, kosong = sekarang
     account_ids: dict[str, int] = Field(default_factory=dict)  # platform -> id akun
+    # Kalau True, permintaan ditahan sampai uploadnya selesai. Dipakai
+    # skrip/CLI; halaman web memakai False lalu menanyakan statusnya.
+    tunggu: bool = False
 
 
 class AccountRequest(BaseModel):
@@ -130,31 +138,64 @@ async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
     # Dijalankan SEKARANG walau dijadwalkan: yang menunda adalah fitur jadwal
     # milik platformnya, bukan proses di laptop ini. Jadi kalau laptop mati
     # nanti, postingan tetap terbit pada waktunya.
-    results = await run_post(post.id)
-    db.expire_all()
-    status = db.query(Post).filter(Post.id == post.id).first().status
-    return {"post_id": post.id, "status": status, "results": results}
+    if req.tunggu:
+        results = await run_post(post.id)
+        db.expire_all()
+        status = db.query(Post).filter(Post.id == post.id).first().status
+        return {"post_id": post.id, "status": status, "results": results}
+
+    # Upload berjalan MENITAN (Instagram pernah 131 detik). Menahan koneksi
+    # selama itu membuatnya mustahil lewat proxy Vercel yang memutus di 60
+    # detik, dan membuat menutup tab berarti kehilangan hasilnya. Jadi
+    # jobnya dilepas ke latar belakang dan halaman menanyakan statusnya.
+    asyncio.create_task(_jalankan_di_latar(post.id))
+    return {"post_id": post.id, "status": "processing", "results": []}
+
+
+async def _jalankan_di_latar(post_id: int) -> None:
+    """Jalankan satu post, dan pastikan galatnya tidak hilang diam-diam.
+
+    Task latar yang melempar hanya menghasilkan peringatan asyncio yang tidak
+    terbaca siapa pun, dan barisnya akan menggantung di "processing".
+    """
+    try:
+        await run_post(post_id)
+    except Exception:  # noqa: BLE001
+        log.exception("Post #%s gagal di latar belakang", post_id)
+        db = SessionLocal()
+        try:
+            post = db.query(Post).filter(Post.id == post_id).first()
+            if post is not None and post.status == "processing":
+                post.status = "failed"
+                for row in post.targets:
+                    if row.status in ("pending", "running"):
+                        row.status = "failed"
+                        row.error = "Prosesnya berhenti karena galat tak terduga."
+                db.commit()
+        finally:
+            db.close()
 
 
 @router.get("/posts")
 def list_posts(limit: int = 20, db: Session = Depends(get_db)) -> list[dict]:
     """Riwayat + jadwal postingan terbaru."""
     posts = db.query(Post).order_by(Post.id.desc()).limit(min(limit, 100)).all()
-    return [
-        {
-            "id": p.id,
-            "status": p.status,
-            "media_kind": p.media_kind,
-            "caption": (p.caption or "")[:120],
-            "scheduled_at": p.scheduled_at,
-            "created_at": p.created_at,
-            "targets": [
-                {"platform": t.platform, "status": t.status, "url": t.url, "error": t.error}
-                for t in p.targets
-            ],
-        }
-        for p in posts
-    ]
+    return [_post_dict(p) for p in posts]
+
+
+def _post_dict(p: Post) -> dict:
+    return {
+        "id": p.id,
+        "status": p.status,
+        "media_kind": p.media_kind,
+        "caption": (p.caption or "")[:120],
+        "scheduled_at": p.scheduled_at,
+        "created_at": p.created_at,
+        "targets": [
+            {"platform": t.platform, "status": t.status, "url": t.url, "error": t.error}
+            for t in p.targets
+        ],
+    }
 
 
 # ---------------------------------------------------------------- akun
@@ -175,7 +216,16 @@ def _pratinjau_cookie(platform: str, session_id: str) -> list[dict]:
     opsional = set(getattr(kelas, "session_cookie_optional", ()) or ())
     inti = [n for n in nama if n not in opsional]
 
-    bagian = session_id.split("|") if "|" in session_id else [session_id]
+    # Dipecah PERSIS seperti session_cookies() di browser.py: "|" utama,
+    # ":" sebagai kebiasaan lama. Kalau di sini berbeda, pratinjaunya
+    # memperlihatkan satu bongkahan sementara pengunggah memakainya sebagai
+    # beberapa cookie - dan orang tidak akan tahu bagian mana yang salah.
+    if "|" in session_id:
+        bagian = session_id.split("|")
+    elif len(nama) > 1 and ":" in session_id:
+        bagian = session_id.split(":")
+    else:
+        bagian = [session_id]
     if len(bagian) == len(nama):
         dipakai = nama
     elif len(bagian) == len(inti):
@@ -191,6 +241,47 @@ def _pratinjau_cookie(platform: str, session_id: str) -> list[dict]:
         samar = f"{nilai[:6]}…{nilai[-4:]}" if len(nilai) > 14 else "…"
         hasil.append({"nama": label, "pratinjau": samar, "panjang": len(nilai)})
     return hasil
+
+
+@router.get("/posts/{post_id}")
+def get_post(post_id: int, db: Session = Depends(get_db)) -> dict:
+    """Status satu postingan. Dipakai halaman untuk menanyakan kemajuan."""
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if post is None:
+        raise HTTPException(404, "Postingan tidak ditemukan")
+    return _post_dict(post)
+
+
+@router.delete("/posts/{post_id}")
+def delete_post(post_id: int, db: Session = Depends(get_db)) -> dict:
+    """Hapus satu riwayat berikut berkas medianya."""
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if post is None:
+        raise HTTPException(404, "Postingan tidak ditemukan")
+    if post.status == "processing":
+        raise HTTPException(409, "Postingan ini sedang dikirim; tunggu sampai selesai.")
+    jalur = post.media_path
+    db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
+    db.delete(post)
+    db.commit()
+    _buang_media(jalur)
+    return {"deleted": post_id}
+
+
+@router.delete("/posts")
+def clear_posts(db: Session = Depends(get_db)) -> dict:
+    """Kosongkan riwayat, kecuali yang sedang berjalan."""
+    n = 0
+    jalur: list[str] = []
+    for post in db.query(Post).filter(Post.status != "processing").all():
+        jalur.append(post.media_path)
+        db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
+        db.delete(post)
+        n += 1
+    db.commit()
+    for j in jalur:
+        _buang_media(j)
+    return {"deleted": n}
 
 
 @router.get("/accounts")
@@ -219,7 +310,7 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
             # Nama akun yang terbaca saat pemeriksaan terakhir.
             "nama_akun": (a.extra or {}).get("nama_akun", ""),
             # Sudah disamarkan; lihat _pratinjau_cookie.
-            "cookie_terisi": _pratinjau_cookie(a.platform, a.session_id or ""),
+            "cookie_terisi": _pratinjau_cookie(a.platform, buka(a.session_id or "")),
         }
         for a in accounts
     ]
@@ -242,7 +333,7 @@ def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
         platform=req.platform,
         display_name=req.display_name,
         session_name=(req.session_name or "default").strip().lower().replace(" ", "_"),
-        session_id=req.session_id.strip(),
+        session_id=sandikan(req.session_id.strip()),
         extra=req.extra,
     )
     db.add(account)
@@ -265,7 +356,7 @@ async def verify_account(account_id: int, db: Session = Depends(get_db)) -> dict
     if not account.session_id:
         raise HTTPException(400, "Akun ini tidak punya Session ID untuk diperiksa")
 
-    hasil = await periksa_sesi(account.platform, account.session_id)
+    hasil = await periksa_sesi(account.platform, buka(account.session_id))
     extra = dict(account.extra or {})
     extra.update(
         {
