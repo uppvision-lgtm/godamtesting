@@ -10,3 +10,4 @@ cryptography
 yt-dlp
 pillow
 sqlalchemy>=2.0.35
+pyautogui>=0.9.54

@@ -37,6 +37,9 @@ auto-upload/uploads/*
 !auto-upload/uploads/.gitkeep
 auto-upload/autoupload.db*
 auto-upload/debug_shots/
+# Media + caption yang mau diunggah: isinya milik pengguna, bukan kode.
+auto-upload/berkas/*
+!auto-upload/berkas/BACA-INI.md
 auto-upload/__pycache__/
 auto-upload/.kilo/
 auto-upload/.vscode/
