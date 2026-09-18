@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
-import { useAkun } from "../components/auth";
+import { apiFetch, useAkun } from "../components/auth";
+import type { Akun } from "../components/sosmed";
 
 type BotResult = {
   comments_posted?: number;
@@ -22,8 +23,9 @@ type LiveStatus = {
 type CommentTone = "positif" | "netral" | "negatif";
 
 type FormValues = {
-  username: string;
-  session_id: string;
+  // Satu bot = satu akun. Nama dan Session ID-nya diambil server dari akun
+  // ini, jadi tidak ada kredensial yang diketik maupun disimpan di peramban.
+  account_id: number | null;
   target: string;
   comment_count: number;
   max_posts: number;
@@ -61,8 +63,7 @@ const BOT_START_GAP_MS = 900;
 
 function initialValues(): FormValues {
   return {
-    username: "",
-    session_id: "",
+    account_id: null,
     target: "",
     comment_count: 1,
     max_posts: 3,
@@ -97,7 +98,25 @@ export default function Home() {
   const [botCount, setBotCount] = useState(1);
   const [bots, setBots] = useState<BotSlot[]>(() => [createBot(1)]);
   const [starting, setStarting] = useState(false);
+  // Akun Instagram tertaut, untuk pemilih akun tiap bot.
+  const [akunIg, setAkunIg] = useState<Akun[]>([]);
+  const [perluLogin, setPerluLogin] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await apiFetch("/api/sosmed/accounts", { cache: "no-store" });
+        setPerluLogin(res.status === 401);
+        if (res.ok) {
+          const semua = (await res.json()) as Akun[];
+          setAkunIg(semua.filter((a) => a.platform === "instagram" && a.has_session_id));
+        }
+      } catch {
+        // backend mati; pemilih dibiarkan kosong
+      }
+    })();
+  }, []);
   const botsRef = useRef<BotSlot[]>(bots);
 
   // ===== ISIAN TERSIMPAN PER AKUN =====
@@ -257,8 +276,8 @@ export default function Home() {
   }
 
   function validate(values: FormValues): string {
-    if (!values.username.trim() || !values.session_id.trim() || !values.target.trim()) {
-      return "Nama akun, Session ID, dan Channel wajib diisi.";
+    if (!values.account_id || !values.target.trim()) {
+      return "Pilih dulu akunnya, lalu isi channel target.";
     }
     if (!Number.isInteger(values.comment_count) || values.comment_count < 1 || values.comment_count > 100) {
       return "Jumlah komentar harus angka 1-100.";
@@ -296,7 +315,7 @@ export default function Home() {
 
     for (const bot of bots) {
       try {
-        const res = await fetch(apiUrl("/api/live/start"), {
+        const res = await apiFetch(apiUrl("/api/live/start"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(bot.values),
@@ -412,7 +431,7 @@ export default function Home() {
 
           <h1>Jalankan Bot</h1>
           <p className={styles.formSub}>
-            Login otomatis cukup pakai Session ID — tanpa CAPTCHA. Satu tombol Mulai untuk {" "}
+            Pilih akun yang sudah ditautkan — tanpa CAPTCHA, tanpa menempel apa pun. Satu tombol Mulai untuk {" "}
             {botCount} bot sekaligus.
           </p>
           {botCount > PILIHAN_CEPAT.length && (
@@ -448,22 +467,23 @@ export default function Home() {
                 {/* KIRI: form bot ini */}
                 <form className={styles.form} onSubmit={(e) => e.preventDefault()}>
                   <label>
-                    <span>Nama akun Instagram</span>
-                    <input
-                      value={bot.values.username}
-                      onChange={(e) => updateField(index, "username", e.target.value)}
-                      placeholder="mis. topmengudara"
-                      autoComplete="off"
-                    />
-                  </label>
-                  <label>
-                    <span>Session ID</span>
-                    <input
-                      value={bot.values.session_id}
-                      onChange={(e) => updateField(index, "session_id", e.target.value)}
-                      placeholder="tempel sessionid cookie"
-                      autoComplete="off"
-                    />
+                    <span>Akun</span>
+                    <select
+                      value={bot.values.account_id ?? ""}
+                      onChange={(e) =>
+                        updateField(index, "account_id", e.target.value ? Number(e.target.value) : null)
+                      }
+                    >
+                      <option value="">
+                        {akunIg.length ? "— pilih akun —" : "belum ada akun Instagram tertaut"}
+                      </option>
+                      {akunIg.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.nama_akun || a.session_name}
+                          {a.verified === false ? " (sesi mati)" : ""}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label>
                     <span>Channel target</span>

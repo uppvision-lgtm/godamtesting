@@ -140,3 +140,10 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Pemilih template di tiap baris akun. */
+.pilihTemplate {
+  flex: 1 1 160px;
+  min-width: 140px;
+  max-width: 260px;
+}

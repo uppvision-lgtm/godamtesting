@@ -25,7 +25,7 @@ import uuid
 from typing import Any
 from urllib.parse import unquote
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from playwright.async_api import async_playwright
@@ -40,6 +40,8 @@ from browser_config import (
 )
 
 logger = logging.getLogger("live")
+from auth_api import identitas
+
 router = APIRouter(prefix="/api/live", tags=["live"])
 _SESSIONS: dict[str, "LiveSession"] = {}
 
@@ -167,13 +169,55 @@ USER_AGENT = (
 
 
 class StartRequest(BaseModel):
-    username: str
-    session_id: str
+    # Keduanya boleh kosong kalau account_id diisi: nama dan Session ID-nya
+    # diambil dari akun yang tertaut di Kelola Akun.
+    username: str = ""
+    session_id: str = ""
+    # Akun Instagram tertaut yang dipakai bot ini. Satu bot = satu akun.
+    account_id: int | None = None
     target: str
     comment_count: int = 3
     max_posts: int = 3
     # Nada komentar yang dipilih user di form: positif (default) | netral | negatif
     tone: str = "positif"
+
+
+def _akun_tertaut(account_id: int, pengguna: dict[str, Any] | None) -> tuple[str, str]:
+    """Nama akun dan Session ID dari akun Instagram yang tertaut.
+
+    Dipakai supaya orang tidak perlu menempel Session ID lagi di halaman Auto
+    Comment: cukup memilih akunnya. Nilainya diambil di server, jadi cookie-nya
+    tidak pernah lewat peramban. Hanya untuk pengguna yang masuk - akun sosmed
+    milik pengguna, bukan milik tamu.
+    """
+    if not pengguna or pengguna.get("tamu"):
+        raise HTTPException(status_code=401, detail="Masuk dulu untuk memakai akun tertaut.")
+    try:
+        from autoupload.db import SessionLocal, SocialAccount
+        from autoupload.rahasia import buka
+    except Exception as error:  # noqa: BLE001 - paket tidak terpasang di server ini
+        raise HTTPException(
+            status_code=503, detail="Kelola Akun tidak aktif di server ini."
+        ) from error
+    db = SessionLocal()
+    try:
+        akun = (
+            db.query(SocialAccount)
+            .filter(SocialAccount.id == account_id, SocialAccount.is_active.is_(True))
+            .first()
+        )
+        if akun is None or akun.platform != "instagram":
+            raise HTTPException(status_code=400, detail="Akun Instagram itu tidak ditemukan.")
+        sesi = buka(akun.session_id or "")
+        if not sesi:
+            raise HTTPException(
+                status_code=400,
+                detail="Session ID akun itu tidak terbaca. Tempel ulang di Kelola Akun.",
+            )
+        nama = (akun.extra or {}).get("nama_akun") or akun.session_name
+        return str(nama), sesi
+    finally:
+        db.close()
 
 
 class LiveSession:
@@ -521,9 +565,14 @@ def _get_session(token: str) -> LiveSession:
 
 
 @router.post("/start")
-async def start_live(request: StartRequest) -> dict:
-    if not request.username.strip() or not request.session_id.strip() or not request.target.strip():
-        raise HTTPException(status_code=422, detail="username, session_id, dan target wajib diisi")
+async def start_live(
+    request: StartRequest, pengguna: dict[str, Any] | None = Depends(identitas)
+) -> dict:
+    nama_akun, sesi = request.username.strip(), request.session_id.strip()
+    if request.account_id:
+        nama_akun, sesi = _akun_tertaut(request.account_id, pengguna)
+    if not nama_akun or not sesi or not request.target.strip():
+        raise HTTPException(status_code=422, detail="Akun dan channel target wajib diisi")
     if not (1 <= request.comment_count <= 100):
         raise HTTPException(status_code=422, detail="comment_count harus 1-100")
     if not (1 <= request.max_posts <= 50):
@@ -552,8 +601,8 @@ async def start_live(request: StartRequest) -> dict:
     session = LiveSession(token)
     _SESSIONS[token] = session
     await session.start(
-        request.username.strip(),
-        request.session_id.strip(),
+        nama_akun,
+        sesi,
         request.target.strip(),
         request.comment_count,
         request.max_posts,

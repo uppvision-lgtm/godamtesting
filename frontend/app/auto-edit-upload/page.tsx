@@ -93,7 +93,10 @@ export default function AutoEditUploadPage() {
   const [galatLink, setGalatLink] = useState("");
 
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [templateDipilih, setTemplateDipilih] = useState<string[]>([]);
+  // Tiap akun punya templatenya SENDIRI: sumber videonya sama, tampilannya
+  // berbeda per akun. Bukan silang - memilih 3 template tidak berarti satu
+  // akun menerima 3 unggahan.
+  const [templateAkun, setTemplateAkun] = useState<Record<number, string>>({});
 
   const [akun, setAkun] = useState<Akun[]>([]);
   const [perluLogin, setPerluLogin] = useState(false);
@@ -143,8 +146,6 @@ export default function AutoEditUploadPage() {
         if (!res.ok) return;
         const d = (await res.json()) as { templates: Template[] };
         setTemplates(d.templates || []);
-        // Bawaan: template pertama, supaya tanpa memilih apa pun tetap jalan.
-        if (d.templates?.length) setTemplateDipilih([d.templates[0].id]);
       } catch {
         // dibiarkan
       }
@@ -215,8 +216,12 @@ export default function AutoEditUploadPage() {
     if (!link.trim()) return "Tempel dulu link videonya.";
     if (membaca) return "Tunggu sebentar, isi linknya sedang dibaca.";
     if (!pratinjau) return galatLink || "Linknya belum terbaca.";
-    if (templateDipilih.length === 0) return "Centang dulu minimal satu template.";
     if (akunDipilih.length === 0) return "Centang dulu minimal satu akun tujuan.";
+    const tanpaTemplate = akunDipilih.filter((id) => !templateAkun[id]);
+    if (tanpaTemplate.length > 0) {
+      const a = akun.find((x) => x.id === tanpaTemplate[0]);
+      return `Pilih dulu template untuk ${a?.nama_akun || a?.session_name || "akun itu"}.`;
+    }
     if (!caption.trim()) return "Caption wajib diisi.";
     return "";
   })();
@@ -230,18 +235,21 @@ export default function AutoEditUploadPage() {
     setCatatan([]);
     setTahap("render");
     try {
-      // 1. Render satu video per template.
+      // 1. Render satu video per template yang DIPAKAI. Dua akun yang
+      //    memilih template sama cukup dirender sekali.
       const texts: Record<string, string> = {};
       if (teksHook) texts.hook = teksHook;
       if (pratinjau?.uploader) texts.sumber = `SUMBER: ${pratinjau.uploader.toUpperCase()}`;
       const url = link.trim();
-      catat(`Mulai edit: ${templateDipilih.length} template`);
+      const tujuan = akunDipilih.filter((id) => akunSiap.some((a) => a.id === id));
+      const templateUnik = [...new Set(tujuan.map((id) => templateAkun[id]))];
+      catat(`Mulai edit: ${templateUnik.length} template untuk ${tujuan.length} akun`);
       const res = await apiFetch("/api/video/jobs/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url,
-          template_ids: templateDipilih,
+          template_ids: templateUnik,
           texts,
           account_id: url.includes("instagram.com") ? akunInstagram?.id ?? null : null,
         }),
@@ -276,17 +284,18 @@ export default function AutoEditUploadPage() {
         );
         setJobs(daftar);
       }
+      daftar
+        .filter((j) => j.status !== "done")
+        .forEach((j) =>
+          catat(`Edit gagal (${namaTemplate(j.template_id)}): ${j.error || j.message || j.status}`)
+        );
       const jadi = daftar.filter((j) => j.status === "done");
-      const gagalRender = daftar.filter((j) => j.status !== "done");
-      gagalRender.forEach((j) =>
-        catat(`Edit gagal (${namaTemplate(j.template_id)}): ${j.error || j.message || j.status}`)
-      );
       if (jadi.length === 0) throw new Error("Semua proses edit gagal; tidak ada yang bisa diunggah.");
       catat(`Edit selesai: ${jadi.length} video`);
 
-      // 3. Jembatan: salin hasil render menjadi berkas unggahan sosmed.
+      // 3. Jembatan: hasil render jadi berkas unggahan, satu per template.
       setTahap("jembatan");
-      const media: { template_id: string; media_path: string }[] = [];
+      const mediaTemplate: Record<string, string> = {};
       for (const j of jadi) {
         const r = await apiFetch(`/api/video/jobs/${j.job_id}/ke-sosmed`, { method: "POST" });
         const d = await r.json().catch(() => ({}));
@@ -294,37 +303,40 @@ export default function AutoEditUploadPage() {
           catat(`Gagal menyiapkan ${namaTemplate(j.template_id)}: ${d.detail || r.status}`);
           continue;
         }
-        media.push({ template_id: j.template_id, media_path: String(d.media_path) });
+        mediaTemplate[j.template_id] = String(d.media_path);
       }
-      if (media.length === 0) throw new Error("Hasil edit tidak bisa disiapkan untuk diunggah.");
 
-      // 4. Unggah: satu kiriman per video, ke semua akun yang dipilih.
+      // 4. Satu kiriman: tiap akun membawa video dari templatenya sendiri.
       setTahap("upload");
-      const tujuan = akunDipilih.filter((id) => akunSiap.some((a) => a.id === id));
-      let semua: Kiriman[] = [];
-      for (const m of media) {
-        const r = await apiFetch("/api/sosmed/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            media_path: m.media_path,
-            caption: caption.trim(),
-            media_kind: "video",
-            items: tujuan.map((id) => ({ account_id: id })),
-          }),
+      const items = tujuan
+        .filter((id) => mediaTemplate[templateAkun[id]])
+        .map((id) => ({ account_id: id, media_path: mediaTemplate[templateAkun[id]] }));
+      tujuan
+        .filter((id) => !mediaTemplate[templateAkun[id]])
+        .forEach((id) => {
+          const a = akun.find((x) => x.id === id);
+          catat(`Dilewati: ${a?.nama_akun || id} - templatenya gagal diedit`);
         });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          catat(`Gagal mengirim ${namaTemplate(m.template_id)}: ${d.detail || r.status}`);
-          continue;
-        }
-        semua.push({ template_id: m.template_id, post_id: Number(d.post_id), status: "processing", targets: [] });
-        catat(`Mengirim ${namaTemplate(m.template_id)} ke ${tujuan.length} akun`);
-      }
-      setKiriman(semua);
-      if (semua.length === 0) throw new Error("Tidak ada kiriman yang bisa dimulai.");
+      if (items.length === 0) throw new Error("Tidak ada video siap untuk diunggah.");
 
-      // 5. Pantau sampai semua kiriman selesai.
+      const ru = await apiFetch("/api/sosmed/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          media_path: items[0].media_path,
+          caption: caption.trim(),
+          media_kind: "video",
+          items,
+        }),
+      });
+      const du = await ru.json().catch(() => ({}));
+      if (!ru.ok) throw new Error(du.detail || "Gagal memulai unggahan.");
+      const postId = Number(du.post_id);
+      catat(`Mengirim ke ${items.length} akun`);
+      let semua: Kiriman[] = [{ template_id: "", post_id: postId, status: "processing", targets: [] }];
+      setKiriman(semua);
+
+      // 5. Pantau sampai selesai.
       while (semua.some((k) => !selesaiKirim(k.status))) {
         await tunda(3000);
         semua = await Promise.all(
@@ -451,54 +463,26 @@ export default function AutoEditUploadPage() {
 
             <div className={styles.blok}>
               <div className={styles.blokHead}>
-                <h3>Template edit</h3>
-                <span className={styles.jumlahHuruf}>{templateDipilih.length} dipilih</span>
-              </div>
-              {templates.length === 0 ? (
-                <p className={styles.hint}>
-                  Belum ada template. Buat dulu di{" "}
-                  <Link href="/edit-video" className={styles.tautan}>
-                    Auto Edit Video
-                  </Link>
-                  .
-                </p>
-              ) : (
-                <div className={styles.daftarCek}>
-                  {templates.map((t) => {
-                    const dicentang = templateDipilih.includes(t.id);
-                    return (
-                      <label
-                        key={t.id}
-                        className={`${styles.cekItem} ${dicentang ? styles.cekAktif : ""}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={dicentang}
-                          disabled={sedangJalan}
-                          onChange={(e) =>
-                            setTemplateDipilih((lama) =>
-                              e.target.checked ? [...lama, t.id] : lama.filter((x) => x !== t.id)
-                            )
-                          }
-                        />
-                        {t.name}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-              <p className={styles.hint}>Tiap template menghasilkan satu video, dan tiap video dikirim ke semua akun terpilih.</p>
-            </div>
-
-            <div className={styles.blok}>
-              <div className={styles.blokHead}>
                 <h3>Akun tujuan</h3>
                 <div className={styles.aksi}>
                   <button
                     type="button"
                     className={styles.btnSekunder}
                     disabled={sedangJalan}
-                    onClick={() => setAkunDipilih(akunSiap.map((a) => a.id))}
+                    onClick={() => {
+                      setAkunDipilih(akunSiap.map((a) => a.id));
+                      // Yang belum punya template dapat template pertama,
+                      // supaya "pilih semua" benar-benar siap dijalankan.
+                      if (templates.length) {
+                        setTemplateAkun((lama) => {
+                          const baru = { ...lama };
+                          akunSiap.forEach((a) => {
+                            if (!baru[a.id]) baru[a.id] = templates[0].id;
+                          });
+                          return baru;
+                        });
+                      }
+                    }}
                   >
                     Pilih semua
                   </button>
@@ -523,37 +507,71 @@ export default function AutoEditUploadPage() {
                   </Link>
                   .
                 </p>
+              ) : templates.length === 0 ? (
+                <p className={styles.hint}>
+                  Belum ada template. Buat dulu di{" "}
+                  <Link href="/edit-video" className={styles.tautan}>
+                    Auto Edit Video
+                  </Link>
+                  .
+                </p>
               ) : (
-                <div className={styles.daftarCek}>
+                <div className={styles.daftarTujuan}>
                   {akunSiap.map((a) => {
                     const pf = PLATFORM.find((x) => x.id === a.platform);
                     const dicentang = akunDipilih.includes(a.id);
                     return (
-                      <label
+                      <div
                         key={a.id}
-                        className={`${styles.cekItem} ${dicentang ? styles.cekAktif : ""}`}
-                        title={pf?.belumTeruji ? "Alur unggahnya belum pernah diuji sampai terbit" : ""}
+                        className={`${styles.tujuanBaris} ${dicentang ? styles.tujuanAktif : ""}`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={dicentang}
+                        <label className={styles.tujuanPilih}>
+                          <input
+                            type="checkbox"
+                            checked={dicentang}
+                            disabled={sedangJalan}
+                            onChange={(e) =>
+                              setAkunDipilih((lama) =>
+                                e.target.checked ? [...lama, a.id] : lama.filter((x) => x !== a.id)
+                              )
+                            }
+                          />
+                          <span className={styles.logoKecil} style={{ color: WARNA[a.platform] }}>
+                            <LogoSosmed platform={a.platform} ukuran={15} />
+                          </span>
+                          <span className={styles.tujuanNama}>
+                            {a.nama_akun || a.session_name}
+                            {pf?.belumTeruji && (
+                              <span className={styles.tandaUji}>belum teruji</span>
+                            )}
+                          </span>
+                        </label>
+
+                        {/* Template khusus akun ini. Sumber videonya sama untuk
+                            semua; yang berbeda hanya tampilannya. */}
+                        <select
+                          className={lokal.pilihTemplate}
+                          value={templateAkun[a.id] || ""}
                           disabled={sedangJalan}
                           onChange={(e) =>
-                            setAkunDipilih((lama) =>
-                              e.target.checked ? [...lama, a.id] : lama.filter((x) => x !== a.id)
-                            )
+                            setTemplateAkun((lama) => ({ ...lama, [a.id]: e.target.value }))
                           }
-                        />
-                        <span className={styles.logoKecil} style={{ color: WARNA[a.platform] }}>
-                          <LogoSosmed platform={a.platform} ukuran={15} />
-                        </span>
-                        {a.nama_akun || a.session_name}
-                        {pf?.belumTeruji && <span className={styles.tandaUji}>belum teruji</span>}
-                      </label>
+                        >
+                          <option value="">— pilih template —</option>
+                          {templates.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     );
                   })}
                 </div>
               )}
+              <p className={styles.hint}>
+                Satu akun = satu template. Sumber videonya sama, tampilannya berbeda per akun.
+              </p>
             </div>
 
             <div className={styles.blok}>
@@ -650,7 +668,6 @@ export default function AutoEditUploadPage() {
                 </div>
                 {kiriman.map((k) => (
                   <div key={k.post_id} className={lokal.kirimanBlok}>
-                    <span className={lokal.subNama}>{namaTemplate(k.template_id)}</span>
                     {k.targets.length === 0 && (
                       <span className={styles.progresTahap}>menyiapkan...</span>
                     )}
@@ -662,7 +679,12 @@ export default function AutoEditUploadPage() {
                           <span className={styles.logoKecil} style={{ color: WARNA[t.platform as keyof typeof WARNA] }}>
                             <LogoSosmed platform={t.platform as keyof typeof WARNA} ukuran={13} />
                           </span>
-                          <span className={lokal.subNama}>{nama}</span>
+                          <span className={lokal.subNama}>
+                            {nama}
+                            {t.account_id && templateAkun[t.account_id]
+                              ? ` · ${namaTemplate(templateAkun[t.account_id])}`
+                              : ""}
+                          </span>
                           {t.status === "success" && t.url ? (
                             <a href={t.url} target="_blank" rel="noreferrer" className={styles.tautan}>
                               Lihat postingan
