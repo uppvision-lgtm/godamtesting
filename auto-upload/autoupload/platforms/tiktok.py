@@ -16,6 +16,7 @@ Catatan yang didapat dari pengamatan langsung, bukan tebakan:
 """
 
 import re
+from datetime import timedelta
 from pathlib import Path
 
 from autoupload.browser import (
@@ -24,6 +25,7 @@ from autoupload.browser import (
     PlaywrightPlatform,
     tautan_baru,
     tautan_profil,
+    waktu_lokal_halaman,
 )
 
 # Popup informasi yang bisa menutupi tombol Posting.
@@ -60,6 +62,7 @@ class TikTok(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
+        jadwal = options.get("jadwal")
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.tiktok.com/@{nama}" if nama else ""
         sebelum = await tautan_profil(page, _URL_DAFTAR, _PEMILIH_POST, _JEDA_DAFTAR)
@@ -107,7 +110,11 @@ class TikTok(PlaywrightPlatform):
         terbaca = (await kotak.inner_text() or "").strip()
         print(f"[tiktok] caption terisi: {terbaca[:60]!r}", flush=True)
 
-        # 3. Tunggu tombol Posting aktif, sambil menutup popup yang muncul lagi.
+        # 3. Jadwal bawaan TikTok, kalau diminta.
+        if jadwal:
+            await self._pasang_jadwal(page, jadwal)
+
+        # 4. Tunggu tombol Posting aktif, sambil menutup popup yang muncul lagi.
         tombol = None
         for _ in range(60):  # ~5 menit
             await self._tutup_popup(page)
@@ -140,6 +147,10 @@ class TikTok(PlaywrightPlatform):
             )
         print("[tiktok] unggahan diterima", flush=True)
 
+        # Postingan terjadwal belum terbit, jadi tidak ada tautan untuk dicari.
+        if jadwal:
+            return "https://www.tiktok.com/tiktokstudio/content"
+
         # 6. Tautan postingannya.
         tautan = await tautan_baru(
             page, _URL_DAFTAR, _PEMILIH_POST, sebelum, jeda_ms=_JEDA_DAFTAR
@@ -148,6 +159,138 @@ class TikTok(PlaywrightPlatform):
             print(f"[tiktok] tautan: {tautan}", flush=True)
             return tautan
         return url_profil or "https://www.tiktok.com/"
+
+    @staticmethod
+    async def _pasang_jadwal(page, kapan) -> None:
+        """Pilih "Jadwalkan" pada blok "When to post", lalu isi tanggal & jamnya.
+
+        Tiga hal yang mudah salah dan sudah dibuktikan lewat pengamatan:
+
+        - Radionya dipilih lewat NILAI (value != "post_now"), bukan lewat teks
+          "Schedule": teksnya ikut berganti kalau bahasa antarmuka berubah.
+        - Memilihnya memunculkan dialog persetujuan "Izinkan video Anda
+          disimpan untuk posting terjadwal?". Selama dialog itu belum
+          disetujui, radionya TIDAK tercentang dan kolom tanggalnya tidak
+          pernah muncul.
+        - Kolomnya `input[type=text]`, bukan input tanggal/jam bawaan
+          peramban, jadi dikenali dari POLA nilainya (jam "HH:MM" versus
+          tanggal "YYYY-MM-DD"), bukan dari urutan di DOM.
+        """
+        kapan = await waktu_lokal_halaman(page, kapan)
+        kotak = page.locator('[data-e2e="schedule_container"]').first
+        if await kotak.count() == 0:
+            raise PlatformError(
+                "Blok 'When to post' tidak ada di halaman unggah TikTok, jadi "
+                "jadwalnya tidak bisa dipasang."
+            )
+        radio = kotak.locator('input[type="radio"]:not([value="post_now"])').first
+        if await radio.count() == 0:
+            raise PlatformError("Pilihan jadwal TikTok tidak ditemukan.")
+        # Radio aslinya disembunyikan di balik lingkaran bergaya -> klik label.
+        label = radio.locator("xpath=ancestor::label[1]")
+        await (label.first if await label.count() else radio).click(timeout=10_000)
+        await page.wait_for_timeout(2_000)
+
+        for setuju in ("Izinkan", "Allow", "Setuju"):
+            tombol = page.get_by_role("button", name=setuju, exact=True)
+            if await tombol.count():
+                await tombol.first.click(timeout=8_000)
+                print(f"[tiktok] persetujuan jadwal diberikan lewat {setuju!r}", flush=True)
+                break
+        await page.wait_for_timeout(3_000)
+
+        if not await radio.is_checked():
+            raise PlatformError(
+                "Pilihan 'Jadwalkan' TikTok tidak tercentang - dialog "
+                "persetujuan penyimpanan video mungkin belum disetujui."
+            )
+
+        # Menitnya HARUS kelipatan 5: pemilih TikTok hanya menyediakan
+        # 00,05,...,55. Dibulatkan ke kelipatan terdekat, dan kalau itu
+        # membuatnya jatuh ke masa lalu, dibulatkan ke atas.
+        menit = round(kapan.minute / 5) * 5
+        kapan = kapan.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=menit)
+        tgl, jam = kapan.strftime("%Y-%m-%d"), kapan.strftime("%H:%M")
+
+        kolom = kotak.locator('input[type="text"]')
+        kolom_jam = kolom_tgl = None
+        for i in range(await kolom.count()):
+            nilai = await kolom.nth(i).input_value() or ""
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", nilai):
+                kolom_tgl = kolom.nth(i)
+            elif re.fullmatch(r"\d{1,2}:\d{2}", nilai):
+                kolom_jam = kolom.nth(i)
+        if kolom_jam is None or kolom_tgl is None:
+            raise PlatformError(
+                "Kolom tanggal/jam jadwal TikTok tidak ditemukan; jadwalnya "
+                "tidak bisa dipastikan."
+            )
+
+        # Kolomnya readonly - nilainya hanya bisa diubah lewat pemilih.
+        await kolom_jam.click(timeout=8_000)
+        await page.wait_for_timeout(1_500)
+        await TikTok._pilih_jam(page, kapan.hour, kapan.minute)
+        await page.wait_for_timeout(1_000)
+
+        await kolom_tgl.click(timeout=8_000)
+        await page.wait_for_timeout(1_500)
+        await TikTok._pilih_tanggal(page, kapan.day)
+        await page.wait_for_timeout(1_500)
+
+        terbaca_tgl = await kolom_tgl.input_value()
+        terbaca_jam = await kolom_jam.input_value()
+        if (terbaca_tgl, terbaca_jam) != (tgl, jam):
+            raise PlatformError(
+                f"TikTok tidak menerima jadwalnya (diminta {tgl} {jam}, "
+                f"terbaca {terbaca_tgl} {terbaca_jam})."
+            )
+        print(f"[tiktok] jadwal dipasang: {tgl} {jam}", flush=True)
+
+    @staticmethod
+    async def _pilih_jam(page, jam: int, menit: int) -> None:
+        """Pilih jam dan menit pada pemilih dua kolom.
+
+        Kedua kolom memakai kelas yang sama, jadi dibedakan lewat posisi
+        mendatar: yang kiri jam, yang kanan menit.
+        """
+        opsi = page.locator(".tiktok-timepicker-option-text")
+        kotak = []
+        for i in range(await opsi.count()):
+            b = await opsi.nth(i).bounding_box()
+            if b:
+                kotak.append((b["x"], (await opsi.nth(i).inner_text()).strip(), i))
+        if not kotak:
+            raise PlatformError("Pemilih jam TikTok tidak muncul.")
+        batas = (min(k[0] for k in kotak) + max(k[0] for k in kotak)) / 2
+        for x, teks, i in kotak:
+            kiri = x <= batas
+            if kiri and teks == f"{jam:02d}":
+                await opsi.nth(i).click(timeout=6_000)
+                await page.wait_for_timeout(800)
+                break
+        for x, teks, i in kotak:
+            if x > batas and teks == f"{menit:02d}":
+                await opsi.nth(i).click(timeout=6_000)
+                await page.wait_for_timeout(800)
+                break
+
+    @staticmethod
+    async def _pilih_tanggal(page, hari: int) -> None:
+        """Pilih tanggal pada kalender; hanya hari ber-kelas `valid` yang bisa.
+
+        Hari dari bulan sebelah ikut ditampilkan, tetapi yang sudah lewat
+        tidak ber-`valid`. TikTok hanya mengizinkan sepuluh hari ke depan,
+        jadi kemunculan pertama angka yang cocok sudah pasti yang dimaksud.
+        """
+        hari_valid = page.locator(".day.valid")
+        for i in range(await hari_valid.count()):
+            if (await hari_valid.nth(i).inner_text()).strip() == str(hari):
+                await hari_valid.nth(i).click(timeout=6_000)
+                return
+        raise PlatformError(
+            f"Tanggal {hari} tidak bisa dipilih di kalender TikTok - "
+            "TikTok hanya menerima jadwal sampai sepuluh hari ke depan."
+        )
 
     @staticmethod
     async def _tutup_popup(page) -> None:

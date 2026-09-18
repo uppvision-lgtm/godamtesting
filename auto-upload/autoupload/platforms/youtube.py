@@ -17,7 +17,7 @@ import asyncio
 import re
 from pathlib import Path
 
-from autoupload.browser import MediaKind, PlaywrightPlatform
+from autoupload.browser import MediaKind, PlatformError, PlaywrightPlatform
 
 
 class YouTube(PlaywrightPlatform):
@@ -245,6 +245,13 @@ class YouTube(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
     ) -> str | None:
+        # Platform ini belum punya penjadwalan di sini. Ditolak supaya
+        # tidak diam-diam terbit SEKARANG padahal diminta nanti.
+        if options.get("jadwal"):
+            raise PlatformError(
+                "Penjadwalan YouTube belum didukung di sini. Hapus jadwalnya untuk mengirim sekarang, atau keluarkan YouTube dari platform tujuan."
+            )
+
         if media_kind != MediaKind.VIDEO:
             raise RuntimeError("YouTube via browser hanya mendukung video")
 

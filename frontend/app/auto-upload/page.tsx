@@ -72,8 +72,13 @@ const PLATFORM: {
    *  kosong bersama. */
   cookieOpsional?: string[];
   petunjuk: string;
-  /** Keterbatasan yang hanya terasa saat postingan dijadwalkan. Ditampilkan
-   *  sebagai peringatan begitu pengguna mengisi waktu jadwal. */
+  /** Punya fitur penjadwalan sendiri di komposer webnya. Penjadwalan
+   *  diserahkan ke platform, jadi yang tidak punya harus diberi peringatan
+   *  sebelum dikirim - bukan diam-diam terbit sekarang. */
+  bisaJadwal?: boolean;
+  /** Kenapa tidak bisa dijadwalkan. Wajib diisi kalau bisaJadwal false. */
+  alasanJadwal?: string;
+  /** Batasan penjadwalan pada platform yang BISA dijadwalkan. */
   catatanJadwal?: string;
 }[] = [
   {
@@ -82,6 +87,10 @@ const PLATFORM: {
     batas: 2200,
     cookie: ["sessionid"],
     petunjuk: "Buka instagram.com, lalu salin nilai cookie sessionid.",
+    bisaJadwal: false,
+    alasanJadwal:
+      "komposer webnya tidak punya pilihan jadwal; menjadwalkan Instagram butuh " +
+      "akun profesional lewat Meta Business Suite",
   },
   {
     id: "tiktok",
@@ -89,6 +98,10 @@ const PLATFORM: {
     batas: 2200,
     cookie: ["sessionid"],
     petunjuk: "Buka tiktok.com, lalu salin nilai cookie sessionid.",
+    bisaJadwal: true,
+    catatanJadwal:
+      "menitnya dibulatkan ke kelipatan 5 dan jadwalnya paling jauh 10 hari ke depan",
+
   },
   {
     id: "youtube",
@@ -100,6 +113,8 @@ const PLATFORM: {
       "Buka youtube.com, salin cookie-nya satu per satu. Google sering menolak " +
       "sesi tanpa ketiga cookie tambahan di bawah, jadi isi juga kalau YouTube " +
       "tetap merah.",
+    bisaJadwal: false,
+    alasanJadwal: "penjadwalannya belum didukung di sini",
   },
   {
     id: "facebook",
@@ -107,6 +122,8 @@ const PLATFORM: {
     batas: 5000,
     cookie: ["c_user", "xs"],
     petunjuk: "Buka facebook.com, salin c_user dan xs ke kotaknya masing-masing.",
+    bisaJadwal: false,
+    alasanJadwal: "penjadwalannya belum didukung di sini",
   },
   {
     id: "threads",
@@ -114,6 +131,8 @@ const PLATFORM: {
     batas: 500,
     cookie: ["sessionid"],
     petunjuk: "Buka threads.net, lalu salin nilai cookie sessionid.",
+    bisaJadwal: false,
+    alasanJadwal: "komposer webnya tidak punya pilihan jadwal",
   },
   {
     id: "twitter",
@@ -121,6 +140,7 @@ const PLATFORM: {
     batas: 280,
     cookie: ["auth_token"],
     petunjuk: "Buka x.com, lalu salin nilai cookie auth_token.",
+    bisaJadwal: true,
   },
 ];
 
@@ -799,16 +819,28 @@ export default function AutoUploadPage() {
               {jadwal && (
                 <div className={styles.catatanJadwal}>
                   <p className={styles.hint}>
-                    Penjadwalan dijalankan oleh backend di laptop ini, bukan oleh fitur jadwal
-                    milik masing-masing sosmed. Karena itu akun pribadi tetap bisa dijadwalkan.
-                    Backend harus menyala saat waktunya tiba; kalau laptop sempat tidur,
-                    postingan tetap dikirim begitu laptop menyala lagi, hanya terlambat.
+                    Jadwalnya dititipkan ke fitur penjadwalan milik sosmed itu sendiri, jadi
+                    videonya diunggah sekarang lalu platformnya yang menerbitkan pada waktunya.
+                    Laptop boleh dimatikan setelah proses ini selesai.
                   </p>
-                  {PLATFORM.filter((p) => dipilih.includes(p.id) && p.catatanJadwal).map((p) => (
-                    <p key={p.id} className={styles.peringatan}>
-                      <b>{p.nama}:</b> {p.catatanJadwal}
+                  {PLATFORM.filter(
+                    (p) => dipilih.includes(p.id) && p.bisaJadwal && p.catatanJadwal
+                  ).map((p) => (
+                    <p key={p.id} className={styles.hint}>
+                      <b>{p.nama}:</b> {p.catatanJadwal}.
                     </p>
                   ))}
+                  {(() => {
+                    const tak = PLATFORM.filter((p) => dipilih.includes(p.id) && !p.bisaJadwal);
+                    if (tak.length === 0) return null;
+                    return (
+                      <p className={styles.peringatan}>
+                        Tidak bisa dijadwalkan dan akan <b>gagal</b> selama waktu jadwal terisi:{" "}
+                        {tak.map((p) => `${p.nama} (${p.alasanJadwal})`).join("; ")}. Hapus
+                        jadwalnya untuk mengirim sekarang, atau keluarkan platform itu dari tujuan.
+                      </p>
+                    );
+                  })()}
                 </div>
               )}
             </div>

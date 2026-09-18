@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from autoupload.browser import MediaKind, PlaywrightPlatform
+from autoupload.browser import MediaKind, PlatformError, PlaywrightPlatform
 
 
 class Facebook(PlaywrightPlatform):
@@ -18,6 +18,13 @@ class Facebook(PlaywrightPlatform):
     session_cookie_map = {"c_user": ".facebook.com", "xs": ".facebook.com"}
 
     async def _do_upload(self, page, media_path: Path, caption: str, media_kind: MediaKind, **options) -> str | None:
+        # Platform ini belum punya penjadwalan di sini. Ditolak supaya
+        # tidak diam-diam terbit SEKARANG padahal diminta nanti.
+        if options.get("jadwal"):
+            raise PlatformError(
+                "Penjadwalan Facebook belum didukung di sini. Hapus jadwalnya untuk mengirim sekarang, atau keluarkan Facebook dari platform tujuan."
+            )
+
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(2500)
 

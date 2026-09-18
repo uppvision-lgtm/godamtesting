@@ -65,6 +65,13 @@ class Instagram(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
+        # Platform ini tidak punya penjadwalan bawaan. Ditolak di sini
+        # supaya tidak diam-diam terbit SEKARANG padahal diminta nanti.
+        if options.get("jadwal"):
+            raise PlatformError(
+                "Instagram tidak punya penjadwalan di komposer web-nya. Menjadwalkan postingan Instagram butuh akun profesional lewat Meta Business Suite. Hapus jadwalnya untuk mengirim sekarang, atau keluarkan Instagram dari platform tujuan."
+            )
+
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.instagram.com/{nama}/" if nama else ""
         sebelum: set[str] = set()

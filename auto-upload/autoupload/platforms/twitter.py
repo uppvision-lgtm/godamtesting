@@ -22,10 +22,13 @@ from autoupload.browser import (
     PlaywrightPlatform,
     tautan_baru,
     tautan_profil,
+    waktu_lokal_halaman,
 )
 
 # Toast yang berarti postingan sudah benar-benar terkirim, EN + ID.
-_TERKIRIM = re.compile(r"(was sent|telah dikirim|berhasil dikirim)", re.I)
+_TERKIRIM = re.compile(
+    r"(was sent|will be sent|telah dikirim|berhasil dikirim|akan dikirim)", re.I
+)
 # Toast kegagalan; diperiksa lebih dulu supaya gagal tidak terbaca berhasil.
 _GAGAL = re.compile(r"(failed|gagal|tidak terkirim|something went wrong)", re.I)
 # Media masih diunggah. Ketidakhadiran inilah penanda selesai - BUKAN
@@ -63,6 +66,8 @@ class Twitter(PlaywrightPlatform):
                 "perbarui Session ID di halaman Auto Upload."
             ) from exc
 
+        jadwal = options.get("jadwal")
+
         # 1. Caption. X memotong di 280 karakter.
         await page.click('[data-testid="tweetTextarea_0"]')
         await page.keyboard.type(caption[:280], delay=10)
@@ -84,12 +89,17 @@ class Twitter(PlaywrightPlatform):
                 "Video belum selesai diunggah ke X setelah 5 menit; "
                 "postingan dibatalkan supaya tidak terkirim tanpa video."
             )
-        print("[x] media siap, menekan kirim", flush=True)
+        print("[x] media siap", flush=True)
 
-        # 4. Kirim.
+        # 4. Jadwal bawaan X, kalau diminta. Harus DIPASANG SEBELUM kirim:
+        #    setelah ditekan, postingannya sudah terlanjur terbit.
+        if jadwal:
+            await self._pasang_jadwal(page, jadwal)
+
+        # 5. Kirim.
         await page.click('[data-testid="tweetButton"]')
 
-        # 5. Tunggu konfirmasi, bukan sekadar jeda tetap.
+        # 6. Tunggu konfirmasi, bukan sekadar jeda tetap.
         if not await self._tunggu_terkirim(page):
             raise PlatformError(
                 "Tombol kirim sudah ditekan tetapi X tidak pernah memberi "
@@ -97,13 +107,54 @@ class Twitter(PlaywrightPlatform):
             )
         print("[x] terkirim", flush=True)
 
-        # 6. Ambil tautan postingannya.
+        # Postingan terjadwal BELUM terbit, jadi tidak ada tautan yang bisa
+        # dicari di profil. Mencarinya hanya akan menunggu sia-sia lalu
+        # mengembalikan tautan postingan lama.
+        if jadwal:
+            return "https://x.com/compose/post/unsent/scheduled"
+
+        # 7. Ambil tautan postingannya.
         if url_profil:
             tautan = await tautan_baru(page, url_profil, _PEMILIH_POST, sebelum)
             if tautan:
                 print(f"[x] tautan: {tautan}", flush=True)
                 return tautan
         return url_profil or "https://x.com/"
+
+    @staticmethod
+    async def _pasang_jadwal(page, kapan) -> None:
+        """Pakai penjadwal bawaan X: tombol jam -> tanggal & waktu -> Confirm.
+
+        Kolom `input[type=date]` dan `input[type=time]` dipakai langsung, bukan
+        enam `<select>` di atasnya: mengisinya terbukti ikut memperbarui
+        select-select itu, jadi React benar-benar menerima nilainya.
+        """
+        kapan = await waktu_lokal_halaman(page, kapan)
+        await page.click('[data-testid="scheduleOption"]')
+        await page.wait_for_timeout(2_500)
+
+        tanggal = page.locator('input[type="date"]').first
+        waktu = page.locator('input[type="time"]').first
+        try:
+            await tanggal.wait_for(state="visible", timeout=10_000)
+        except Exception as exc:  # noqa: BLE001
+            raise PlatformError("Panel jadwal X tidak terbuka.") from exc
+
+        await tanggal.fill(kapan.strftime("%Y-%m-%d"))
+        await waktu.fill(kapan.strftime("%H:%M"))
+        await page.wait_for_timeout(1_000)
+
+        terbaca = f"{await tanggal.input_value()} {await waktu.input_value()}"
+        diminta = kapan.strftime("%Y-%m-%d %H:%M")
+        if terbaca != diminta:
+            raise PlatformError(
+                f"X tidak menerima waktu jadwalnya (diminta {diminta}, "
+                f"terbaca {terbaca})."
+            )
+
+        await page.click('[data-testid="scheduledConfirmationPrimaryAction"]')
+        await page.wait_for_timeout(2_000)
+        print(f"[x] jadwal dipasang: {diminta}", flush=True)
 
     @staticmethod
     async def _toast(page) -> str:

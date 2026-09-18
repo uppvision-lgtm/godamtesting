@@ -38,6 +38,16 @@ def _targets_payload(db, post: Post) -> list[dict]:
                 "platform": t.platform,
                 "session_name": account.session_name if account else "default",
                 "session_id": account.session_id if account else "",
+                # Diteruskan ke adapter supaya ia memakai fitur jadwal bawaan
+                # platformnya. None = kirim sekarang.
+                # Disadarkan zonanya: SQLite mengembalikannya polos,
+                # dan adapter perlu tahu ini UTC untuk mengubahnya ke
+                # waktu lokal peramban.
+                "jadwal": (
+                    post.scheduled_at.replace(tzinfo=timezone.utc)
+                    if post.scheduled_at and post.scheduled_at.tzinfo is None
+                    else post.scheduled_at
+                ),
                 **extra,
             }
         )
@@ -58,7 +68,11 @@ def create_post(
         media_path=media_path,
         media_kind=media_kind,
         caption=caption,
-        status="scheduled" if scheduled_at else "pending",
+        # Statusnya TIDAK pernah "scheduled" lagi: penjadwalan diserahkan ke
+        # fitur jadwal milik tiap sosmed, jadi tidak ada yang perlu ditunggu
+        # oleh dispatcher di laptop ini. Waktunya tetap disimpan sebagai
+        # catatan dan diteruskan ke adapter.
+        status="pending",
         scheduled_at=scheduled_at,
     )
     db.add(post)

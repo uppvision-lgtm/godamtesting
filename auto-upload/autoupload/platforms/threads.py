@@ -60,6 +60,13 @@ class Threads(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
     ) -> str | None:
+        # Platform ini tidak punya penjadwalan bawaan. Ditolak di sini
+        # supaya tidak diam-diam terbit SEKARANG padahal diminta nanti.
+        if options.get("jadwal"):
+            raise PlatformError(
+                "Threads tidak punya penjadwalan di komposer web-nya. Hapus jadwalnya untuk mengirim sekarang, atau keluarkan Threads dari platform tujuan."
+            )
+
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.threads.com/@{nama}" if nama else ""
         # Daftar postingan sebelum upload, supaya tautan hasilnya dipastikan

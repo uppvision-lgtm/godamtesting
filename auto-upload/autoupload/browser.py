@@ -123,6 +123,23 @@ async def _tautan_di_halaman(page, pemilih: str) -> list[str]:
     )
 
 
+async def waktu_lokal_halaman(page, kapan):
+    """Ubah waktu UTC menjadi waktu LOKAL peramban yang sedang terbuka.
+
+    Pemilih jadwal X dan TikTok memakai zona waktu peramban, sedangkan
+    `scheduled_at` disimpan dalam UTC. Tanpa konversi, jadwal yang diminta
+    pukul 18.00 WIB akan terpasang pukul 18.00 UTC - meleset tujuh jam.
+    Offsetnya dibaca dari halaman itu sendiri supaya benar baik di laptop
+    maupun di server yang zonanya berbeda.
+    """
+    from datetime import timedelta, timezone
+
+    if kapan.tzinfo is None:
+        kapan = kapan.replace(tzinfo=timezone.utc)
+    offset = await page.evaluate("() => -new Date().getTimezoneOffset()")
+    return kapan.astimezone(timezone.utc) + timedelta(minutes=offset)
+
+
 async def tautan_profil(page, url_profil: str, pemilih: str, jeda_ms: int = 5_000) -> set[str]:
     """Daftar tautan postingan yang SUDAH ada di profil, sebelum upload.
 

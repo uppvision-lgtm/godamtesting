@@ -58,7 +58,10 @@ async def fan_out_upload(
     """Upload ke semua platform yang diminta secara paralel.
 
     Isi tiap item `targets`: {platform, session_name?, session_id?, headless?,
-    adapt?, + opsi khusus platform (mis. visibility untuk YouTube)}.
+    adapt?, jadwal?, + opsi khusus platform (mis. visibility untuk YouTube)}.
+
+    `jadwal` (datetime, boleh None) diteruskan apa adanya ke adapter, yang
+    memakainya lewat fitur penjadwalan bawaan platform masing-masing.
     """
     async def _run(t: dict) -> UploadResult:
         t = dict(t)

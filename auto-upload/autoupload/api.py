@@ -110,6 +110,11 @@ async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
             raise HTTPException(400, "scheduled_at harus ISO datetime")
         if run_at.tzinfo is None:
             run_at = run_at.replace(tzinfo=timezone.utc)
+        # WAJIB dinormalkan ke UTC sebelum disimpan. SQLAlchemy menulis kolom
+        # DateTime SQLite dari medan jam APA ADANYA dan MEMBUANG offsetnya,
+        # jadi "19:20+07:00" akan tersimpan sebagai "19:20" lalu dibaca ulang
+        # sebagai UTC - jadwalnya meleset tujuh jam tanpa error apa pun.
+        run_at = run_at.astimezone(timezone.utc)
         if run_at <= datetime.now(timezone.utc):
             run_at = None                     # sudah lewat -> jalankan sekarang
 
@@ -122,9 +127,9 @@ async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
         scheduled_at=run_at,
         account_ids=req.account_ids,
     )
-    if run_at:
-        return {"post_id": post.id, "status": "scheduled", "scheduled_at": run_at.isoformat()}
-
+    # Dijalankan SEKARANG walau dijadwalkan: yang menunda adalah fitur jadwal
+    # milik platformnya, bukan proses di laptop ini. Jadi kalau laptop mati
+    # nanti, postingan tetap terbit pada waktunya.
     results = await run_post(post.id)
     db.expire_all()
     status = db.query(Post).filter(Post.id == post.id).first().status
