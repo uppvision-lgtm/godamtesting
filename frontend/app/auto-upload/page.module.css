@@ -573,6 +573,16 @@
   line-height: 1.6;
 }
 
+/* Catatan penjadwalan: keterangan umum + peringatan per platform. */
+.catatanJadwal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-2);
+  margin-top: var(--sela-3);
+  padding-top: var(--sela-3);
+  border-top: 1px solid #232a24;
+}
+
 .peringatan {
   margin: 0;
   font-size: var(--teks-kecil);

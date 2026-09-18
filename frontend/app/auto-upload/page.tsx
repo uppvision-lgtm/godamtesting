@@ -69,6 +69,9 @@ const PLATFORM: {
    *  kosong bersama. */
   cookieOpsional?: string[];
   petunjuk: string;
+  /** Keterbatasan yang hanya terasa saat postingan dijadwalkan. Ditampilkan
+   *  sebagai peringatan begitu pengguna mengisi waktu jadwal. */
+  catatanJadwal?: string;
 }[] = [
   {
     id: "instagram",
@@ -76,6 +79,10 @@ const PLATFORM: {
     batas: 2200,
     cookie: ["sessionid"],
     petunjuk: "Buka instagram.com, lalu salin nilai cookie sessionid.",
+    catatanJadwal:
+      "Instagram membuka jendela Chrome dan memakai kursor tetikus saat waktunya tiba, " +
+      "karena tombol Buat (+) hanya menerima klik tingkat sistem. Pastikan laptop menyala " +
+      "dan tidak terkunci; kalau sedang kamu pakai, kursormu akan ikut terpakai sebentar.",
   },
   {
     id: "tiktok",
@@ -741,6 +748,21 @@ export default function AutoUploadPage() {
                   </button>
                 )}
               </div>
+              {jadwal && (
+                <div className={styles.catatanJadwal}>
+                  <p className={styles.hint}>
+                    Penjadwalan dijalankan oleh backend di laptop ini, bukan oleh fitur jadwal
+                    milik masing-masing sosmed. Karena itu akun pribadi tetap bisa dijadwalkan.
+                    Backend harus menyala saat waktunya tiba; kalau laptop sempat tidur,
+                    postingan tetap dikirim begitu laptop menyala lagi, hanya terlambat.
+                  </p>
+                  {PLATFORM.filter((p) => dipilih.includes(p.id) && p.catatanJadwal).map((p) => (
+                    <p key={p.id} className={styles.peringatan}>
+                      <b>{p.nama}:</b> {p.catatanJadwal}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
 
             {galat && (
