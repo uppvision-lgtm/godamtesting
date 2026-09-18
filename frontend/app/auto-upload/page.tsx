@@ -221,6 +221,9 @@ export default function AutoUploadPage() {
   const [memeriksa, setMemeriksa] = useState<string>("");
   const [galatAkun, setGalatAkun] = useState("");
   const [perluLogin, setPerluLogin] = useState(false);
+  // Alamat backend untuk unggahan langsung, ditanyakan saat halaman
+  // dimuat. Kosong = kirim lewat proxy (mis. saat di localhost).
+  const [basisUnggah, setBasisUnggah] = useState("");
 
   const [berkas, setBerkas] = useState<Berkas | null>(null);
   const [namaBerkas, setNamaBerkas] = useState("");
@@ -266,6 +269,20 @@ export default function AutoUploadPage() {
       await muatAkun();
     })();
   }, [muatAkun]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await apiFetch("/api/sosmed/info", { cache: "no-store" });
+        if (res.ok) {
+          const d = (await res.json()) as { unggah_langsung?: string };
+          setBasisUnggah(d.unggah_langsung || "");
+        }
+      } catch {
+        // tanpa alamatnya, unggahan tetap jalan lewat proxy
+      }
+    })();
+  }, []);
 
   /** Akun terbaru milik satu platform, atau null kalau belum dihubungkan.
    *
@@ -419,7 +436,7 @@ export default function AutoUploadPage() {
         "/api/sosmed/media",
         file,
         (persen) => setUnggahan((u) => (u ? { ...u, persen, diproses: persen >= 100 } : u)),
-        true
+        basisUnggah
       );
       if (!ok) throw new Error(String(data.detail || "Gagal mengunggah berkas."));
       setBerkas(data as unknown as Berkas);
@@ -539,7 +556,7 @@ export default function AutoUploadPage() {
           "/api/sosmed/media",
           f,
           (persen) => setUnggahan((u) => (u ? { ...u, persen, diproses: persen >= 100 } : u)),
-          true
+          basisUnggah
         );
         if (!ok) throw new Error(String(data.detail || `Gagal mengunggah ${f.name}.`));
         const hasilBerkas = data as unknown as Berkas;

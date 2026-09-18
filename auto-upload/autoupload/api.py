@@ -94,6 +94,33 @@ class AccountRequest(BaseModel):
     extra: dict = Field(default_factory=dict)
 
 
+# ---------------------------------------------------------------- info
+
+@router.get("/info")
+def info() -> dict:
+    """Keterangan yang dibutuhkan halaman sebelum mengunggah.
+
+    `unggah_langsung` adalah alamat backend ini dilihat dari luar. Halaman
+    memakainya untuk mengirim berkas LANGSUNG ke sini, melewati proxy Next di
+    Vercel yang membatasi body sekitar 4,5 MB - batas yang membuat video
+    berukuran wajar ditolak dengan 413 tanpa keterangan apa pun.
+
+    Dikirim saat berjalan, bukan ditanam saat build, supaya alamat backend
+    yang berubah tidak menuntut frontend dibangun ulang.
+    """
+    alamat = os.getenv("AUTOUPLOAD_PUBLIC_URL", "").strip().rstrip("/")
+    if not alamat:
+        domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        if domain:
+            alamat = f"https://{domain}"
+    return {
+        "unggah_langsung": alamat,
+        "maks_berkas_mb": MAX_FILE_SIZE // 1024 // 1024,
+        "video_ext": sorted(VIDEO_EXT),
+        "foto_ext": sorted(PHOTO_EXT),
+    }
+
+
 # ---------------------------------------------------------------- media
 
 @router.post("/media")

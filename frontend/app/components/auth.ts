@@ -153,11 +153,14 @@ export function apiUnggah(
   url: string,
   file: File,
   onProgres: (persen: number) => void,
-  langsung = false
+  /** Alamat backend untuk dituju LANGSUNG, melewati proxy. Kosong = lewat
+   *  proxy seperti biasa. Diisi saat berjalan dari /api/sosmed/info. */
+  basis = ""
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", langsung && BASIS_BACKEND ? `${BASIS_BACKEND}${url}` : url);
+    const tujuan = (basis || BASIS_BACKEND).replace(/\/$/, "");
+    xhr.open("POST", tujuan ? `${tujuan}${url}` : url);
     const token = ambilToken();
     if (token) {
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);
@@ -177,6 +180,15 @@ export function apiUnggah(
         data = JSON.parse(xhr.responseText || "{}");
       } catch {
         data = {};
+      }
+      // Proxy Next membalas 413 sebagai teks polos, tanpa "detail", sehingga
+      // halaman hanya bisa menampilkan pesan umum. Diterjemahkan di sini.
+      if (xhr.status === 413 && !data.detail) {
+        data = {
+          detail:
+            "Berkasnya terlalu besar untuk dilewatkan proxy. Muat ulang halaman " +
+            "supaya berkas dikirim langsung ke server, lalu coba lagi.",
+        };
       }
       resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
     };
