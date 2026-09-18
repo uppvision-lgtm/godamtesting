@@ -299,6 +299,7 @@ def render_video(
     template_id: str,
     texts: dict[str, str] | None = None,
     session_id: str = "",
+    teks_warna: str = "",
 ) -> dict[str, Any]:
     folder = job_path(job_id)
     catat = lambda teks: tulis_status(job_id, log=teks)  # noqa: E731
@@ -310,6 +311,11 @@ def render_video(
             tulis_status(job_id, status="dibatalkan", progress=0, log="Dihentikan sebelum mulai.")
             return {"job_id": job_id, "status": "dibatalkan"}
         template = load_template(template_id)
+        # Penimpaan warna tulisan berita untuk render ini saja. Dipakai Auto
+        # Edit & Upload, yang memakai banyak template sekaligus sehingga tidak
+        # bisa menyimpan pilihan warna ke satu template tertentu.
+        if teks_warna in ("black", "white"):
+            template = {**template, "teks_warna": teks_warna}
         tulis_status(job_id, status="downloading", progress=0, task_id=self.request.id)
         catat(f"Template: {template.get('name') or template_id}")
         sumber = download_source(url, folder, log=catat, session_id=session_id or None)

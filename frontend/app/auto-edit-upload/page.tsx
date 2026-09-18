@@ -28,10 +28,19 @@ type Pratinjau = {
   uploader: string;
   duration: number | null;
   thumbnail: string;
+  view_count?: number;
+  like_count?: number;
+  upload_date?: string;
+  extractor?: string;
+  width?: number;
+  height?: number;
   too_long?: boolean;
+  max_seconds?: number;
 };
 
-type Template = { id: string; name: string };
+// teks_warna ikut dibaca supaya tombol Hitam/Putih bisa berangkat dari
+// setelan template yang sedang dipakai, bukan dari tebakan.
+type Template = { id: string; name: string; teks_warna?: string };
 
 type JobStatus = {
   job_id: string;
@@ -84,6 +93,26 @@ function naskahDariPratinjau(info: Pratinjau | null): string {
   return [info.title, info.description].filter(Boolean).join(". ");
 }
 
+/** 95 detik -> "1:35". */
+function formatDurasi(detik: number): string {
+  const total = Math.round(detik);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** 218100 -> "218.1 rb". Angka 0 tidak ditulis sama sekali. */
+function formatAngka(n: number): string {
+  if (!n) return "";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} jt`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)} rb`;
+  return String(n);
+}
+
+/** "20260908" -> "08/09/2026". Bentuk lain dibiarkan kosong. */
+function formatTanggal(yyyymmdd: string): string {
+  if (!/^\d{8}$/.test(yyyymmdd)) return "";
+  return `${yyyymmdd.slice(6, 8)}/${yyyymmdd.slice(4, 6)}/${yyyymmdd.slice(0, 4)}`;
+}
+
 const tunda = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default function AutoEditUploadPage() {
@@ -103,7 +132,21 @@ export default function AutoEditUploadPage() {
   const [akunDipilih, setAkunDipilih] = useState<number[]>([]);
 
   const [caption, setCaption] = useState("");
-  const [teksHook, setTeksHook] = useState("");
+
+  // ===== TEKS DI VIDEO =====
+  // Sama seperti di Auto Edit Video: saran AI atau ketik sendiri, plus warna
+  // tulisannya. Yang dikirim ke perender cuma satu kalimat jadi (teksHook).
+  const [modeTeks, setModeTeks] = useState<"ai" | "manual">("ai");
+  const [kicker, setKicker] = useState("");
+  const [isi, setIsi] = useState("");
+  const [kickerManual, setKickerManual] = useState("");
+  const [isiManual, setIsiManual] = useState("");
+  const [sumberHook, setSumberHook] = useState("");
+  const [membuatHook, setMembuatHook] = useState(false);
+  // null = ikut setelan tiap template. Halaman ini memakai banyak template
+  // sekaligus, jadi memaksa satu warna sebagai bawaan akan merusak template
+  // yang sengaja dibuat berwarna lain.
+  const [warnaOverride, setWarnaOverride] = useState<"black" | "white" | null>(null);
 
   const [tahap, setTahap] = useState<Tahap>("idle");
   const [jobs, setJobs] = useState<JobStatus[]>([]);
@@ -160,13 +203,48 @@ export default function AutoEditUploadPage() {
     .filter((a) => a.has_session_id && a.verified !== false)
     .sort((x, y) => x.platform.localeCompare(y.platform) || x.id - y.id);
 
+  /** Ubah caption jadi satu kalimat hook lewat backend yang sama. */
+  const buatHook = useCallback(async (naskah: string) => {
+    if (naskah.trim().length < 3) {
+      setKicker("");
+      setIsi("");
+      setSumberHook("Caption masih kosong, jadi teksnya belum bisa dibuat.");
+      return;
+    }
+    setMembuatHook(true);
+    try {
+      const res = await apiFetch("/api/video/hook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ naskah }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Gagal membuat teks.");
+      setKicker(data.kicker || "");
+      setIsi(data.body || "");
+      setSumberHook(
+        data.source === "deepseek"
+          ? "Dibuat AI dari caption video."
+          : "AI tidak aktif — diringkas langsung dari caption."
+      );
+    } catch (err) {
+      setKicker("");
+      setIsi("");
+      setSumberHook(err instanceof Error ? err.message : "Gagal membuat teks.");
+    } finally {
+      setMembuatHook(false);
+    }
+  }, []);
+
   // ===== BACA LINK =====
 
   useEffect(() => {
     const url = link.trim();
     setPratinjau(null);
     setGalatLink("");
-    setTeksHook("");
+    setKicker("");
+    setIsi("");
+    setSumberHook("");
     if (url.length < 8) return;
     const timer = setTimeout(async () => {
       setMembaca(true);
@@ -187,16 +265,7 @@ export default function AutoEditUploadPage() {
         setPratinjau(info);
         setCaption((lama) => lama || info.title || "");
         // Hook dibuat dari judul + deskripsi, sama seperti di Auto Edit Video.
-        const naskah = naskahDariPratinjau(info);
-        if (naskah.length >= 3) {
-          const h = await apiFetch("/api/video/hook", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ naskah }),
-          });
-          const hd = await h.json().catch(() => ({}));
-          if (h.ok) setTeksHook(susunHook(hd.kicker || "", hd.body || ""));
-        }
+        await buatHook(naskahDariPratinjau(info));
       } catch (err) {
         setGalatLink(err instanceof Error ? err.message : "Link tidak bisa dibaca.");
       } finally {
@@ -208,6 +277,23 @@ export default function AutoEditUploadPage() {
     // perlu membaca ulang link yang sama.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [link]);
+
+  // Kalimat yang benar-benar ditempel ke video: dari AI atau ketikan sendiri.
+  const teksHook =
+    modeTeks === "ai"
+      ? susunHook(kicker, isi)
+      : susunHook(kickerManual || kicker || "VIRAL", isiManual);
+
+  // Warna yang ditampilkan: pilihan orangnya kalau ada, kalau tidak ikut
+  // template akun pertama supaya pratinjaunya jujur.
+  const akunContoh = akunDipilih.find((id) => templateAkun[id]);
+  const warnaTemplate = templates.find(
+    (x) => x.id === (akunContoh ? templateAkun[akunContoh] : "")
+  )?.teks_warna;
+  const warnaTampil: "black" | "white" =
+    warnaOverride ?? (warnaTemplate === "black" ? "black" : "white");
+
+  const namaSumber = pratinjau?.uploader || "";
 
   // ===== JALANKAN =====
 
@@ -251,6 +337,8 @@ export default function AutoEditUploadPage() {
           url,
           template_ids: templateUnik,
           texts,
+          // Kosong = tiap template pakai warnanya sendiri.
+          teks_warna: warnaOverride || "",
           account_id: url.includes("instagram.com") ? akunInstagram?.id ?? null : null,
         }),
       });
@@ -434,20 +522,57 @@ export default function AutoEditUploadPage() {
                 onChange={(e) => setLink(e.target.value)}
               />
               {galatLink && <p className={styles.peringatan}>{galatLink}</p>}
-              {pratinjau && (
-                <div className={lokal.pratinjau}>
-                  {pratinjau.thumbnail && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={pratinjau.thumbnail} alt="" className={lokal.sampul} />
+              {(membaca || pratinjau) && (
+                <div className={lokal.pratinjauBox}>
+                  {membaca && (
+                    <div className={lokal.pratinjauIsi} aria-label="Sedang membaca isi link">
+                      <div className={`${lokal.pratinjauGambar} ${styles.rangka}`} style={{ height: 120 }} />
+                      <div className={lokal.pratinjauTeks} style={{ flex: 1 }}>
+                        <div className={`${styles.rangka} ${lokal.rangkaBaris}`} style={{ width: "70%" }} />
+                        <div className={`${styles.rangka} ${lokal.rangkaBaris}`} style={{ width: "45%" }} />
+                      </div>
+                    </div>
                   )}
-                  <div className={lokal.pratinjauTeks}>
-                    <strong>{pratinjau.title || "(tanpa judul)"}</strong>
-                    <span className={styles.hint}>
-                      {pratinjau.uploader ? `oleh ${pratinjau.uploader}` : ""}
-                      {pratinjau.duration ? ` · ${Math.round(pratinjau.duration)} detik` : ""}
-                    </span>
-                    {teksHook && <span className={lokal.hook}>{teksHook}</span>}
-                  </div>
+                  {pratinjau && !membaca && (
+                    <>
+                      <div className={lokal.pratinjauIsi}>
+                        {pratinjau.thumbnail && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            className={lokal.pratinjauGambar}
+                            src={pratinjau.thumbnail}
+                            alt="Sampul video sumber"
+                          />
+                        )}
+                        <div className={lokal.pratinjauTeks}>
+                          <strong>{pratinjau.title || "(tanpa judul)"}</strong>
+                          <span>
+                            {[
+                              pratinjau.uploader,
+                              pratinjau.duration ? formatDurasi(pratinjau.duration) : "",
+                              pratinjau.width ? `${pratinjau.width}×${pratinjau.height}` : "",
+                              pratinjau.view_count ? `${formatAngka(pratinjau.view_count)} tayang` : "",
+                              pratinjau.like_count ? `${formatAngka(pratinjau.like_count)} suka` : "",
+                              formatTanggal(pratinjau.upload_date || ""),
+                              pratinjau.extractor,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                          {pratinjau.too_long && (
+                            <span className={styles.peringatan}>
+                              Lebih panjang dari batas{" "}
+                              {Math.round((pratinjau.max_seconds || 0) / 60)} menit — hanya bagian
+                              awal yang dipakai.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {pratinjau.description && (
+                        <p className={lokal.caption}>{pratinjau.description}</p>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
               {link.includes("instagram.com") && !akunInstagram && (
@@ -459,6 +584,149 @@ export default function AutoEditUploadPage() {
                   .
                 </p>
               )}
+
+              {/* ---- Teks yang ditempel ke video, sama isinya dengan
+                   Auto Edit Video: saran AI atau ketikan sendiri, warna
+                   tulisan, dan kredit di bar bawah. ---- */}
+              <div className={lokal.hookBox}>
+                <div className={lokal.hookHead}>
+                  <span className={lokal.hookJudul}>Teks di video</span>
+                  <div className={lokal.pilihMode} title="Warna tulisan isi berita">
+                    <button
+                      type="button"
+                      className={warnaTampil === "black" ? lokal.modeAktif : lokal.modeBtn}
+                      disabled={sedangJalan}
+                      onClick={() => setWarnaOverride("black")}
+                    >
+                      Hitam
+                    </button>
+                    <button
+                      type="button"
+                      className={warnaTampil === "white" ? lokal.modeAktif : lokal.modeBtn}
+                      disabled={sedangJalan}
+                      onClick={() => setWarnaOverride("white")}
+                    >
+                      Putih
+                    </button>
+                  </div>
+                  <div className={lokal.pilihMode} title="Sumber tulisan">
+                    <button
+                      type="button"
+                      className={modeTeks === "ai" ? lokal.modeAktif : lokal.modeBtn}
+                      disabled={sedangJalan}
+                      onClick={() => setModeTeks("ai")}
+                    >
+                      AI
+                    </button>
+                    <button
+                      type="button"
+                      className={modeTeks === "manual" ? lokal.modeAktif : lokal.modeBtn}
+                      disabled={sedangJalan}
+                      onClick={() => setModeTeks("manual")}
+                    >
+                      Manual
+                    </button>
+                  </div>
+                </div>
+
+                {modeTeks === "ai" ? (
+                  <>
+                    {membuatHook && (
+                      <div aria-label="Sedang menyusun tulisan berita">
+                        <div className={`${styles.rangka} ${lokal.rangkaBaris}`} style={{ width: "92%" }} />
+                        <div className={`${styles.rangka} ${lokal.rangkaBaris}`} style={{ width: "78%" }} />
+                      </div>
+                    )}
+                    {isi && (
+                      <p
+                        className={`${lokal.hookParagraf} ${
+                          warnaTampil === "white" ? lokal.isiPutih : lokal.isiHitam
+                        }`}
+                      >
+                        <span className={lokal.hookKicker}>{kicker || "VIRAL"}!</span> {isi}
+                      </p>
+                    )}
+                    {!membuatHook && !isi && (
+                      <p className={styles.hint}>
+                        Tempel link video dulu — teksnya disusun dari caption video itu.
+                      </p>
+                    )}
+                    {sumberHook && <p className={styles.hint}>{sumberHook}</p>}
+                    {pratinjau && !membuatHook && (
+                      <button
+                        type="button"
+                        className={styles.btnSekunder}
+                        disabled={sedangJalan}
+                        onClick={() => void buatHook(naskahDariPratinjau(pratinjau))}
+                      >
+                        Buat ulang
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <label>
+                      <span>Kata pembuka</span>
+                      <input
+                        value={kickerManual}
+                        maxLength={12}
+                        disabled={sedangJalan}
+                        placeholder={kicker || "VIRAL"}
+                        onChange={(e) => setKickerManual(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Isi berita</span>
+                      <textarea
+                        className={styles.naskah}
+                        rows={3}
+                        value={isiManual}
+                        maxLength={100}
+                        disabled={sedangJalan}
+                        placeholder={isi || "maksimal 100 huruf, dipenggal otomatis jadi 4 baris"}
+                        onChange={(e) => setIsiManual(e.target.value)}
+                      />
+                    </label>
+                    {(kickerManual || isiManual) && (
+                      <p
+                        className={`${lokal.hookParagraf} ${
+                          warnaTampil === "white" ? lokal.isiPutih : lokal.isiHitam
+                        }`}
+                      >
+                        <span className={lokal.hookKicker}>
+                          {(kickerManual || kicker || "VIRAL").replace(/!+$/, "").toUpperCase()}!
+                        </span>{" "}
+                        {isiManual.toUpperCase()}
+                      </p>
+                    )}
+                    {isi && (
+                      <button
+                        type="button"
+                        className={styles.btnSekunder}
+                        disabled={sedangJalan}
+                        onClick={() => {
+                          setKickerManual(kicker);
+                          setIsiManual(isi);
+                        }}
+                      >
+                        Isi dari saran AI
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {warnaOverride && (
+                  <p className={styles.hint}>
+                    Warna ini dipakai untuk semua template di halaman ini; setelan templatenya
+                    sendiri tidak diubah.
+                  </p>
+                )}
+                {namaSumber && (
+                  <p className={lokal.kredit}>
+                    Kredit di bar bawah: <strong>SUMBER: {namaSumber.toUpperCase()}</strong>
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className={styles.blok}>

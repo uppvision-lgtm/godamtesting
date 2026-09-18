@@ -102,6 +102,14 @@ class BatchBody(BaseModel):
     # Alternatif session_id: id akun Instagram yang tertaut di Kelola Akun.
     # Cookie-nya diambil di server, jadi tidak pernah lewat peramban.
     account_id: int | None = None
+    # Warna tulisan berita khusus render ini. Kosong = ikut setelan tiap
+    # template, yang memang berbeda-beda antar template.
+    teks_warna: str | None = None
+
+    @field_validator("teks_warna")
+    @classmethod
+    def _warna_render(cls, v: str | None) -> str:
+        return v if v in ("black", "white") else ""
 
 
 class JobBody(BaseModel):
@@ -686,9 +694,12 @@ def mulai_banyak_job(
     pemilik = _nama_akun(pengguna) or ""
     sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
     jobs = []
+    # Dikirim hanya kalau memang diminta, supaya worker versi lama pun tetap
+    # menerima panggilan yang bentuknya persis seperti sebelumnya.
+    tambahan = {"teks_warna": body.teks_warna} if body.teks_warna else {}
     for tid in ids:
         job_id = vt.buat_job(url, tid, body.texts, owner=pemilik)
-        vt.render_video.delay(job_id, url, tid, body.texts, sesi)
+        vt.render_video.delay(job_id, url, tid, body.texts, sesi, **tambahan)
         jobs.append({"job_id": job_id, "template_id": tid, "status": "queued"})
     return {"jobs": jobs}
 

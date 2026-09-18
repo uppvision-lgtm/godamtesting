@@ -2,55 +2,157 @@
    kemajuan dipinjam dari page.module.css milik Auto Upload supaya kedua
    halaman terasa satu keluarga; di sini hanya yang tidak ada di sana. */
 
-.pratinjau {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 10px;
-  border: 1px solid #232a24;
-  border-radius: 8px;
-  background: #0f1310;
+/* ---- Pratinjau sumber: sama bentuknya dengan Auto Edit Video ---- */
+.pratinjauBox {
+  padding: var(--sela-3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--bulat);
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.sampul {
-  flex: none;
-  width: 72px;
-  height: 96px;
+.pratinjauIsi {
+  display: flex;
+  gap: var(--sela-3);
+  align-items: flex-start;
+}
+
+.pratinjauGambar {
+  width: 140px;
+  max-width: 40%;
+  border-radius: var(--bulat-kecil);
   object-fit: cover;
-  border-radius: 6px;
-  background: #1a1f1b;
+  flex-shrink: 0;
 }
 
 .pratinjauTeks {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sela-1);
   min-width: 0;
 }
 
 .pratinjauTeks strong {
   font-size: 13px;
-  line-height: 1.4;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  line-height: 1.3;
 }
 
-/* Teks hook yang akan ditempel ke video: huruf kapital, seperti di hasilnya. */
-.hook {
-  margin-top: 4px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: #1c2b21;
-  color: #7fe0a0;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.02em;
+.pratinjauTeks span {
+  font-size: var(--teks-kecil);
+  opacity: 0.75;
+}
+
+/* Caption asli unggahan sumber. Dibatasi tingginya supaya caption panjang
+   tidak mendorong seluruh halaman ke bawah. */
+.caption {
+  margin: var(--sela-3) 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: var(--teks-kecil);
+  line-height: 1.5;
+  opacity: 0.8;
+  white-space: pre-wrap;
+  max-height: 7.5em;
+  overflow-y: auto;
+}
+
+/* Rangka abu saat isinya masih dimuat; animasinya dari .rangka milik
+   halaman Auto Upload. */
+.rangkaBaris {
+  height: 14px;
+  margin-bottom: var(--sela-2);
+}
+
+/* ---- Kotak "Teks di video" ---- */
+.hookBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-2);
+  padding: var(--sela-3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--bulat);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.hookHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sela-3);
+  flex-wrap: wrap;
+}
+
+.hookJudul {
+  font-size: var(--teks-kecil);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+}
+
+.pilihMode {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--bulat-penuh);
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+}
+
+.modeBtn,
+.modeAktif {
+  padding: var(--sela-1) var(--sela-4);
+  border: 0;
+  font: inherit;
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+}
+
+.modeAktif {
+  background: #d32d27;
+  color: #fff;
+}
+
+.modeBtn:disabled,
+.modeAktif:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Tulisan yang akan ditempel ke video, ditampilkan persis seperti nanti:
+   kata pembuka merah, isinya mengikuti warna yang dipilih. */
+.hookParagraf {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  text-align: justify;
+}
+
+.hookKicker {
+  color: #d32d27;
+}
+
+.isiHitam {
+  color: #111;
+  background: #f4f4f4;
+  padding: var(--sela-3);
+  border-radius: var(--bulat-kecil);
+}
+
+.isiPutih {
+  color: #fff;
+  background: #1c1c1c;
+  padding: var(--sela-3);
+  border-radius: var(--bulat-kecil);
+}
+
+.kredit {
+  margin: var(--sela-1) 0 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: var(--teks-kecil);
+  opacity: 0.8;
 }
 
 /* ---- Dua langkah proses ---- */
