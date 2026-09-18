@@ -132,12 +132,29 @@ class Instagram(PlaywrightPlatform):
                 )
 
         async def dismiss_dialogs() -> None:
+            """Tutup dialog pemberitahuan yang menghalangi wizard.
+
+            Keberadaan tombol dicek dengan count() lebih dulu, bukan langsung
+            click(): fungsi ini dipanggil tiap putaran wizard, dan membayar
+            timeout penuh untuk setiap label yang memang tidak ada akan
+            membuat satu putaran memakan belasan detik.
+
+            "OK"/"Mengerti" wajib ada di daftar: sejak video diposting sebagai
+            reel, Instagram menyelipkan dialog "Postingan video sekarang
+            dibagikan sebagai reel" DI ATAS layar Pangkas, dan dialog itu
+            menutupi tombol Selanjutnya sampai diklik.
+            """
             for label in (
+                "OK", "Oke", "Mengerti", "Got it",
                 "Not now", "Nanti", "Bukan sekarang", "Lain Kali",
                 "Turn On", "Nyalakan", "Selesai", "Done",
             ):
                 try:
-                    await page.get_by_role("button", name=label).first.click(timeout=1_500)
+                    tombol = page.get_by_role("button", name=label, exact=True)
+                    if await tombol.count() == 0:
+                        continue
+                    await tombol.first.click(timeout=2_000)
+                    print(f"[ig] dialog ditutup lewat tombol {label!r}", flush=True)
                     await page.wait_for_timeout(600)
                 except Exception:  # noqa: BLE001 - dialog optional
                     pass
@@ -185,61 +202,62 @@ class Instagram(PlaywrightPlatform):
         await _hid_click(page, plus_box, "tombol Buat (+)")
         await page.wait_for_timeout(2_500)
 
-        # 1b. "+" membuka popover pilihan jenis konten; klik baris
-        #     "Postingan"-nya (juga di-trust-check). Pemindaian DIBATASI ke
-        #     region di bawah tombol + (kolom sidebar) supaya tidak salah
-        #     membaca kata "Postingan" di caption/feed di luar konteks.
-        #     Baris popover asli: tinggi >= 30px, pointer-events aktif.
+        # 1b. Tombol + punya DUA perilaku, tergantung versi tampilan yang
+        #     dilayani ke akun: ada yang LANGSUNG membuka komposer "Buat
+        #     postingan baru", ada yang memunculkan popover pilihan jenis
+        #     konten dulu. Komposer diperiksa LEBIH DAHULU, sebab kalau ia
+        #     sudah terbuka, mengklik + sekali lagi justru MENUTUPNYA - itulah
+        #     yang dulu membuat tiap percobaan ulang berakhir gagal.
+        #     Pemindaian popover dibatasi ke region di bawah tombol + (kolom
+        #     sidebar) supaya kata "Postingan" di caption feed tidak terbaca.
+        pindai_js = """(plus) => {
+            const cands = [];
+            for (const e of document.querySelectorAll('*')) {
+                const t = (e.innerText || '').trim();
+                if (t !== 'Postingan' && t !== 'Post') continue;
+                const r = e.getBoundingClientRect();
+                if (r.height < 30 || r.width < 100) continue;
+                if (getComputedStyle(e).pointerEvents === 'none') continue;
+                if (r.y < plus.y + plus.height - 10) continue;
+                const colPlus = plus.x + plus.width / 2;
+                if (Math.abs((r.x + r.width / 2) - colPlus) > 120) continue;
+                cands.push({x: r.x, y: r.y, width: r.width, height: r.height});
+            }
+            return cands.slice(0, 3);
+        }"""
+
+        async def komposer_terbuka() -> bool:
+            """Dialog unggah sudah tampil? Dikenali dari ajakan pilih berkas."""
+            return await page.locator(
+                'div[role="dialog"]:has-text("Seret foto"), '
+                'div[role="dialog"]:has-text("Drag photos"), '
+                'div[role="dialog"]:has-text("Pilih dari komputer"), '
+                'div[role="dialog"]:has-text("Select from computer")'
+            ).count() > 0
+
         row_box = None
-        scan = await page.evaluate(
-            """(plus) => {
-                const cands = [];
-                for (const e of document.querySelectorAll('*')) {
-                    const t = (e.innerText || '').trim();
-                    if (t !== 'Postingan' && t !== 'Post') continue;
-                    const r = e.getBoundingClientRect();
-                    if (r.height < 30 || r.width < 100) continue;
-                    if (getComputedStyle(e).pointerEvents === 'none') continue;
-                    // harus di BAWAH tombol + dan dekat kolomnya
-                    if (r.y < plus.y + plus.height - 10) continue;
-                    const colPlus = plus.x + plus.width / 2;
-                    if (Math.abs((r.x + r.width / 2) - colPlus) > 120) continue;
-                    cands.push({x: r.x, y: r.y, width: r.width, height: r.height});
-                }
-                return cands.slice(0, 3);
-            }""",
-            plus_box,
-        )
-        for _ in range(3):
+        komposer = False
+        for percobaan in range(4):
+            if percobaan:  # klik pertama sudah dilakukan di atas
+                await _hid_click(page, plus_box, "tombol Buat (+) (ulang)")
+                await page.wait_for_timeout(2_000)
+            if await komposer_terbuka():
+                komposer = True
+                print("[ig] komposer terbuka langsung dari tombol +", flush=True)
+                break
+            scan = await page.evaluate(pindai_js, plus_box)
             if scan:
                 row_box = scan[0]
                 break
-            await _hid_click(page, plus_box, "tombol Buat (+) (ulang)")
-            await page.wait_for_timeout(2_000)
-            scan = await page.evaluate(
-                """(plus) => {
-                    const cands = [];
-                    for (const e of document.querySelectorAll('*')) {
-                        const t = (e.innerText || '').trim();
-                        if (t !== 'Postingan' && t !== 'Post') continue;
-                        const r = e.getBoundingClientRect();
-                        if (r.height < 30 || r.width < 100) continue;
-                        if (getComputedStyle(e).pointerEvents === 'none') continue;
-                        if (r.y < plus.y + plus.height - 10) continue;
-                        const colPlus = plus.x + plus.width / 2;
-                        if (Math.abs((r.x + r.width / 2) - colPlus) > 120) continue;
-                        cands.push({x: r.x, y: r.y, width: r.width, height: r.height});
-                    }
-                    return cands.slice(0, 3);
-                }""",
-                plus_box,
-            )
-        if row_box is None:
+
+        if not komposer and row_box is None:
             raise PlatformError(
-                "Popover 'Postingan' tidak muncul setelah klik tombol Buat. "
-                "Pastikan jendela Chrome tidak tertutup jendela lain."
+                "Tombol Buat (+) sudah diklik tetapi komposer maupun popover "
+                "'Postingan' tidak muncul. Pastikan jendela Chrome terlihat "
+                "penuh dan tidak tertutup jendela lain."
             )
-        await _hid_click(page, row_box, "baris Postingan")
+        if row_box is not None:
+            await _hid_click(page, row_box, "baris Postingan")
 
         dialog_seen = False
         for _ in range(10):
@@ -308,6 +326,10 @@ class Instagram(PlaywrightPlatform):
         # Up to ~6 minutes: big videos need time to process inside the
         # composer before Share becomes clickable.
         for i in range(40):
+            # Dialog pemberitahuan bisa muncul KAPAN SAJA di tengah wizard,
+            # bukan hanya sesudah menekan Selanjutnya, dan selama ia terbuka
+            # semua tombol di bawahnya tidak bisa diklik.
+            await dismiss_dialogs()
             if i % 5 == 4:
                 try:
                     dbg = await page.evaluate(
