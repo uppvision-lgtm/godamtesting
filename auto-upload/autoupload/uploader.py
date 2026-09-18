@@ -106,6 +106,40 @@ async def fan_out_upload(
             hasil = await _sekali(t)
         return hasil
 
+    def _pelapor(target_id):
+        """Callback yang dipakai adapter untuk melaporkan kemajuannya.
+
+        Ditulis langsung ke baris targetnya supaya halaman bisa menanyakannya
+        tanpa perlu saluran terpisah. Kegagalan menulis SENGAJA diabaikan:
+        laporan kemajuan tidak boleh sampai menggagalkan uploadnya.
+        """
+        def lapor(persen: int, teks: str) -> None:
+            if target_id is None:
+                return
+            try:
+                from autoupload.db import PostTarget, SessionLocal
+
+                db = SessionLocal()
+                try:
+                    baris = db.query(PostTarget).filter(PostTarget.id == target_id).first()
+                    # Tidak pernah mundur: dua langkah bisa dilaporkan tidak
+                    # berurutan saat ada percobaan ulang, dan angka yang turun
+                    # membuat orang mengira prosesnya mengulang dari awal.
+                    if baris is not None and persen > (baris.progress or 0):
+                        baris.progress = min(persen, 99)
+                        baris.tahap = teks[:80]
+                        db.commit()
+                        # Dicatat juga di log: sebagian tahap berlalu dalam
+                        # sepersekian detik dan tidak akan pernah tertangkap
+                        # oleh halaman yang menanyakan status tiap 3 detik.
+                        log.info("[%s] %s%% - %s", baris.platform, persen, teks)
+                finally:
+                    db.close()
+            except Exception:  # noqa: BLE001 - kemajuan hanyalah hiasan
+                pass
+
+        return lapor
+
     async def _sekali(t: dict) -> UploadResult:
         t = dict(t)
         # Tiap target boleh membawa video dan captionnya sendiri; yang tidak
@@ -113,6 +147,7 @@ async def fan_out_upload(
         # menyebar ke banyak akun dengan video berbeda-beda.
         media_t = t.pop("media_path", "") or media_path
         caption_t = t.pop("caption", "") or caption
+        t["lapor"] = _pelapor(t.pop("target_id", None))
         return await upload_one(
             media_t,
             caption_t,

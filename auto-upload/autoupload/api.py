@@ -335,9 +335,12 @@ def _post_dict(p: Post) -> dict:
         "created_at": p.created_at,
         "targets": [
             {
+                "id": t.id,
                 "platform": t.platform,
                 "account_id": t.account_id,
                 "status": t.status,
+                "progress": t.progress or 0,
+                "tahap": t.tahap or "",
                 "url": t.url,
                 "error": t.error,
             }

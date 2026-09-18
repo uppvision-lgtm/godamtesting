@@ -17,6 +17,7 @@ import asyncio
 import re
 from pathlib import Path
 
+from autoupload import tahap
 from autoupload.browser import MediaKind, PlatformError, PlaywrightPlatform
 
 
@@ -245,6 +246,8 @@ class YouTube(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
     ) -> str | None:
+        lapor = options.get("lapor") or (lambda *_: None)
+        lapor(*tahap.MULAI)
         # Platform ini belum punya penjadwalan di sini. Ditolak supaya
         # tidak diam-diam terbit SEKARANG padahal diminta nanti.
         if options.get("jadwal"):
@@ -255,6 +258,7 @@ class YouTube(PlaywrightPlatform):
         if media_kind != MediaKind.VIDEO:
             raise RuntimeError("YouTube via browser hanya mendukung video")
 
+        lapor(*tahap.HALAMAN)
         await page.goto("https://studio.youtube.com/channel/UC/videos/upload", timeout=60_000)
         # If redirected away from studio, the session is not valid.
         if "studio.youtube.com" not in page.url:
@@ -280,6 +284,7 @@ class YouTube(PlaywrightPlatform):
             await self._open_upload_dialog(page)
             await file_input.wait_for(state="attached", timeout=20_000)
         await file_input.set_input_files(str(media_path))
+        lapor(*tahap.LAMPIR)
 
         lines = [l for l in caption.splitlines() if l.strip()]
         title_text = str(options.get("title") or (lines[0] if lines else "Video"))[:95]

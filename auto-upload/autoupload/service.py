@@ -42,6 +42,8 @@ def _targets_payload(db, post: Post) -> list[dict]:
         payload.append(
             {
                 "platform": t.platform,
+                # Dipakai pelapor kemajuan untuk menulis ke baris yang benar.
+                "target_id": t.id,
                 "media_path": t.media_path or "",
                 "caption": t.caption or "",
                 "session_name": account.session_name if account else "default",
@@ -321,6 +323,9 @@ async def run_post(post_id: int) -> list[dict]:
         ok = 0
         for row, result in zip(rows, results):
             row.status = "success" if result.success else "failed"
+            # 100 hanya di sini: saat targetnya benar-benar selesai.
+            row.progress = 100 if result.success else (row.progress or 0)
+            row.tahap = "selesai" if result.success else (row.tahap or "")
             row.url = result.url or ""
             row.error = _ringkas_galat(result.error)
             row.attempts += 1

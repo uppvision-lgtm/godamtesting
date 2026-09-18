@@ -1038,3 +1038,58 @@
   gap: var(--sela-2);
   margin-bottom: var(--sela-1);
 }
+
+/* ---- Kemajuan upload ---- */
+.ringkasProgres,
+.hasilProgres {
+  display: flex;
+  align-items: center;
+  gap: var(--sela-2);
+  min-width: 0;
+}
+
+.ringkasProgres {
+  padding: var(--sela-3);
+  border: 1px solid #232a24;
+  border-radius: var(--bulat-kecil);
+  background: #0f1310;
+}
+
+.progresAngka {
+  flex: none;
+  min-width: 42px;
+  text-align: right;
+  font-size: var(--teks-isi);
+  font-weight: 800;
+  color: var(--hijau);
+  /* Angka tidak bergoyang saat nilainya berubah. */
+  font-variant-numeric: tabular-nums;
+}
+
+.progresBatang {
+  flex: 1 1 60px;
+  min-width: 50px;
+  height: 6px;
+  border-radius: var(--bulat-penuh);
+  background: #232a24;
+  overflow: hidden;
+}
+
+.progresIsi {
+  display: block;
+  height: 100%;
+  border-radius: var(--bulat-penuh);
+  background: var(--hijau);
+  transition: width 0.9s linear;
+}
+
+.progresTahap {
+  flex: none;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: #8fa095;
+}

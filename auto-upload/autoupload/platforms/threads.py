@@ -19,6 +19,7 @@ bahasa (Inggris dan Indonesia).
 import re
 from pathlib import Path
 
+from autoupload import tahap
 from autoupload.browser import (
     MediaKind,
     PlatformError,
@@ -60,6 +61,10 @@ class Threads(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
     ) -> str | None:
+        # Kemajuan dilaporkan dari titik-titik nyata, bukan ditebak
+        # dari waktu: hanya di sinilah yang benar-benar diketahui.
+        lapor = options.get("lapor") or (lambda *_: None)
+        lapor(*tahap.MULAI)
         # Platform ini tidak punya penjadwalan bawaan. Ditolak di sini
         # supaya tidak diam-diam terbit SEKARANG padahal diminta nanti.
         if options.get("jadwal"):
@@ -78,6 +83,7 @@ class Threads(PlaywrightPlatform):
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(4_000)
 
+        lapor(*tahap.HALAMAN)
         if "login" in page.url.lower():
             raise PlatformError(
                 "Sesi Threads sudah tidak valid (ter-logout). Perbarui Session ID "
@@ -120,6 +126,7 @@ class Threads(PlaywrightPlatform):
             await dialog.wait_for(state="visible", timeout=20_000)
         except Exception as exc:  # noqa: BLE001
             raise PlatformError("Dialog komposer Threads tidak terbuka.") from exc
+        lapor(*tahap.KOMPOSER)
 
         # 2. Tulis caption.
         kotak = dialog.locator('[contenteditable="true"]').first
@@ -130,6 +137,7 @@ class Threads(PlaywrightPlatform):
         await page.keyboard.type(caption[:500], delay=10)
         await page.wait_for_timeout(1_000)
         print("[threads] caption terisi", flush=True)
+        lapor(*tahap.CAPTION_AWAL)
 
         # 3. Lampirkan media.
         berkas = dialog.locator('input[type="file"]').first
@@ -138,6 +146,7 @@ class Threads(PlaywrightPlatform):
             await berkas.set_input_files(str(media_path.resolve()), timeout=120_000)
         except Exception as exc:  # noqa: BLE001
             raise PlatformError(f"Gagal melampirkan media ke Threads: {exc}") from exc
+        lapor(*tahap.LAMPIR)
 
         # Tunggu sampai pratinjaunya benar-benar muncul. Tanpa ini, tombol
         # kirim bisa ditekan saat media belum selesai diproses dan yang
@@ -151,6 +160,7 @@ class Threads(PlaywrightPlatform):
                 "postingan dibatalkan supaya tidak terkirim tanpa video."
             ) from exc
         print("[threads] media terlampir", flush=True)
+        lapor(*tahap.MEDIA_SIAP)
 
         # 4. Kirim. Tombolnya DI-SCOPE ke dialog: di luar dialog ada tombol
         #    "Post" milik kolom inline, dan di beranda ada "Posting ulang".
@@ -162,6 +172,7 @@ class Threads(PlaywrightPlatform):
             try:
                 await tombol.click(timeout=10_000)
                 terkirim = True
+                lapor(*tahap.KIRIM)
                 print(f"[threads] tombol {label!r} ditekan", flush=True)
                 break
             except Exception:  # noqa: BLE001 - coba label berikutnya
@@ -183,6 +194,7 @@ class Threads(PlaywrightPlatform):
         except Exception:  # noqa: BLE001 - sebagian tampilan hanya menyembunyikan
             pass
 
+        lapor(*tahap.TUNGGU)
         if not await self._tunggu_terbit(page):
             raise PlatformError(
                 "Tombol kirim sudah ditekan tetapi Threads tidak pernah "

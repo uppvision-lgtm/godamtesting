@@ -103,6 +103,11 @@ class PostTarget(Base):
     url: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Kemajuan 0-100 dan nama langkah yang sedang dikerjakan. Diisi oleh
+    # adapter selama upload berjalan; 100 HANYA saat targetnya benar-benar
+    # selesai, supaya angka penuh tidak pernah berarti "hampir".
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    tahap: Mapped[str] = mapped_column(String(80), default="")
 
     post: Mapped["Post"] = relationship(back_populates="targets")
 
@@ -128,7 +133,11 @@ def _tambah_kolom_yang_kurang() -> None:
     from sqlalchemy import inspect, text
 
     tambahan = {
-        "post_targets": {"media_path": "TEXT DEFAULT ''"},
+        "post_targets": {
+            "media_path": "TEXT DEFAULT ''",
+            "progress": "INTEGER DEFAULT 0",
+            "tahap": "VARCHAR(80) DEFAULT ''",
+        },
     }
     pemeriksa = inspect(engine)
     with engine.begin() as sambungan:

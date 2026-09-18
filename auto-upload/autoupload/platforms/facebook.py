@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from autoupload import tahap
 from autoupload.browser import MediaKind, PlatformError, PlaywrightPlatform
 
 
@@ -18,6 +19,8 @@ class Facebook(PlaywrightPlatform):
     session_cookie_map = {"c_user": ".facebook.com", "xs": ".facebook.com"}
 
     async def _do_upload(self, page, media_path: Path, caption: str, media_kind: MediaKind, **options) -> str | None:
+        lapor = options.get("lapor") or (lambda *_: None)
+        lapor(*tahap.MULAI)
         # Platform ini belum punya penjadwalan di sini. Ditolak supaya
         # tidak diam-diam terbit SEKARANG padahal diminta nanti.
         if options.get("jadwal"):
@@ -25,6 +28,7 @@ class Facebook(PlaywrightPlatform):
                 "Penjadwalan Facebook belum didukung di sini. Hapus jadwalnya untuk mengirim sekarang, atau keluarkan Facebook dari platform tujuan."
             )
 
+        lapor(*tahap.HALAMAN)
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(2500)
 
@@ -59,6 +63,7 @@ class Facebook(PlaywrightPlatform):
             'div[aria-label*="Foto/video" i], div[aria-label*="Photo/video" i]'
         ).first
         await compose.click(timeout=20_000)
+        lapor(*tahap.KOMPOSER)
         await page.wait_for_timeout(2000)
 
         # Fill the caption (optional - some dialog variants expose it late).
@@ -72,6 +77,7 @@ class Facebook(PlaywrightPlatform):
         # Attach the media (must succeed - the post is pointless without it).
         file_input = page.locator('input[type="file"]').first
         await file_input.set_input_files(str(media_path), timeout=30_000)
+        lapor(*tahap.LAMPIR)
         await page.wait_for_timeout(5000)  # wait for upload preview
 
         # Click Post (label varies by language AND dialog variant: the
@@ -89,6 +95,7 @@ class Facebook(PlaywrightPlatform):
         ).first
         for _ in range(4):
             try:
+                lapor(*tahap.KIRIM)
                 await post_btn.click(timeout=15_000)
                 break
             except Exception:  # noqa: BLE001 - media may still be uploading

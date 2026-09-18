@@ -19,6 +19,7 @@ import re
 from datetime import timedelta
 from pathlib import Path
 
+from autoupload import tahap
 from autoupload.browser import (
     MediaKind,
     PlatformError,
@@ -69,6 +70,10 @@ class TikTok(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
+        # Kemajuan dilaporkan dari titik-titik nyata, bukan ditebak
+        # dari waktu: hanya di sinilah yang benar-benar diketahui.
+        lapor = options.get("lapor") or (lambda *_: None)
+        lapor(*tahap.MULAI)
         jadwal = options.get("jadwal")
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.tiktok.com/@{nama}" if nama else ""
@@ -104,6 +109,7 @@ class TikTok(PlaywrightPlatform):
                 "kemungkinan ditolak."
             ) from exc
         print("[tiktok] media terlampir", flush=True)
+        lapor(*tahap.LAMPIR)
 
         await self._tutup_popup(page)
 
@@ -116,9 +122,11 @@ class TikTok(PlaywrightPlatform):
         await page.wait_for_timeout(1_000)
         terbaca = (await kotak.inner_text() or "").strip()
         print(f"[tiktok] caption terisi: {terbaca[:60]!r}", flush=True)
+        lapor(*tahap.CAPTION)
 
         # 3. Jadwal bawaan TikTok, kalau diminta.
         if jadwal:
+            lapor(*tahap.JADWAL)
             await self._pasang_jadwal(page, jadwal)
 
         # 4. Tunggu tombol Posting aktif, sambil menutup popup yang muncul lagi.
@@ -153,11 +161,13 @@ class TikTok(PlaywrightPlatform):
         # 4. Kirim.
         await tombol.scroll_into_view_if_needed()
         await tombol.click(timeout=15_000)
+        lapor(*tahap.KIRIM)
         print("[tiktok] tombol Posting ditekan", flush=True)
 
         # 5. Tunggu TikTok mengakui unggahannya. JANGAN langsung pindah ke
         #    profil: berpindah halaman saat unggahan masih berjalan bisa
         #    membatalkannya.
+        lapor(*tahap.TUNGGU)
         if not await self._tunggu_diterima(page):
             raise PlatformError(
                 "Tombol Posting sudah ditekan tetapi TikTok tidak pernah "

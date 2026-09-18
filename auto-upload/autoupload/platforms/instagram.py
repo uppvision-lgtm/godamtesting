@@ -19,6 +19,7 @@ caption, Bagikan) dikendalikan lewat Playwright biasa.
 import re
 from pathlib import Path
 
+from autoupload import tahap
 from autoupload.browser import (
     MediaKind,
     PlatformError,
@@ -65,6 +66,10 @@ class Instagram(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
+        # Kemajuan dilaporkan dari titik-titik nyata, bukan ditebak
+        # dari waktu: hanya di sinilah yang benar-benar diketahui.
+        lapor = options.get("lapor") or (lambda *_: None)
+        lapor(*tahap.MULAI)
         # Platform ini tidak punya penjadwalan bawaan. Ditolak di sini
         # supaya tidak diam-diam terbit SEKARANG padahal diminta nanti.
         if options.get("jadwal"):
@@ -80,6 +85,7 @@ class Instagram(PlaywrightPlatform):
 
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(4_000)
+        lapor(*tahap.HALAMAN)
 
         # 0. Make sure we are actually logged in (otherwise the flow below is
         # doomed and the user gets a confusing error).
@@ -243,6 +249,7 @@ class Instagram(PlaywrightPlatform):
                 "Account Manager."
             )
         print("[ig] komposer terbuka", flush=True)
+        lapor(*tahap.KOMPOSER)
 
         # 2. Attach the media via the OS file chooser (Playwright intercepts
         #    it, so no native dialog shows up). The chooser trigger only
@@ -266,6 +273,7 @@ class Instagram(PlaywrightPlatform):
                 str(media_path.resolve()), timeout=60_000)
             print("[ig] file attached (input langsung)", flush=True)
         await page.wait_for_timeout(4_000)
+        lapor(*tahap.LAMPIR)
 
         # Some flows (esp. video) open the composer/editor in a NEW TAB -
         # follow it, otherwise all further selectors would run on the
@@ -327,6 +335,7 @@ class Instagram(PlaywrightPlatform):
                     await caption_box.fill(caption[:2200])
                     caption_done = True
                     print("[ig] caption terisi", flush=True)
+                    lapor(*tahap.CAPTION)
                 except Exception:  # noqa: BLE001 - caption screen may not be up yet
                     pass
 
@@ -336,6 +345,7 @@ class Instagram(PlaywrightPlatform):
             ).first
             try:
                 await share_btn.click(timeout=2_500)
+                lapor(*tahap.KIRIM)
                 shared = True
                 break
             except Exception:  # noqa: BLE001 - no Share button yet
@@ -406,6 +416,7 @@ class Instagram(PlaywrightPlatform):
             except Exception:  # noqa: BLE001
                 await page.wait_for_timeout(8_000)
         await dismiss_dialogs()
+        lapor(*tahap.TAUTAN)
         if url_profil:
             tautan = await tautan_baru(page, url_profil, _PEMILIH_POST, sebelum)
             if tautan:

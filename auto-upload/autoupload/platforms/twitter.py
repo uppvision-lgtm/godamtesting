@@ -16,6 +16,7 @@ Semua ini diamati langsung, bukan ditebak.
 import re
 from pathlib import Path
 
+from autoupload import tahap
 from autoupload.browser import (
     MediaKind,
     PlatformError,
@@ -48,6 +49,10 @@ class Twitter(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
     ) -> str | None:
+        # Kemajuan dilaporkan dari titik-titik nyata, bukan ditebak
+        # dari waktu: hanya di sinilah yang benar-benar diketahui.
+        lapor = options.get("lapor") or (lambda *_: None)
+        lapor(*tahap.MULAI)
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://x.com/{nama}" if nama else ""
 
@@ -66,12 +71,15 @@ class Twitter(PlaywrightPlatform):
                 "perbarui Session ID di halaman Auto Upload."
             ) from exc
 
+        lapor(*tahap.HALAMAN)
         jadwal = options.get("jadwal")
 
         # 1. Caption. X memotong di 280 karakter.
         await page.click('[data-testid="tweetTextarea_0"]')
         await page.keyboard.type(caption[:280], delay=10)
         await page.wait_for_timeout(1_000)
+
+        lapor(*tahap.CAPTION_AWAL)
 
         # 2. Lampirkan media.
         await page.locator('input[data-testid="fileInput"]').first.set_input_files(
@@ -81,6 +89,7 @@ class Twitter(PlaywrightPlatform):
             await page.wait_for_selector('[data-testid="attachments"]', timeout=180_000)
         except Exception as exc:  # noqa: BLE001
             raise PlatformError("Media tidak pernah terlampir di komposer X.") from exc
+        lapor(*tahap.LAMPIR)
 
         # 3. Tunggu unggahan media selesai. Menekan kirim lebih awal membuat
         #    X menolak, atau mengirim tanpa video.
@@ -90,16 +99,20 @@ class Twitter(PlaywrightPlatform):
                 "postingan dibatalkan supaya tidak terkirim tanpa video."
             )
         print("[x] media siap", flush=True)
+        lapor(*tahap.MEDIA_SIAP)
 
         # 4. Jadwal bawaan X, kalau diminta. Harus DIPASANG SEBELUM kirim:
         #    setelah ditekan, postingannya sudah terlanjur terbit.
         if jadwal:
+            lapor(*tahap.JADWAL)
             await self._pasang_jadwal(page, jadwal)
 
         # 5. Kirim.
+        lapor(*tahap.KIRIM)
         await page.click('[data-testid="tweetButton"]')
 
         # 6. Tunggu konfirmasi, bukan sekadar jeda tetap.
+        lapor(*tahap.TUNGGU)
         if not await self._tunggu_terkirim(page):
             raise PlatformError(
                 "Tombol kirim sudah ditekan tetapi X tidak pernah memberi "

@@ -25,7 +25,18 @@ import { useDialog } from "../components/Dialog";
  * di backend yang sama dengan fitur lain.
  */
 
-type Sasaran = { platform: string; status: string; url: string | null; error: string | null };
+type Sasaran = {
+  id?: number;
+  platform: string;
+  account_id?: number | null;
+  status: string;
+  url: string | null;
+  error: string | null;
+  /** 0-100. 100 hanya saat targetnya benar-benar selesai. */
+  progress?: number;
+  /** Nama langkah yang sedang dikerjakan, mis. "melampirkan media". */
+  tahap?: string;
+};
 
 type Akun = {
   id: number;
@@ -243,6 +254,11 @@ export default function AutoUploadPage() {
   const [mengirim, setMengirim] = useState(false);
   const [galat, setGalat] = useState("");
   const [hasil, setHasil] = useState<Sasaran[] | null>(null);
+  // Angka yang DITAMPILKAN, terpisah dari angka yang dilaporkan server.
+  // Server hanya melapor di titik-titik tertentu, dan jeda di antaranya bisa
+  // puluhan detik - angka yang membeku selama itu membuat orang mengira
+  // prosesnya menggantung.
+  const [halus, setHalus] = useState<Record<number, number>>({});
 
   const [posts, setPosts] = useState<Postingan[]>([]);
   const [memuatPosts, setMemuatPosts] = useState(true);
@@ -573,11 +589,47 @@ export default function AutoUploadPage() {
     }
   }
 
+  // Merayap pelan ke arah tonggak berikutnya, tetapi tidak pernah melewati
+  // laporan server lebih dari 15 angka, dan tidak pernah mencapai 100 selama
+  // targetnya belum selesai. Batas itu menjaga dua hal sekaligus: angkanya
+  // tidak membeku saat jeda antar-tonggak panjang, dan tidak pernah melesat
+  // jauh mendahului kenyataan.
+  useEffect(() => {
+    if (!hasil) return;
+    const jalan = hasil.some((t) => t.status === "pending" || t.status === "running");
+    if (!jalan) return;
+    const timer = setInterval(() => {
+      setHalus((lama) => {
+        const baru = { ...lama };
+        for (const t of hasil) {
+          if (t.id == null) continue;
+          const dari = t.progress ?? 0;
+          if (t.status === "success") {
+            baru[t.id] = 100;
+          } else if (t.status === "pending" || t.status === "running") {
+            const kini = Math.max(baru[t.id] ?? 0, dari);
+            baru[t.id] = Math.min(kini + 0.35, dari + 15, 99);
+          }
+        }
+        return baru;
+      });
+    }, 900);
+    return () => clearInterval(timer);
+  }, [hasil]);
+
+  /** Angka yang ditampilkan untuk satu target. */
+  function persen(t: Sasaran): number {
+    if (t.status === "success") return 100;
+    if (t.id == null) return t.progress ?? 0;
+    return Math.round(Math.max(halus[t.id] ?? 0, t.progress ?? 0));
+  }
+
   async function kirim() {
     if (!berkas) return;
     setMengirim(true);
     setGalat("");
     setHasil(null);
+    setHalus({});
     try {
       const res = await apiFetch("/api/sosmed/upload", {
         method: "POST",
@@ -1201,6 +1253,27 @@ export default function AutoUploadPage() {
             </button>
             {alasanBelumSiap && <p className={styles.alasan}>{alasanBelumSiap}</p>}
 
+            {hasil && hasil.length > 0 && (
+              <div className={styles.ringkasProgres}>
+                <span className={styles.progresAngka}>
+                  {Math.round(hasil.reduce((j, t) => j + persen(t), 0) / hasil.length)}%
+                </span>
+                <span className={styles.progresBatang}>
+                  <span
+                    className={styles.progresIsi}
+                    style={{
+                      width: `${hasil.reduce((j, t) => j + persen(t), 0) / hasil.length}%`,
+                    }}
+                  />
+                </span>
+                <span className={styles.progresTahap}>
+                  {hasil.filter((t) => t.status === "success" || t.status === "failed").length}
+                  {" dari "}
+                  {hasil.length} akun selesai
+                </span>
+              </div>
+            )}
+
             {hasil && (
               <div className={styles.hasilKirim}>
                 {hasil.map((r) => {
@@ -1217,7 +1290,20 @@ export default function AutoUploadPage() {
                           {p?.nama || r.platform}
                         </span>
                       </span>
-                      {r.url ? (
+                      {r.status === "pending" || r.status === "running" ? (
+                        <span className={styles.hasilProgres}>
+                          <span className={styles.progresAngka}>{persen(r)}%</span>
+                          <span className={styles.progresBatang}>
+                            <span
+                              className={styles.progresIsi}
+                              style={{ width: `${persen(r)}%` }}
+                            />
+                          </span>
+                          <span className={styles.progresTahap}>
+                            {r.tahap || "menyiapkan"}
+                          </span>
+                        </span>
+                      ) : r.url ? (
                         <span className={styles.hasilTautan}>
                           <a href={r.url} target="_blank" rel="noreferrer" className={styles.tautan}>
                             Lihat postingan
