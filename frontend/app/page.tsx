@@ -36,7 +36,7 @@ const tools: Tool[] = [
   {
     id: "upload",
     icon: "⬆️",
-    title: "Auto Upload Instagram",
+    title: "Auto Upload",
     desc: "satu video, sebar ke Instagram, TikTok, YouTube, Facebook, Threads, dan X",
     href: "/auto-upload",
     status: "ready",
@@ -45,9 +45,20 @@ const tools: Tool[] = [
   {
     id: "rantai",
     icon: "⚡",
-    title: "Edit → Upload → Komen",
-    desc: "satu tombol untuk seluruh rantai otomatis",
-    status: "soon",
+    title: "Auto Edit dan Upload",
+    desc: "tempel link sumber, videonya diedit lalu langsung diunggah - satu klik",
+    href: "/auto-edit-upload",
+    status: "ready",
+    badge: "Tersedia",
+  },
+  {
+    id: "akun",
+    icon: "🔑",
+    title: "Kelola Akun",
+    desc: "tempel Session ID semua sosmed sekali, dipakai semua alat tanpa mengetik ulang",
+    href: "/kelola-akun",
+    status: "ready",
+    badge: "Tersedia",
   },
 ];
 
@@ -55,7 +66,7 @@ export default function Home() {
   return (
     <div className={styles.page}>
       <header className={styles.topbar}>
-        <span className={styles.brand}>IG · TOOLS</span>
+        <span className={styles.brand}>TOOLS AUTOMASI</span>
         <span className={styles.headRight}>
           <span className={styles.headStatus}>Semua alat di satu tempat</span>
           <LoginButton />

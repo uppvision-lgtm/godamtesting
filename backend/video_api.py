@@ -19,7 +19,7 @@ import storage
 import video_edit as ve
 import video_hook as vh
 import video_tasks as vt
-from auth_api import bersihkan_id_tamu, identitas
+from auth_api import bersihkan_id_tamu, identitas, pengguna_wajib
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,9 @@ class BatchBody(BaseModel):
     template_ids: list[str] = Field(min_length=1, max_length=MAX_BATCH or None)
     texts: dict[str, str] = {}
     session_id: str = ""
+    # Alternatif session_id: id akun Instagram yang tertaut di Kelola Akun.
+    # Cookie-nya diambil di server, jadi tidak pernah lewat peramban.
+    account_id: int | None = None
 
 
 class JobBody(BaseModel):
@@ -107,6 +110,7 @@ class JobBody(BaseModel):
     texts: dict[str, str] = {}
     # Opsional: dipakai kalau link sumbernya dari Instagram (butuh cookie).
     session_id: str = ""
+    account_id: int | None = None
 
 
 class PreviewBody(BaseModel):
@@ -114,6 +118,7 @@ class PreviewBody(BaseModel):
 
     url: str = Field(min_length=5, max_length=2000)
     session_id: str = ""
+    account_id: int | None = None
 
 
 class HookBody(BaseModel):
@@ -266,6 +271,37 @@ def _dorong_ke_storage(jalur: str, berkas: Path) -> None:
 # Job pun dicatat pemiliknya, jadi milik satu orang tidak terlihat orang lain.
 
 
+def _sesi_dari_akun(account_id: int | None, pengguna: dict[str, Any] | None) -> str:
+    """Session ID Instagram dari akun yang tertaut di Kelola Akun.
+
+    Supaya orang tidak perlu mengetik cookie lagi di Auto Edit Video: cukup
+    memilih akunnya, dan nilainya diambil di sini. Hanya untuk pengguna yang
+    masuk - akun sosmed milik pengguna, bukan milik tamu - dan hanya akun
+    Instagram, sebab itulah satu-satunya sumber link yang butuh cookie.
+    Kalau paket autoupload tidak terpasang, diam-diam kembali kosong: alur
+    lama dengan session_id yang diketik tetap jalan.
+    """
+    if not account_id or not pengguna or pengguna.get("tamu"):
+        return ""
+    try:
+        from autoupload.db import SessionLocal, SocialAccount
+        from autoupload.rahasia import buka
+    except Exception:  # noqa: BLE001 - autoupload tidak ada di server ini
+        return ""
+    db = SessionLocal()
+    try:
+        akun = (
+            db.query(SocialAccount)
+            .filter(SocialAccount.id == account_id, SocialAccount.is_active.is_(True))
+            .first()
+        )
+        if akun is None or akun.platform != "instagram":
+            return ""
+        return buka(akun.session_id or "")
+    finally:
+        db.close()
+
+
 def _nama_akun(pengguna: dict[str, Any] | None) -> str | None:
     return str(pengguna["username"]) if pengguna else None
 
@@ -324,10 +360,13 @@ def _job_terjangkau(job_id: str, pengguna: dict[str, Any] | None) -> dict[str, A
 
 
 @router.post("/preview")
-def pratinjau_link(body: PreviewBody) -> dict[str, Any]:
+def pratinjau_link(
+    body: PreviewBody, pengguna: dict[str, Any] | None = Depends(identitas)
+) -> dict[str, Any]:
     """Tampilkan isi link (judul, durasi, sampul) tanpa mengunduh videonya."""
+    sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
     try:
-        return ve.preview_source(body.url, body.session_id or None)
+        return ve.preview_source(body.url, sesi or None)
     except ve.VideoError as error:
         raise _tangani(error)
 
@@ -542,9 +581,8 @@ def mulai_job(
     job_id = vt.buat_job(
         body.url.strip(), body.template_id, body.texts, owner=_nama_akun(pengguna) or ""
     )
-    vt.render_video.delay(
-        job_id, body.url.strip(), body.template_id, body.texts, body.session_id.strip()
-    )
+    sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
+    vt.render_video.delay(job_id, body.url.strip(), body.template_id, body.texts, sesi)
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -646,10 +684,11 @@ def mulai_banyak_job(
 
     url = body.url.strip()
     pemilik = _nama_akun(pengguna) or ""
+    sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
     jobs = []
     for tid in ids:
         job_id = vt.buat_job(url, tid, body.texts, owner=pemilik)
-        vt.render_video.delay(job_id, url, tid, body.texts, body.session_id.strip())
+        vt.render_video.delay(job_id, url, tid, body.texts, sesi)
         jobs.append({"job_id": job_id, "template_id": tid, "status": "queued"})
     return {"jobs": jobs}
 
@@ -688,6 +727,60 @@ def berkas_job(
     if not berkas.is_file():
         raise HTTPException(status_code=404, detail="Berkas hasil sudah tidak ada")
     return FileResponse(berkas, media_type="video/mp4", filename=f"{job_id}.mp4")
+
+
+@router.post("/jobs/{job_id}/ke-sosmed")
+def salin_ke_sosmed(
+    job_id: str, pengguna: dict[str, Any] = Depends(pengguna_wajib)
+) -> dict[str, Any]:
+    """Jadikan hasil render sebagai berkas unggahan Auto Upload.
+
+    Inilah sambungan antara dua alat: Auto Edit Video menyusun videonya, Auto
+    Upload mengirimnya, dan keduanya tidak saling kenal. Berkasnya DISALIN,
+    bukan dirujuk: folder job punya pembersihan sendiri, dan tautan yang
+    menunjuk ke berkas yang keburu dibersihkan akan gagal saat giliran unggah
+    tiba. Kalau salinan lokalnya sudah tidak ada (worker di mesin lain),
+    diambil dari alamat publiknya.
+    """
+    status = _job_terjangkau(job_id, {**pengguna, "tamu": False})
+    if status.get("status") != "done" or not status.get("output"):
+        raise HTTPException(status_code=409, detail="Video belum selesai disusun")
+    try:
+        from autoupload.config import UPLOAD_DIR
+    except Exception as error:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503, detail="Auto Upload tidak aktif di server ini"
+        ) from error
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    tujuan = UPLOAD_DIR / f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.mp4"
+    sumber = vt.job_path(job_id) / str(status["output"])
+    if sumber.is_file():
+        shutil.copyfile(sumber, tujuan)
+    elif status.get("url"):
+        import httpx
+
+        try:
+            with httpx.stream(
+                "GET", str(status["url"]), timeout=300, follow_redirects=True
+            ) as balasan:
+                balasan.raise_for_status()
+                with open(tujuan, "wb") as keluar:
+                    for potongan in balasan.iter_bytes(1024 * 1024):
+                        keluar.write(potongan)
+        except Exception as error:  # noqa: BLE001
+            tujuan.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=502, detail=f"Hasil render tidak bisa diambil: {error}"
+            ) from error
+    else:
+        raise HTTPException(status_code=404, detail="Berkas hasil sudah tidak ada")
+
+    return {
+        "media_path": str(tujuan),
+        "size_bytes": tujuan.stat().st_size,
+        "media_kind": "video",
+    }
 
 
 @router.post("/jobs/stop")

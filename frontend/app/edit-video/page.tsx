@@ -1324,7 +1324,7 @@ export default function EditVideoPage() {
       {dialog.simpul}
       <header className={styles.topbar}>
         <Link href="/" className={styles.back} title="Kembali ke beranda">←</Link>
-        <span className={styles.brand}>IG · EDIT VIDEO</span>
+        <span className={styles.brand}>AUTOMASI · EDIT VIDEO</span>
         <span className={styles.headStatus}>{sedangJalan ? "rendering" : "idle"}</span>
         <LoginButton />
       </header>

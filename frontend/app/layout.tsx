@@ -10,7 +10,7 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
-  title: "IG Tools — Alat Bantu Instagram",
+  title: "Tools Automasi — Otomasi Semua Sosial Media",
   description: "Kumpulan alat bantu Instagram: auto comment, auto like, dan lainnya.",
 };
 

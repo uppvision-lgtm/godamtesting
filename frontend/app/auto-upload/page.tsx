@@ -7,6 +7,8 @@ import LoginButton from "../components/LoginButton";
 import LogoSosmed, { WARNA, type PlatformId } from "../components/LogoSosmed";
 import { apiFetch, apiUnggah } from "../components/auth";
 import { useDialog } from "../components/Dialog";
+import PanelAkun from "../components/PanelAkun";
+import { PLATFORM, type Akun } from "../components/sosmed";
 
 /**
  * Auto Upload Sosmed.
@@ -38,23 +40,6 @@ type Sasaran = {
   tahap?: string;
 };
 
-type Akun = {
-  id: number;
-  platform: PlatformId;
-  display_name: string;
-  session_name: string;
-  has_session_id: boolean;
-  has_browser_session: boolean;
-  /** null = belum pernah diperiksa. true = beranda akunnya terbuka. */
-  verified: boolean | null;
-  verified_at: string | null;
-  verify_message: string;
-  /** Nama akun yang terbaca dari profil saat pemeriksaan terakhir. */
-  nama_akun: string;
-  /** Ringkasan Session ID per cookie, SUDAH disamarkan server. Nilai utuhnya
-   *  sengaja tidak pernah dikirim: /api/sosmed tidak punya autentikasi. */
-  cookie_terisi: { nama: string; pratinjau: string; panjang: number }[];
-};
 
 type Postingan = {
   id: number;
@@ -68,104 +53,6 @@ type Postingan = {
 
 type Berkas = { media_path: string; size_bytes: number; media_kind: "video" | "photo" };
 
-/** Nama tampil, batas caption, dan cookie yang harus ditempel tiap platform.
- *
- *  Daftar cookie-nya mengikuti session_cookie_map di paket autoupload. Yang
- *  ditulis di sini hanya yang wajib; milik YouTube ada tiga cookie tambahan
- *  yang boleh dilewati. */
-const PLATFORM: {
-  id: PlatformId;
-  nama: string;
-  batas: number;
-  cookie: string[];
-  /** Cookie tambahan yang boleh dikosongkan. Server hanya menerima semuanya
-   *  atau tidak sama sekali, jadi ketiganya diisi bersama atau dibiarkan
-   *  kosong bersama. */
-  cookieOpsional?: string[];
-  petunjuk: string;
-  /** Punya fitur penjadwalan sendiri di komposer webnya. Penjadwalan
-   *  diserahkan ke platform, jadi yang tidak punya harus diberi peringatan
-   *  sebelum dikirim - bukan diam-diam terbit sekarang. */
-  bisaJadwal?: boolean;
-  /** Kenapa tidak bisa dijadwalkan. Wajib diisi kalau bisaJadwal false. */
-  alasanJadwal?: string;
-  /** Batasan penjadwalan pada platform yang BISA dijadwalkan. */
-  catatanJadwal?: string;
-  /** Alur unggahnya belum pernah diuji sampai terbit. Ditandai supaya tidak
-   *  dikira siap dipakai. */
-  belumTeruji?: boolean;
-  /** Jeda minimum dari sekarang, dalam menit. TikTok menolak di bawah ini. */
-  jedaMinimalMenit?: number;
-  /** Batas terjauh jadwal, dalam hari. */
-  jedaMaksimalHari?: number;
-}[] = [
-  {
-    id: "instagram",
-    nama: "Instagram",
-    batas: 2200,
-    cookie: ["sessionid"],
-    petunjuk: "Buka instagram.com, lalu salin nilai cookie sessionid.",
-    bisaJadwal: false,
-    alasanJadwal:
-      "komposer webnya tidak punya pilihan jadwal; menjadwalkan Instagram butuh " +
-      "akun profesional lewat Meta Business Suite",
-  },
-  {
-    id: "tiktok",
-    nama: "TikTok",
-    batas: 2200,
-    cookie: ["sessionid"],
-    petunjuk: "Buka tiktok.com, lalu salin nilai cookie sessionid.",
-    bisaJadwal: true,
-    jedaMinimalMenit: 15,
-    jedaMaksimalHari: 10,
-    catatanJadwal:
-      "jadwalnya minimal 15 menit dari sekarang, paling jauh 10 hari ke depan, " +
-      "dan menitnya dibulatkan ke kelipatan 5",
-
-  },
-  {
-    id: "youtube",
-    nama: "YouTube",
-    batas: 5000,
-    cookie: ["SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"],
-    cookieOpsional: ["__Secure-1PSIDTS", "__Secure-3PSIDTS", "LOGIN_INFO"],
-    petunjuk:
-      "Buka youtube.com, salin cookie-nya satu per satu. Google sering menolak " +
-      "sesi tanpa ketiga cookie tambahan di bawah, jadi isi juga kalau YouTube " +
-      "tetap merah.",
-    belumTeruji: true,
-    bisaJadwal: false,
-    alasanJadwal: "penjadwalannya belum didukung di sini",
-  },
-  {
-    id: "facebook",
-    nama: "Facebook",
-    batas: 5000,
-    cookie: ["c_user", "xs"],
-    petunjuk: "Buka facebook.com, salin c_user dan xs ke kotaknya masing-masing.",
-    belumTeruji: true,
-    bisaJadwal: false,
-    alasanJadwal: "penjadwalannya belum didukung di sini",
-  },
-  {
-    id: "threads",
-    nama: "Threads",
-    batas: 500,
-    cookie: ["sessionid"],
-    petunjuk: "Buka threads.net, lalu salin nilai cookie sessionid.",
-    bisaJadwal: false,
-    alasanJadwal: "komposer webnya tidak punya pilihan jadwal",
-  },
-  {
-    id: "twitter",
-    nama: "X / Twitter",
-    batas: 280,
-    cookie: ["auth_token"],
-    petunjuk: "Buka x.com, lalu salin nilai cookie auth_token.",
-    bisaJadwal: true,
-  },
-];
 
 const BATAS_BERKAS_MB = 500;
 
@@ -217,20 +104,6 @@ export default function AutoUploadPage() {
 
   const [akun, setAkun] = useState<Akun[]>([]);
   const [memuatAkun, setMemuatAkun] = useState(true);
-  const [sibuk, setSibuk] = useState<string>("");
-  // Platform yang kotak Session ID-nya sedang terbuka. Isiannya dipisah per
-  // cookie, bukan satu kotak berisi nilai yang digabung tanda "|": Facebook
-  // butuh dua cookie dan YouTube tujuh, dan menyatukannya membuat orang salah
-  // hitung tanpa tahu di mana letak kesalahannya.
-  const [buka, setBuka] = useState<PlatformId | "">("");
-  // Baris yang panel rincian Session ID-nya sedang dibentang.
-  const [rincian, setRincian] = useState<PlatformId | "">("");
-  const [nilaiCookie, setNilaiCookie] = useState<Record<string, string>>({});
-  // Nama untuk membedakan akun dalam satu platform. Kosong = "ssid",
-  // yaitu akun pertama; nama yang sama akan MENGGANTI akun itu.
-  const [namaSesi, setNamaSesi] = useState("");
-  const [memeriksa, setMemeriksa] = useState<string>("");
-  const [galatAkun, setGalatAkun] = useState("");
   const [perluLogin, setPerluLogin] = useState(false);
   // Alamat backend untuk unggahan langsung, ditanyakan saat halaman
   // dimuat. Kosong = kirim lewat proxy (mis. saat di localhost).
@@ -307,6 +180,8 @@ export default function AutoUploadPage() {
    *  berarti halaman menampilkan akun lama sementara pengunggah memakai yang
    *  baru. */
   /** Akun yang siap dikirimi: sudah ditempel Session ID dan tidak terbukti mati. */
+  // Jumlah akun yang terbukti hidup, untuk keterangan di kepala halaman.
+  const aktif = akun.filter((a) => a.has_session_id && a.verified === true).length;
   const akunSiap = akun
     .filter((a) => a.has_session_id && a.verified !== false)
     .sort((x, y) => x.platform.localeCompare(y.platform) || x.id - y.id);
@@ -342,95 +217,6 @@ export default function AutoUploadPage() {
     const a = akunDari(p);
     return !!a && a.verified !== false;
   };
-
-  const isi = (c: string) => (nilaiCookie[c] || "").trim();
-
-  const lengkap = (p: (typeof PLATFORM)[number]) => {
-    if (!p.cookie.every(isi)) return false;
-    const ops = p.cookieOpsional || [];
-    const terisi = ops.filter(isi).length;
-    // Semua opsional diisi, atau tidak satu pun. Server hanya mengenali dua
-    // bentuk itu; jumlah di antaranya ditolaknya sebagai jumlah yang salah.
-    return terisi === 0 || terisi === ops.length;
-  };
-
-  async function simpanSsid(p: (typeof PLATFORM)[number]) {
-    const kosong = p.cookie.filter((c) => !isi(c));
-    if (kosong.length > 0) {
-      setGalatAkun(`Masih kosong: ${kosong.join(", ")}.`);
-      return;
-    }
-    const ops = p.cookieOpsional || [];
-    const opsTerisi = ops.filter(isi);
-    if (opsTerisi.length > 0 && opsTerisi.length < ops.length) {
-      setGalatAkun(
-        `Cookie tambahan harus diisi semua atau dikosongkan semua. Yang belum: ${ops.filter((c) => !isi(c)).join(", ")}.`
-      );
-      return;
-    }
-    setSibuk(p.id);
-    setGalatAkun("");
-    try {
-      const res = await apiFetch("/api/sosmed/accounts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          platform: p.id,
-          display_name: p.nama,
-          session_name: namaSesi.trim() || "ssid",
-          // Server menerimanya sebagai satu untai dipisah "|", urutannya
-          // mengikuti daftar cookie tiap platform.
-          session_id: [...p.cookie, ...(opsTerisi.length === ops.length ? ops : [])]
-            .map(isi)
-            .join("|"),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || "Gagal menyimpan Session ID.");
-      setNilaiCookie({});
-      setBuka("");
-      await muatAkun();
-      // Langsung dibuktikan: beranda akunnya dibuka memakai cookie ini.
-      if (data.id) await periksa(p.id, Number(data.id));
-    } catch (err) {
-      setGalatAkun(err instanceof Error ? err.message : "Gagal menyimpan Session ID.");
-    } finally {
-      setSibuk("");
-    }
-  }
-
-  /** Buka beranda akunnya dengan Session ID ini; hijau kalau terbuka. */
-  async function periksa(platform: PlatformId, id: number) {
-    setMemeriksa(platform);
-    try {
-      const res = await apiFetch(`/api/sosmed/accounts/${id}/verify`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) setGalatAkun(data.detail || "Gagal memeriksa sesi.");
-      await muatAkun();
-    } catch {
-      setGalatAkun("Gagal memeriksa sesi.");
-    } finally {
-      setMemeriksa("");
-    }
-  }
-
-  async function putuskan(p: (typeof PLATFORM)[number], a: Akun) {
-    const setuju = await dialog.konfirmasi({
-      judul: `Putuskan ${p.nama}?`,
-      pesan: "Session ID-nya dihapus dari server. Kamu bisa menempelkannya lagi kapan saja.",
-      tombolYa: "Putuskan",
-      bahaya: true,
-    });
-    if (!setuju) return;
-    setSibuk(p.id);
-    try {
-      await apiFetch(`/api/sosmed/accounts/${a.id}`, { method: "DELETE" });
-      setAkunDipilih((lama) => lama.filter((x) => x !== a.id));
-      await muatAkun();
-    } finally {
-      setSibuk("");
-    }
-  }
 
   // ===== BERKAS =====
 
@@ -641,7 +427,11 @@ export default function AutoUploadPage() {
           scheduled_at: jadwal ? new Date(jadwal).toISOString() : null,
           // Satu baris per akun. Yang tidak punya video/caption sendiri
           // memakai yang utama di atas.
-          items: akunDipilih.map((id) => ({
+          items: akunDipilih
+            // Akun yang keburu diputus di panel kiri dilewati; server
+            // akan menolak seluruh kiriman kalau ada id yang sudah tidak ada.
+            .filter((id) => akunSiap.some((a) => a.id === id))
+            .map((id) => ({
             account_id: id,
             media_path: videoAkun[id]?.media_path || "",
             caption: (captionAkun[id] || "").trim(),
@@ -687,7 +477,6 @@ export default function AutoUploadPage() {
   // Yang dihitung adalah yang TERBUKTI bisa masuk, bukan sekadar tersimpan.
   // Angka yang menghitung tempelan akan menyesatkan: akun yang sesinya mati
   // tetap tersimpan, tetapi tidak bisa dipakai mengirim apa pun.
-  const aktif = PLATFORM.filter((p) => akunDari(p.id)?.verified === true).length;
 
   return (
     <div className={styles.page}>
@@ -697,7 +486,7 @@ export default function AutoUploadPage() {
         <Link href="/" className={styles.back} title="Kembali ke beranda">
           ←
         </Link>
-        <span className={styles.brand}>IG · AUTO UPLOAD</span>
+        <span className={styles.brand}>AUTOMASI · AUTO UPLOAD</span>
         <span className={styles.headStatus}>
           {aktif > 0 ? `${aktif} akun aktif` : "belum ada akun aktif"}
         </span>
@@ -705,304 +494,14 @@ export default function AutoUploadPage() {
       </header>
 
       <main className={styles.main}>
-        {/* ================= AKUN ================= */}
-        <section className={styles.panel}>
-          <div className={styles.panelHead}>
-            <h2>Akun Sosmed</h2>
-            <span className={styles.headStatus}>
-              {aktif} / {PLATFORM.length} aktif
-            </span>
-          </div>
-
-          <p className={styles.hint}>
-            Tempel Session ID dari cookie peramban tempat kamu sudah login. Tidak ada jendela
-            login yang perlu dibuka, dan satu tempelan berlaku sampai kamu keluar dari akun itu.
-          </p>
-
-          <div className={styles.daftarAkun}>
-            {memuatAkun && [0, 1, 2].map((i) => <div key={i} className={styles.rangka} />)}
-
-            {perluLogin && (
-              <p className={styles.pesan}>
-                Masuk dulu untuk memakai Auto Upload. Session ID sosmed setara password
-                akunmu, jadi halaman ini hanya bisa dipakai setelah login.
-              </p>
-            )}
-            {!memuatAkun && !perluLogin &&
-              PLATFORM.map((p) => {
-                const a = akunDari(p.id);
-                const lagi = sibuk === p.id;
-                const terbuka = buka === p.id;
-                const dibentang = rincian === p.id && akunSemua(p.id).length > 0;
-                return (
-                  <div key={p.id} className={styles.akunBaris}>
-                    <div className={styles.akunUtama}>
-                      <button
-                        type="button"
-                        className={`${styles.panah} ${dibentang ? styles.panahBuka : ""}`}
-                        aria-expanded={dibentang}
-                        aria-label={`${dibentang ? "Tutup" : "Lihat"} Session ID ${p.nama}`}
-                        title={a ? "Lihat Session ID yang tersimpan" : "Belum ada Session ID"}
-                        disabled={!a}
-                        onClick={() => setRincian(dibentang ? "" : p.id)}
-                      >
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="M6 9l6 6 6-6" />
-                        </svg>
-                      </button>
-                      <span
-                        className={a ? styles.logo : `${styles.logo} ${styles.logoMati}`}
-                        style={a ? { color: WARNA[p.id] } : undefined}
-                      >
-                        <LogoSosmed platform={p.id} ukuran={22} />
-                      </span>
-                      <div className={styles.akunTeks}>
-                        <strong>{p.nama}</strong>
-                        <span
-                          className={
-                            !a
-                              ? styles.putus
-                              : a.verified === true
-                                ? styles.sambung
-                                : a.verified === false
-                                  ? styles.mati
-                                  : styles.belum
-                          }
-                          title={a?.verify_message || ""}
-                        >
-                          {!a
-                            ? "Belum terhubung"
-                            : memeriksa === p.id
-                              ? "Memeriksa beranda akunnya..."
-                              : a.verified === true
-                                ? // Nama akun dibaca dari profil yang terbuka, jadi
-                                  // yang tertulis benar-benar akun yang tertaut.
-                                  a.nama_akun
-                                  ? `Aktif — ${a.nama_akun}`
-                                  : "Aktif — beranda akunnya terbuka"
-                                : a.verified === false
-                                  ? a.verify_message || "Sesinya sudah tidak berlaku"
-                                  : "Tersimpan, belum diperiksa"}
-                        </span>
-                      </div>
-                      <div className={styles.akunAksi}>
-                        <button
-                          type="button"
-                          className={styles.btnSekunder}
-                          disabled={lagi}
-                          onClick={() => {
-                            setGalatAkun("");
-                            setNilaiCookie({});
-                            setNamaSesi("");
-                            setBuka(terbuka ? "" : p.id);
-                          }}
-                        >
-                          {terbuka ? "Tutup" : a ? "Ganti" : "Hubungkan"}
-                        </button>
-                        {a && !terbuka && (
-                          <button
-                            type="button"
-                            className={styles.btnSekunder}
-                            disabled={lagi}
-                            title="Tautkan satu akun lagi di platform ini"
-                            onClick={() => {
-                              setGalatAkun("");
-                              setNilaiCookie({});
-                              setNamaSesi(`akun-${akunSemua(p.id).length + 1}`);
-                              setBuka(p.id);
-                            }}
-                          >
-                            + Akun
-                          </button>
-                        )}
-                        {a && (
-                          <>
-                            <button
-                              type="button"
-                              className={styles.btnSekunder}
-                              disabled={lagi || memeriksa === p.id}
-                              title="Buka beranda akunnya sekali untuk memastikan sesinya masih hidup"
-                              onClick={() => void periksa(p.id, a.id)}
-                            >
-                              {memeriksa === p.id ? "Memeriksa..." : "Periksa"}
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.btnBahaya}
-                              disabled={lagi}
-                              onClick={() => void putuskan(p, a)}
-                            >
-                              Putuskan
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {akunSemua(p.id).length > 1 && (
-                      <div className={styles.daftarSesi}>
-                        {akunSemua(p.id).map((s) => (
-                          <div key={s.id} className={styles.sesiBaris}>
-                            <span className={styles.sesiNama}>{s.session_name}</span>
-                            <span
-                              className={
-                                s.verified === true
-                                  ? styles.sambung
-                                  : s.verified === false
-                                    ? styles.mati
-                                    : styles.belum
-                              }
-                            >
-                              {s.verified === true
-                                ? s.nama_akun || "aktif"
-                                : s.verified === false
-                                  ? "sesi mati"
-                                  : "belum diperiksa"}
-                            </span>
-                            <button
-                              type="button"
-                              className={styles.btnSekunder}
-                              disabled={lagi || memeriksa === p.id}
-                              onClick={() => void periksa(p.id, s.id)}
-                            >
-                              Periksa
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.btnBahaya}
-                              disabled={lagi}
-                              onClick={() => void putuskan(p, s)}
-                            >
-                              Putuskan
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {dibentang && (
-                      <div className={styles.rincianKotak}>
-                        {/* Satu blok per AKUN. Platform bisa punya beberapa akun,
-                            dan menampilkan Session ID milik satu akun saja
-                            membuat orang mengira yang lain tidak terisi. */}
-                        {akunSemua(p.id).map((s) => (
-                          <div key={s.id} className={styles.rincianAkun}>
-                            <div className={styles.rincianJudul}>
-                              <span className={styles.sesiNama}>{s.session_name}</span>
-                              <span className={styles.rincianPanjang}>
-                                {s.nama_akun || "belum diperiksa"}
-                              </span>
-                            </div>
-                            {s.cookie_terisi.length === 0 ? (
-                              <p className={styles.hint}>Rinciannya tidak terbaca.</p>
-                            ) : (
-                              s.cookie_terisi.map((c) => (
-                                <div key={c.nama} className={styles.rincianBaris}>
-                                  <span className={styles.rincianNama}>{c.nama}</span>
-                                  <span className={styles.rincianNilai}>{c.pratinjau}</span>
-                                  <span className={styles.rincianPanjang}>
-                                    {c.panjang} huruf
-                                  </span>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {terbuka && (
-                      <div className={styles.ssidKotak}>
-                        <p className={styles.ssidPetunjuk}>{p.petunjuk}</p>
-                        <label className={styles.ssidLabel}>
-                          <span>
-                            nama akun
-                            <em className={styles.opsional}>
-                              {" "}
-                              untuk membedakan beberapa akun di platform yang sama
-                            </em>
-                          </span>
-                          <input
-                            value={namaSesi}
-                            spellCheck={false}
-                            placeholder="mis. akun-2 (kosongkan untuk mengganti akun utama)"
-                            onChange={(e) => setNamaSesi(e.target.value)}
-                          />
-                        </label>
-                        {/* Satu kotak per cookie: jelas mana yang masih kosong,
-                            dan tidak ada yang perlu menghitung tanda pemisah. */}
-                        {[...p.cookie, ...(p.cookieOpsional || [])].map((c, i) => (
-                          <label key={c} className={styles.ssidLabel}>
-                            <span>
-                              {c}
-                              {(p.cookieOpsional || []).includes(c) && (
-                                <em className={styles.opsional}> opsional</em>
-                              )}
-                            </span>
-                            <input
-                              autoFocus={i === 0}
-                              value={nilaiCookie[c] || ""}
-                              spellCheck={false}
-                              placeholder={`nilai cookie ${c}`}
-                              onChange={(e) =>
-                                setNilaiCookie((lama) => ({ ...lama, [c]: e.target.value }))
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" && lengkap(p)) void simpanSsid(p);
-                              }}
-                            />
-                          </label>
-                        ))}
-                        <div className={styles.aksi}>
-                          <button
-                            type="button"
-                            className={styles.btnUtama}
-                            disabled={lagi || !lengkap(p)}
-                            onClick={() => void simpanSsid(p)}
-                          >
-                            {lagi ? "Menyimpan..." : "Simpan & periksa"}
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.btnSekunder}
-                            onClick={() => {
-                              setBuka("");
-                              setNilaiCookie({});
-                              setNamaSesi("");
-                              setGalatAkun("");
-                            }}
-                          >
-                            Batal
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-          </div>
-
-          {galatAkun && (
-            <p className={styles.galat} role="alert">
-              {galatAkun}
-            </p>
-          )}
-
-          <p className={styles.catatan}>
-            Session ID setara password: siapa pun yang memilikinya bisa memakai akunmu. Ia
-            disimpan di basis data di laptop ini, bukan dikirim ke mana-mana.
-          </p>
-        </section>
+        {/* ================= AKUN (komponen bersama) ================= */}
+        <PanelAkun
+          onBerubah={muatAkun}
+          keterangan={
+            "Akun yang tertaut di sini sama dengan yang ada di Kelola Akun. " +
+            "Tempel Session ID sekali, lalu pilih akun tujuan di kanan."
+          }
+        />
 
         {/* ================= POSTINGAN ================= */}
         <section className={styles.panel}>

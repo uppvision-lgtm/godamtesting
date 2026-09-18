@@ -350,7 +350,7 @@ export default function Home() {
     <div className={styles.page}>
       <header className={styles.topbar}>
         <Link href="/" className={styles.backHome} title="Kembali ke beranda">←</Link>
-        <span className={styles.brand}>IG · AUTO COMMENT</span>
+        <span className={styles.brand}>AUTOMASI · AUTO COMMENT</span>
         <span className={styles.headStatus}>
           {runningBots.length > 0 ? `${runningBots.length} bot berjalan` : "idle"}
         </span>
