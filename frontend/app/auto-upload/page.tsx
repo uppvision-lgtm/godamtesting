@@ -7,7 +7,6 @@ import LoginButton from "../components/LoginButton";
 import LogoSosmed, { WARNA, type PlatformId } from "../components/LogoSosmed";
 import { apiFetch, apiUnggah } from "../components/auth";
 import { useDialog } from "../components/Dialog";
-import PanelAkun from "../components/PanelAkun";
 import { PLATFORM, type Akun } from "../components/sosmed";
 
 /**
@@ -197,26 +196,6 @@ export default function AutoUploadPage() {
       akun.filter((a) => akunDipilih.includes(a.id)).map((a) => a.platform)
     ),
   ];
-
-  /** SEMUA akun tertaut milik satu platform, urut dari yang paling awal. */
-  const akunSemua = (p: PlatformId) =>
-    akun.filter((a) => a.platform === p && a.has_session_id).sort((x, y) => x.id - y.id);
-
-  /** Akun terbaru milik satu platform, atau null kalau belum dihubungkan. */
-  const akunDari = (p: PlatformId) =>
-    akun
-      .filter((a) => a.platform === p && a.has_session_id)
-      .reduce<Akun | null>((pilih, a) => (!pilih || a.id > pilih.id ? a : pilih), null);
-
-  /** Boleh dipakai mengirim: sudah dihubungkan DAN tidak terbukti mati.
-   *
-   *  Yang belum sempat diperiksa tetap diizinkan; menutupnya berarti satu
-   *  pemeriksaan yang gagal karena jaringan bisa mengunci akun yang sebenarnya
-   *  sehat. Yang sudah terbukti merah yang ditutup. */
-  const bisaDipakai = (p: PlatformId) => {
-    const a = akunDari(p);
-    return !!a && a.verified !== false;
-  };
 
   // ===== BERKAS =====
 
@@ -494,20 +473,25 @@ export default function AutoUploadPage() {
       </header>
 
       <main className={styles.main}>
-        {/* ================= AKUN (komponen bersama) ================= */}
-        <PanelAkun
-          onBerubah={muatAkun}
-          keterangan={
-            "Akun yang tertaut di sini sama dengan yang ada di Kelola Akun. " +
-            "Tempel Session ID sekali, lalu pilih akun tujuan di kanan."
-          }
-        />
-
-        {/* ================= POSTINGAN ================= */}
-        <section className={styles.panel}>
+        {/* ================= POSTINGAN =================
+            Panel akun sengaja TIDAK ada di sini: menempel Session ID sudah
+            punya tempatnya sendiri di /kelola-akun, dan menampilkannya di dua
+            halaman berarti dua tempat yang bisa berbeda. Halaman ini cukup
+            memakai daftar akun yang sudah tersimpan. */}
+        <section className={`${styles.panel} ${styles.panelLebar}`}>
           <div className={styles.panelHead}>
             <h2>Buat Postingan</h2>
           </div>
+
+          {perluLogin && (
+            <p className={styles.pesan}>
+              Masuk dulu untuk memakai Auto Upload. Akun tujuannya diambil dari{" "}
+              <Link href="/kelola-akun" className={styles.tautan}>
+                Kelola Akun
+              </Link>
+              .
+            </p>
+          )}
 
           <div className={styles.form}>
             <div className={styles.blok}>
@@ -608,6 +592,9 @@ export default function AutoUploadPage() {
                       }}
                     />
                   </label>
+                  <Link href="/kelola-akun" className={styles.btnSekunder}>
+                    Kelola akun
+                  </Link>
                 </div>
               </div>
               {akunSiap.length === 0 ? (
