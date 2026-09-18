@@ -267,7 +267,8 @@ export default function Home() {
     setError("");
   }
 
-  function updateField(index: number, field: keyof FormValues, value: string | number) {
+  // null ikut diterima: account_id kosong saat belum ada akun yang dipilih.
+  function updateField(index: number, field: keyof FormValues, value: string | number | null) {
     const baru = botsRef.current.map((bot, i) =>
       i === index ? { ...bot, values: { ...bot.values, [field]: value } } : bot
     );
