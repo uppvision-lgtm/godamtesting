@@ -44,7 +44,14 @@ from admin_api import router as admin_router
 # Kalau foldernya tidak ada (mis. di server yang tidak memuatnya), aplikasi
 # tetap berjalan tanpa fitur ini — hanya dicatat di log.
 
-AUTOUPLOAD_DIR = Path(__file__).resolve().parent.parent / "auto-upload"
+# Lokasi paket autoupload. Di laptop ia berada di sebelah folder backend,
+# tetapi di dalam image layanan backend ia disalin ke /auto-upload karena
+# konteks build-nya akar repo. AUTOUPLOAD_DIR boleh menimpa hasil tebakan ini
+# supaya penempatan tidak perlu ditebak dari susunan folder.
+AUTOUPLOAD_DIR = Path(
+    os.getenv("AUTOUPLOAD_DIR")
+    or Path(__file__).resolve().parent.parent / "auto-upload"
+)
 sosmed_router = None
 sosmed_alasan = ""
 

@@ -10,4 +10,6 @@ cryptography
 yt-dlp
 pillow
 sqlalchemy>=2.0.35
-pyautogui>=0.9.54
+# Hanya untuk macOS: upload Instagram mengklik lewat CGEvent, dan di
+# Linux paket ini tidak berguna sekaligus menambah beban image.
+pyautogui>=0.9.54; sys_platform == "darwin"

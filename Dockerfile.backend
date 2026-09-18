@@ -1,0 +1,45 @@
+# ============================================================
+# Image untuk layanan BACKEND (API), dibangun dari AKAR repo.
+#
+# Kenapa terpisah dari backend/Dockerfile: layanan worker memakai berkas itu
+# dengan root directory "backend", sehingga konteks build-nya hanya folder
+# backend. Fitur Auto Upload Sosmed butuh folder auto-upload/ ikut masuk ke
+# image, dan folder itu berada DI LUAR backend/ - mustahil disalin dari
+# konteks tersebut. Jadi layanan backend dibangun dari akar repo dengan
+# berkas ini, sementara worker tetap memakai backend/Dockerfile apa adanya.
+# ============================================================
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# ffmpeg untuk menyusun video, fonts-dejavu untuk drawtext (teks di video).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# Requirements lebih dulu supaya lapisan pip bisa di-cache.
+COPY backend/requirements.txt ./
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Chromium + dependency sistemnya. Wajib: pemeriksaan Session ID dan upload
+# Threads/X membuka browser sungguhan, dan builder RAILPACK tidak pernah
+# memasang ini - itulah sebabnya rute /api/sosmed dulu tidak pernah hidup.
+RUN playwright install --with-deps chromium
+
+# Source backend ke /app, paket autoupload ke /auto-upload.
+# main.py mencari folder itu di sebelah induk foldernya sendiri
+# (/app -> / -> /auto-upload), dan AUTOUPLOAD_DIR bisa menimpa kalau perlu.
+COPY backend/ /app/
+COPY auto-upload/ /auto-upload/
+
+RUN chmod +x start.sh
+
+EXPOSE 8000
+
+CMD ["./start.sh"]

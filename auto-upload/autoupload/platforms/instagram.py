@@ -12,6 +12,7 @@ Karena itu upload Instagram WAJIB headful (jendela Chrome terlihat).
 
 import asyncio
 import os  # noqa: S404 - baca env IG_OFFSCREEN
+import sys
 import subprocess  # noqa: S404 - osascript untuk membawa Chrome ke depan
 from pathlib import Path
 
@@ -117,6 +118,24 @@ class Instagram(PlaywrightPlatform):
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
     ) -> str | None:
+        # Gagal SEKARANG kalau lingkungannya tidak mungkin, jangan setelah
+        # meluncurkan browser: di server Linux tanpa layar, Chromium headful
+        # gagal dengan pesan yang tidak menjelaskan apa pun. Instagram
+        # mengabaikan klik Playwright pada tombol Buat (+) dan hanya menerima
+        # klik tingkat sistem, jadi upload IG memang mustahil di kontainer.
+        if sys.platform != "darwin":
+            raise PlatformError(
+                "Upload Instagram hanya bisa dijalankan dari laptop macOS, "
+                "bukan dari server. Tombol Buat (+) menolak klik Playwright "
+                "dan hanya menerima klik tingkat sistem lewat jendela nyata. "
+                "Platform lain tetap bisa dijalankan dari server."
+            )
+        if pyautogui is None:
+            raise PlatformError(
+                "pyautogui tidak tersedia; upload Instagram butuh mode headful "
+                "di desktop macOS dengan pyautogui terpasang."
+            )
+
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.instagram.com/{nama}/" if nama else ""
         sebelum: set[str] = set()
