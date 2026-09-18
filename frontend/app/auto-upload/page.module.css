@@ -924,3 +924,87 @@
   opacity: 0.35;
   cursor: default;
 }
+
+/* ---- Daftar akun dalam satu platform ---- */
+.daftarSesi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-2);
+  padding-top: var(--sela-2);
+  border-top: 1px solid #232a24;
+}
+
+.sesiBaris {
+  display: flex;
+  align-items: center;
+  gap: var(--sela-2);
+  flex-wrap: wrap;
+}
+
+.sesiNama {
+  min-width: 90px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--teks-kecil);
+  font-weight: 700;
+  color: var(--redup);
+}
+
+.sesiBaris .sambung,
+.sesiBaris .mati,
+.sesiBaris .belum {
+  flex: 1;
+  min-width: 90px;
+}
+
+/* ---- Daftar akun tujuan ---- */
+.daftarTujuan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sela-2);
+  /* Seratus akun tidak boleh membuat halaman memanjang tanpa ujung. */
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.tujuanBaris {
+  display: flex;
+  align-items: center;
+  gap: var(--sela-2);
+  padding: var(--sela-2);
+  border: 1px solid #232a24;
+  border-radius: var(--bulat-kecil);
+  flex-wrap: wrap;
+}
+
+.tujuanAktif {
+  border-color: var(--hijau-tua);
+  background: #14201a;
+}
+
+.tujuanPilih {
+  display: flex;
+  align-items: center;
+  gap: var(--sela-2);
+  min-width: 170px;
+  cursor: pointer;
+}
+
+.tujuanNama {
+  font-size: var(--teks-isi);
+  font-weight: 700;
+}
+
+.tujuanCaption {
+  flex: 1;
+  min-width: 160px;
+}
+
+.tujuanVideo {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--teks-kecil);
+  font-weight: 600;
+  color: #8fa095;
+}

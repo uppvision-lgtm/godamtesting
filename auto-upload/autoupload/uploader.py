@@ -14,6 +14,7 @@ from pathlib import Path
 
 from autoupload.browser import MediaKind, PlatformError, UploadResult, session_names
 from autoupload.caption import adapt_caption
+from autoupload.config import MAKS_PARALEL
 from autoupload.platforms import REGISTRY
 
 log = logging.getLogger("autoupload")
@@ -96,9 +97,14 @@ async def fan_out_upload(
 
     async def _sekali(t: dict) -> UploadResult:
         t = dict(t)
+        # Tiap target boleh membawa video dan captionnya sendiri; yang tidak
+        # membawanya memakai milik Post. Inilah yang membuat satu kiriman bisa
+        # menyebar ke banyak akun dengan video berbeda-beda.
+        media_t = t.pop("media_path", "") or media_path
+        caption_t = t.pop("caption", "") or caption
         return await upload_one(
-            media_path,
-            caption,
+            media_t,
+            caption_t,
             t.pop("platform"),
             media_kind,
             session_name=t.pop("session_name", "default") or "default",
@@ -108,7 +114,15 @@ async def fan_out_upload(
             **t,
         )
 
-    return list(await asyncio.gather(*[_run(t) for t in targets]))
+    # Dibatasi: seratus Chromium sekaligus akan mematikan mesinnya. Yang lain
+    # mengantre dan tetap dikerjakan, hanya bergiliran.
+    gerbang = asyncio.Semaphore(MAKS_PARALEL)
+
+    async def _antre(t: dict) -> UploadResult:
+        async with gerbang:
+            return await _run(t)
+
+    return list(await asyncio.gather(*[_antre(t) for t in targets]))
 
 
 def upload_sync(

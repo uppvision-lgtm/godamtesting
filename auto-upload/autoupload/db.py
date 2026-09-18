@@ -1,6 +1,7 @@
 """Database: engine + 3 tabel (akun sosmed, post, target per platform)."""
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 
 from sqlalchemy import (
@@ -43,6 +44,9 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+log = logging.getLogger("autoupload")
 
 
 class Base(DeclarativeBase):
@@ -91,6 +95,9 @@ class PostTarget(Base):
     post_id: Mapped[int] = mapped_column(ForeignKey("posts.id"), index=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("social_accounts.id"), nullable=True)
     platform: Mapped[str] = mapped_column(String(32))
+    # Video/foto khusus target ini. Kosong = pakai media milik Post-nya.
+    # Satu Post bisa menyebar ke banyak akun dengan video berbeda-beda.
+    media_path: Mapped[str] = mapped_column(Text, default="")
     caption: Mapped[str] = mapped_column(Text, default="")  # hasil adaptasi per platform
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/success/failed
     url: Mapped[str] = mapped_column(Text, default="")
@@ -108,6 +115,32 @@ def init_db() -> None:
         db_file = Path(DATABASE_URL.split("sqlite:///", 1)[-1])
         db_file.parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    _tambah_kolom_yang_kurang()
+
+
+def _tambah_kolom_yang_kurang() -> None:
+    """Tambahkan kolom baru ke tabel yang sudah ada.
+
+    `create_all` hanya membuat tabel yang belum ada; ia tidak pernah mengubah
+    tabel lama. Tanpa ini, basis data yang sudah terisi akan gagal begitu kode
+    baru memakai kolom yang belum pernah dibuat.
+    """
+    from sqlalchemy import inspect, text
+
+    tambahan = {
+        "post_targets": {"media_path": "TEXT DEFAULT ''"},
+    }
+    pemeriksa = inspect(engine)
+    with engine.begin() as sambungan:
+        for tabel, kolom in tambahan.items():
+            if not pemeriksa.has_table(tabel):
+                continue
+            ada = {c["name"] for c in pemeriksa.get_columns(tabel)}
+            for nama, tipe in kolom.items():
+                if nama in ada:
+                    continue
+                sambungan.execute(text(f"ALTER TABLE {tabel} ADD COLUMN {nama} {tipe}"))
+                log.info("Kolom %s.%s ditambahkan", tabel, nama)
 
 
 def get_db():

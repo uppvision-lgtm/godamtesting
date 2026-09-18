@@ -21,7 +21,12 @@ from sqlalchemy.orm import Session
 
 from autoupload import login
 from autoupload.browser import session_names
-from autoupload.config import MAX_FILE_SIZE, PLATFORMS, UPLOAD_DIR
+from autoupload.config import (
+    MAKS_AKUN_PER_PLATFORM,
+    MAX_FILE_SIZE,
+    PLATFORMS,
+    UPLOAD_DIR,
+)
 from autoupload.db import Post, PostTarget, SessionLocal, SocialAccount, get_db
 from autoupload.platforms import REGISTRY
 from autoupload.rahasia import buka, sandikan
@@ -44,16 +49,29 @@ PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 # ---------------------------------------------------------------- skema
 
+class ItemUpload(BaseModel):
+    """Satu akun tujuan, dengan video dan captionnya sendiri."""
+
+    account_id: int
+    media_path: str = ""     # kosong = pakai media utama
+    caption: str = ""        # kosong = pakai caption utama
+
+
 class UploadRequest(BaseModel):
     media_path: str
     caption: str = ""
-    platforms: list[str]
+    # Tidak wajib kalau `items` dipakai: di sana platform tiap baris
+    # sudah ditentukan oleh akunnya sendiri.
+    platforms: list[str] = Field(default_factory=list)
     media_kind: str = Field("video", pattern="^(video|photo)$")
     scheduled_at: str | None = None          # ISO datetime, kosong = sekarang
     account_ids: dict[str, int] = Field(default_factory=dict)  # platform -> id akun
     # Kalau True, permintaan ditahan sampai uploadnya selesai. Dipakai
     # skrip/CLI; halaman web memakai False lalu menanyakan statusnya.
     tunggu: bool = False
+    # Kirim ke banyak akun sekaligus, satu baris per akun. Kalau diisi,
+    # `platforms` dan `account_ids` diabaikan.
+    items: list[ItemUpload] = Field(default_factory=list)
 
 
 class AccountRequest(BaseModel):
@@ -102,13 +120,40 @@ async def upload_media(file: UploadFile = File(...)) -> dict:
 @router.post("/upload")
 async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
     """Upload sekarang (tunggu selesai) atau simpan sebagai jadwal."""
-    unknown = [p for p in req.platforms if p not in PLATFORMS]
-    if not req.platforms or unknown:
-        raise HTTPException(400, f"Platform tidak valid: {unknown or 'kosong'}")
-    if not req.caption.strip():
-        raise HTTPException(400, "Caption wajib diisi")
-    if not Path(req.media_path).exists():
-        raise HTTPException(400, f"File tidak ditemukan: {req.media_path}")
+    daftar: list[dict] = []
+    if req.items:
+        akun_map = {
+            a.id: a
+            for a in db.query(SocialAccount)
+            .filter(SocialAccount.id.in_([i.account_id for i in req.items]))
+            .all()
+        }
+        for it in req.items:
+            akun = akun_map.get(it.account_id)
+            if akun is None or not akun.is_active:
+                raise HTTPException(400, f"Akun #{it.account_id} tidak ada atau tidak aktif")
+            jalur = it.media_path or req.media_path
+            if not jalur or not Path(jalur).exists():
+                raise HTTPException(400, f"File untuk akun #{it.account_id} tidak ditemukan")
+            teks = (it.caption or req.caption).strip()
+            if not teks:
+                raise HTTPException(400, f"Caption untuk akun #{it.account_id} kosong")
+            daftar.append({
+                "platform": akun.platform,
+                "account_id": akun.id,
+                "media_path": jalur,
+                "caption": teks,
+            })
+        if not daftar:
+            raise HTTPException(400, "Belum ada akun tujuan")
+    else:
+        unknown = [p for p in req.platforms if p not in PLATFORMS]
+        if not req.platforms or unknown:
+            raise HTTPException(400, f"Platform tidak valid: {unknown or 'kosong'}")
+        if not req.caption.strip():
+            raise HTTPException(400, "Caption wajib diisi")
+        if not Path(req.media_path).exists():
+            raise HTTPException(400, f"File tidak ditemukan: {req.media_path}")
 
     run_at = None
     if req.scheduled_at:
@@ -134,6 +179,7 @@ async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
         media_kind=req.media_kind,
         scheduled_at=run_at,
         account_ids=req.account_ids,
+        items=daftar or None,
     )
     # Dijalankan SEKARANG walau dijadwalkan: yang menunda adalah fitur jadwal
     # milik platformnya, bukan proses di laptop ini. Jadi kalau laptop mati
@@ -192,7 +238,13 @@ def _post_dict(p: Post) -> dict:
         "scheduled_at": p.scheduled_at,
         "created_at": p.created_at,
         "targets": [
-            {"platform": t.platform, "status": t.status, "url": t.url, "error": t.error}
+            {
+                "platform": t.platform,
+                "account_id": t.account_id,
+                "status": t.status,
+                "url": t.url,
+                "error": t.error,
+            }
             for t in p.targets
         ],
     }
@@ -260,11 +312,12 @@ def delete_post(post_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(404, "Postingan tidak ditemukan")
     if post.status == "processing":
         raise HTTPException(409, "Postingan ini sedang dikirim; tunggu sampai selesai.")
-    jalur = post.media_path
+    jalur = [post.media_path, *(r.media_path for r in post.targets if r.media_path)]
     db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
     db.delete(post)
     db.commit()
-    _buang_media(jalur)
+    for j in jalur:
+        _buang_media(j)
     return {"deleted": post_id}
 
 
@@ -275,6 +328,7 @@ def clear_posts(db: Session = Depends(get_db)) -> dict:
     jalur: list[str] = []
     for post in db.query(Post).filter(Post.status != "processing").all():
         jalur.append(post.media_path)
+        jalur.extend(r.media_path for r in post.targets if r.media_path)
         db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
         db.delete(post)
         n += 1
@@ -320,19 +374,33 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
 def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
     if req.platform not in PLATFORMS:
         raise HTTPException(400, f"Platform harus salah satu dari {PLATFORMS}")
-    # Satu platform hanya boleh punya satu akun aktif. Tanpa ini, menekan
-    # "Ganti" meninggalkan akun lama tetap hidup: halaman menampilkan salah
-    # satunya dan pengunggah memakai yang lain, sehingga Session ID ngawur
-    # bisa tampak hijau karena yang terbaca akun lama yang masih sah.
+    # Satu platform boleh punya BANYAK akun aktif sekaligus. Yang dinonaktifkan
+    # hanya akun dengan nama sesi yang sama, supaya menekan "Ganti" pada satu
+    # akun tetap mengganti akun itu - bukan menumpuk duplikat yang membuat
+    # halaman dan pengunggah memakai baris berbeda.
+    sesi = (req.session_name or "default").strip().lower().replace(" ", "_")
     db.query(SocialAccount).filter(
         SocialAccount.platform == req.platform,
+        SocialAccount.session_name == sesi,
         SocialAccount.is_active.is_(True),
     ).update({"is_active": False}, synchronize_session=False)
+
+    terpakai = (
+        db.query(SocialAccount)
+        .filter(SocialAccount.platform == req.platform, SocialAccount.is_active.is_(True))
+        .count()
+    )
+    if terpakai >= MAKS_AKUN_PER_PLATFORM:
+        raise HTTPException(
+            400,
+            f"{req.platform} sudah punya {terpakai} akun tertaut "
+            f"(batas {MAKS_AKUN_PER_PLATFORM}). Putuskan salah satunya dulu.",
+        )
 
     account = SocialAccount(
         platform=req.platform,
         display_name=req.display_name,
-        session_name=(req.session_name or "default").strip().lower().replace(" ", "_"),
+        session_name=sesi,
         session_id=sandikan(req.session_id.strip()),
         extra=req.extra,
     )

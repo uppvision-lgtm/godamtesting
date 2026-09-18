@@ -24,5 +24,11 @@ RIWAYAT_SIMPAN_HARI = int(os.getenv("AUTOUPLOAD_RIWAYAT_HARI", "30"))
 MAKS_DEBUG_SHOT = int(os.getenv("AUTOUPLOAD_MAKS_DEBUG_SHOT", "20"))
 # Panjang maksimum pesan galat yang disimpan ke basis data.
 MAKS_PANJANG_GALAT = int(os.getenv("AUTOUPLOAD_MAKS_GALAT", "240"))
+# Berapa akun yang diunggah BERSAMAAN. Tiap unggahan menjalankan satu
+# Chromium yang memakan ratusan megabyte, jadi mengerjakan seratus akun
+# sekaligus akan menghabiskan memori mesin apa pun. Sisanya mengantre.
+MAKS_PARALEL = max(1, int(os.getenv("AUTOUPLOAD_MAKS_PARALEL", "3")))
+# Batas akun tertaut per platform.
+MAKS_AKUN_PER_PLATFORM = max(1, int(os.getenv("AUTOUPLOAD_MAKS_AKUN", "100")))
 
 PLATFORMS = ("tiktok", "instagram", "facebook", "youtube", "threads", "twitter")

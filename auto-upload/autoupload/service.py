@@ -42,6 +42,8 @@ def _targets_payload(db, post: Post) -> list[dict]:
         payload.append(
             {
                 "platform": t.platform,
+                "media_path": t.media_path or "",
+                "caption": t.caption or "",
                 "session_name": account.session_name if account else "default",
                 "session_id": buka(account.session_id) if account else "",
                 # Diteruskan ke adapter supaya ia memakai fitur jadwal bawaan
@@ -68,8 +70,16 @@ def create_post(
     media_kind: str = "video",
     scheduled_at: datetime | None = None,
     account_ids: dict[str, int] | None = None,
+    items: list[dict] | None = None,
 ) -> Post:
-    """Simpan post + target per platform. Belum meng-upload apa pun."""
+    """Simpan post + targetnya. Belum meng-upload apa pun.
+
+    Dua bentuk sasaran:
+
+    - `platforms` + `account_ids`: satu video dan satu caption untuk semua.
+    - `items`: satu baris per akun, masing-masing boleh membawa video dan
+      caption sendiri. Dipakai saat menyebar ke banyak akun sekaligus.
+    """
     post = Post(
         media_path=media_path,
         media_kind=media_kind,
@@ -83,15 +93,27 @@ def create_post(
     )
     db.add(post)
     db.flush()
-    for platform in platforms:
-        db.add(
-            PostTarget(
-                post_id=post.id,
-                platform=platform,
-                caption=caption,
-                account_id=(account_ids or {}).get(platform),
+    if items:
+        for it in items:
+            db.add(
+                PostTarget(
+                    post_id=post.id,
+                    platform=it["platform"],
+                    account_id=it.get("account_id"),
+                    media_path=(it.get("media_path") or "").strip(),
+                    caption=(it.get("caption") or "").strip() or caption,
+                )
             )
-        )
+    else:
+        for platform in platforms:
+            db.add(
+                PostTarget(
+                    post_id=post.id,
+                    platform=platform,
+                    caption=caption,
+                    account_id=(account_ids or {}).get(platform),
+                )
+            )
     db.commit()
     db.refresh(post)
     return post
@@ -128,9 +150,19 @@ def _buang_media(jalur: str | None) -> None:
         return  # di luar folder unggahan -> bukan milik kita
     db = SessionLocal()
     try:
+        # Dianggap masih dipakai kalau ada post ATAU target yang belum
+        # selesai merujuknya. Tanpa memeriksa target, video milik akun lain
+        # dalam kiriman yang sama bisa ikut terhapus saat gilirannya belum
+        # datang.
         masih = (
             db.query(Post)
             .filter(Post.media_path == jalur)
+            .filter(Post.status.in_(("pending", "processing")))
+            .count()
+        ) + (
+            db.query(PostTarget)
+            .join(Post, Post.id == PostTarget.post_id)
+            .filter(PostTarget.media_path == jalur)
             .filter(Post.status.in_(("pending", "processing")))
             .count()
         )
@@ -189,6 +221,7 @@ def bersihkan_riwayat(hari: int = RIWAYAT_SIMPAN_HARI) -> int:
         ]
         for post in lama:
             jalur.append(post.media_path)
+            jalur.extend(r.media_path for r in post.targets if r.media_path)
             db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
             db.delete(post)
         if lama:
@@ -217,6 +250,7 @@ def bersihkan_berkas_yatim(hari: int = 2) -> int:
     db = SessionLocal()
     try:
         dipakai = {p.media_path for p in db.query(Post).all() if p.media_path}
+        dipakai |= {r.media_path for r in db.query(PostTarget).all() if r.media_path}
     finally:
         db.close()
 
@@ -280,11 +314,12 @@ async def run_post(post_id: int) -> list[dict]:
             ok += int(result.success)
         post.status = "done" if ok == len(results) else ("partial" if ok else "failed")
         db.commit()
-        jalur = post.media_path
+        jalur = {post.media_path, *(r.media_path for r in rows if r.media_path)}
     finally:
         db.close()
 
-    _buang_media(jalur)
+    for j in jalur:
+        _buang_media(j)
 
     return [
         {"platform": r.platform, "success": r.success, "url": r.url, "error": r.error}

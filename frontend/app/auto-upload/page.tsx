@@ -215,6 +215,9 @@ export default function AutoUploadPage() {
   // Baris yang panel rincian Session ID-nya sedang dibentang.
   const [rincian, setRincian] = useState<PlatformId | "">("");
   const [nilaiCookie, setNilaiCookie] = useState<Record<string, string>>({});
+  // Nama untuk membedakan akun dalam satu platform. Kosong = "ssid",
+  // yaitu akun pertama; nama yang sama akan MENGGANTI akun itu.
+  const [namaSesi, setNamaSesi] = useState("");
   const [memeriksa, setMemeriksa] = useState<string>("");
   const [galatAkun, setGalatAkun] = useState("");
   const [perluLogin, setPerluLogin] = useState(false);
@@ -226,7 +229,12 @@ export default function AutoUploadPage() {
   );
 
   const [caption, setCaption] = useState("");
-  const [dipilih, setDipilih] = useState<PlatformId[]>([]);
+  // Tujuan dipilih per AKUN, bukan per platform: satu platform bisa punya
+  // banyak akun, masing-masing dengan video dan captionnya sendiri.
+  const [akunDipilih, setAkunDipilih] = useState<number[]>([]);
+  const [videoAkun, setVideoAkun] = useState<Record<number, Berkas & { nama: string }>>({});
+  const [captionAkun, setCaptionAkun] = useState<Record<number, string>>({});
+  const [membagiVideo, setMembagiVideo] = useState(false);
   const [jadwal, setJadwal] = useState("");
 
   const [mengirim, setMengirim] = useState(false);
@@ -265,6 +273,28 @@ export default function AutoUploadPage() {
    *  dikembalikan server tidak boleh jadi andalan, dan salah pilih di sini
    *  berarti halaman menampilkan akun lama sementara pengunggah memakai yang
    *  baru. */
+  /** Akun yang siap dikirimi: sudah ditempel Session ID dan tidak terbukti mati. */
+  const akunSiap = akun
+    .filter((a) => a.has_session_id && a.verified !== false)
+    .sort((x, y) => x.platform.localeCompare(y.platform) || x.id - y.id);
+
+  /** Platform yang tersentuh oleh akun-akun terpilih.
+   *
+   *  Diturunkan, bukan disimpan: peringatan panjang caption dan catatan
+   *  jadwal bekerja pada tingkat platform, sedangkan tujuan kini dipilih per
+   *  akun. Menyimpan dua daftar terpisah hanya membuat keduanya bisa berbeda.
+   */
+  const dipilih: PlatformId[] = [
+    ...new Set(
+      akun.filter((a) => akunDipilih.includes(a.id)).map((a) => a.platform)
+    ),
+  ];
+
+  /** SEMUA akun tertaut milik satu platform, urut dari yang paling awal. */
+  const akunSemua = (p: PlatformId) =>
+    akun.filter((a) => a.platform === p && a.has_session_id).sort((x, y) => x.id - y.id);
+
+  /** Akun terbaru milik satu platform, atau null kalau belum dihubungkan. */
   const akunDari = (p: PlatformId) =>
     akun
       .filter((a) => a.platform === p && a.has_session_id)
@@ -314,7 +344,7 @@ export default function AutoUploadPage() {
         body: JSON.stringify({
           platform: p.id,
           display_name: p.nama,
-          session_name: "ssid",
+          session_name: namaSesi.trim() || "ssid",
           // Server menerimanya sebagai satu untai dipisah "|", urutannya
           // mengikuti daftar cookie tiap platform.
           session_id: [...p.cookie, ...(opsTerisi.length === ops.length ? ops : [])]
@@ -362,7 +392,7 @@ export default function AutoUploadPage() {
     setSibuk(p.id);
     try {
       await apiFetch(`/api/sosmed/accounts/${a.id}`, { method: "DELETE" });
-      setDipilih((lama) => lama.filter((x) => x !== p.id));
+      setAkunDipilih((lama) => lama.filter((x) => x !== a.id));
       await muatAkun();
     } finally {
       setSibuk("");
@@ -433,7 +463,7 @@ export default function AutoUploadPage() {
   const alasanBelumSiap = (() => {
     if (!berkas) return "Pilih dulu video atau fotonya.";
     if (!caption.trim()) return "Caption wajib diisi.";
-    if (dipilih.length === 0) return "Centang dulu minimal satu platform tujuan.";
+    if (akunDipilih.length === 0) return "Centang dulu minimal satu akun tujuan.";
     if (jadwal) {
       const saat = new Date(jadwal).getTime();
       if (Number.isNaN(saat)) return "Waktu jadwalnya belum lengkap.";
@@ -483,6 +513,49 @@ export default function AutoUploadPage() {
     }
   }
 
+  /** Unggah beberapa berkas lalu bagikan berurutan ke akun yang tercentang.
+   *
+   *  Tanpa ini, memberi video berbeda untuk puluhan akun berarti mengunggah
+   *  satu per satu - yang tidak masuk akal begitu jumlah akunnya banyak.
+   */
+  async function bagiVideo(berkasBaru: File[]) {
+    setMembagiVideo(true);
+    setGalat("");
+    try {
+      const sasaran = akunDipilih.slice(0, berkasBaru.length);
+      if (berkasBaru.length > akunDipilih.length) {
+        setGalat(
+          `Ada ${berkasBaru.length} berkas tetapi hanya ${akunDipilih.length} akun tercentang; sisanya diabaikan.`
+        );
+      }
+      for (let i = 0; i < sasaran.length; i += 1) {
+        const f = berkasBaru[i];
+        if (f.size > BATAS_BERKAS_MB * 1_048_576) {
+          setGalat(`${f.name} lebih dari ${BATAS_BERKAS_MB} MB; dilewati.`);
+          continue;
+        }
+        setUnggahan({ nama: `${f.name} (${i + 1}/${sasaran.length})`, persen: 0, diproses: false });
+        const { ok, data } = await apiUnggah(
+          "/api/sosmed/media",
+          f,
+          (persen) => setUnggahan((u) => (u ? { ...u, persen, diproses: persen >= 100 } : u)),
+          true
+        );
+        if (!ok) throw new Error(String(data.detail || `Gagal mengunggah ${f.name}.`));
+        const hasilBerkas = data as unknown as Berkas;
+        setVideoAkun((lama) => ({
+          ...lama,
+          [sasaran[i]]: { ...hasilBerkas, nama: f.name },
+        }));
+      }
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal membagi video.");
+    } finally {
+      setUnggahan(null);
+      setMembagiVideo(false);
+    }
+  }
+
   async function kirim() {
     if (!berkas) return;
     setMengirim(true);
@@ -495,9 +568,15 @@ export default function AutoUploadPage() {
         body: JSON.stringify({
           media_path: berkas.media_path,
           caption: caption.trim(),
-          platforms: dipilih,
           media_kind: berkas.media_kind,
           scheduled_at: jadwal ? new Date(jadwal).toISOString() : null,
+          // Satu baris per akun. Yang tidak punya video/caption sendiri
+          // memakai yang utama di atas.
+          items: akunDipilih.map((id) => ({
+            account_id: id,
+            media_path: videoAkun[id]?.media_path || "",
+            caption: (captionAkun[id] || "").trim(),
+          })),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -655,11 +734,28 @@ export default function AutoUploadPage() {
                           onClick={() => {
                             setGalatAkun("");
                             setNilaiCookie({});
+                            setNamaSesi("");
                             setBuka(terbuka ? "" : p.id);
                           }}
                         >
                           {terbuka ? "Tutup" : a ? "Ganti" : "Hubungkan"}
                         </button>
+                        {a && !terbuka && (
+                          <button
+                            type="button"
+                            className={styles.btnSekunder}
+                            disabled={lagi}
+                            title="Tautkan satu akun lagi di platform ini"
+                            onClick={() => {
+                              setGalatAkun("");
+                              setNilaiCookie({});
+                              setNamaSesi(`akun-${akunSemua(p.id).length + 1}`);
+                              setBuka(p.id);
+                            }}
+                          >
+                            + Akun
+                          </button>
+                        )}
                         {a && (
                           <>
                             <button
@@ -683,6 +779,47 @@ export default function AutoUploadPage() {
                         )}
                       </div>
                     </div>
+
+                    {akunSemua(p.id).length > 1 && (
+                      <div className={styles.daftarSesi}>
+                        {akunSemua(p.id).map((s) => (
+                          <div key={s.id} className={styles.sesiBaris}>
+                            <span className={styles.sesiNama}>{s.session_name}</span>
+                            <span
+                              className={
+                                s.verified === true
+                                  ? styles.sambung
+                                  : s.verified === false
+                                    ? styles.mati
+                                    : styles.belum
+                              }
+                            >
+                              {s.verified === true
+                                ? s.nama_akun || "aktif"
+                                : s.verified === false
+                                  ? "sesi mati"
+                                  : "belum diperiksa"}
+                            </span>
+                            <button
+                              type="button"
+                              className={styles.btnSekunder}
+                              disabled={lagi || memeriksa === p.id}
+                              onClick={() => void periksa(p.id, s.id)}
+                            >
+                              Periksa
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnBahaya}
+                              disabled={lagi}
+                              onClick={() => void putuskan(p, s)}
+                            >
+                              Putuskan
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {dibentang && a && (
                       <div className={styles.rincianKotak}>
@@ -710,6 +847,21 @@ export default function AutoUploadPage() {
                     {terbuka && (
                       <div className={styles.ssidKotak}>
                         <p className={styles.ssidPetunjuk}>{p.petunjuk}</p>
+                        <label className={styles.ssidLabel}>
+                          <span>
+                            nama akun
+                            <em className={styles.opsional}>
+                              {" "}
+                              untuk membedakan beberapa akun di platform yang sama
+                            </em>
+                          </span>
+                          <input
+                            value={namaSesi}
+                            spellCheck={false}
+                            placeholder="mis. akun-2 (kosongkan untuk mengganti akun utama)"
+                            onChange={(e) => setNamaSesi(e.target.value)}
+                          />
+                        </label>
                         {/* Satu kotak per cookie: jelas mana yang masih kosong,
                             dan tidak ada yang perlu menghitung tanda pemisah. */}
                         {[...p.cookie, ...(p.cookieOpsional || [])].map((c, i) => (
@@ -749,6 +901,7 @@ export default function AutoUploadPage() {
                             onClick={() => {
                               setBuka("");
                               setNilaiCookie({});
+                              setNamaSesi("");
                               setGalatAkun("");
                             }}
                           >
@@ -848,61 +1001,111 @@ export default function AutoUploadPage() {
 
             <div className={styles.blok}>
               <div className={styles.blokHead}>
-                <h3>Platform tujuan</h3>
+                <h3>Akun tujuan</h3>
                 <div className={styles.aksi}>
                   <button
                     type="button"
                     className={styles.btnSekunder}
-                    onClick={() => setDipilih(PLATFORM.filter((p) => bisaDipakai(p.id)).map((p) => p.id))}
+                    onClick={() => setAkunDipilih(akunSiap.map((a) => a.id))}
                   >
                     Pilih semua
                   </button>
                   <button
                     type="button"
                     className={styles.btnSekunder}
-                    onClick={() => setDipilih([])}
+                    onClick={() => setAkunDipilih([])}
                   >
                     Kosongkan
                   </button>
+                  <label className={styles.btnSekunder} title="Pilih beberapa video sekaligus; video ke-1 untuk akun tercentang ke-1, dan seterusnya">
+                    {membagiVideo ? "Membagi..." : "Beda video per akun"}
+                    <input
+                      type="file"
+                      accept="video/*,image/*"
+                      multiple
+                      hidden
+                      disabled={membagiVideo || akunDipilih.length === 0}
+                      onChange={(e) => {
+                        const f = Array.from(e.target.files || []);
+                        e.target.value = "";
+                        if (f.length) void bagiVideo(f);
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
-              <div className={styles.daftarCek}>
-                {PLATFORM.map((p) => {
-                  const bisa = bisaDipakai(p.id);
-                  const dicentang = dipilih.includes(p.id);
-                  return (
-                    <label
-                      key={p.id}
-                      className={`${styles.cekItem} ${dicentang ? styles.cekAktif : ""} ${bisa ? "" : styles.cekMati}`}
-                      title={
-                        bisa
-                          ? p.belumTeruji
-                            ? "Alur unggahnya belum pernah diuji sampai terbit — bisa gagal"
-                            : ""
-                          : akunDari(p.id)
-                            ? "Sesinya sudah tidak berlaku — tempel Session ID yang baru"
-                            : "Tempel dulu Session ID-nya di panel kiri"
-                      }
-                    >
-                      <input
-                        type="checkbox"
-                        checked={dicentang}
-                        disabled={!bisa}
-                        onChange={(e) =>
-                          setDipilih((lama) =>
-                            e.target.checked ? [...lama, p.id] : lama.filter((x) => x !== p.id)
-                          )
-                        }
-                      />
-                      <span className={styles.logoKecil} style={{ color: WARNA[p.id] }}>
-                        <LogoSosmed platform={p.id} ukuran={15} />
-                      </span>
-                      {p.nama}
-                      {p.belumTeruji && <span className={styles.tandaUji}>belum teruji</span>}
-                    </label>
-                  );
-                })}
-              </div>
+              {akunSiap.length === 0 ? (
+                <p className={styles.hint}>
+                  Belum ada akun yang siap. Tempel Session ID-nya di panel kiri.
+                </p>
+              ) : (
+                <div className={styles.daftarTujuan}>
+                  {akunSiap.map((a) => {
+                    const pf = PLATFORM.find((x) => x.id === a.platform);
+                    const dicentang = akunDipilih.includes(a.id);
+                    const khusus = videoAkun[a.id];
+                    return (
+                      <div
+                        key={a.id}
+                        className={`${styles.tujuanBaris} ${dicentang ? styles.tujuanAktif : ""}`}
+                      >
+                        <label className={styles.tujuanPilih}>
+                          <input
+                            type="checkbox"
+                            checked={dicentang}
+                            onChange={(e) =>
+                              setAkunDipilih((lama) =>
+                                e.target.checked
+                                  ? [...lama, a.id]
+                                  : lama.filter((x) => x !== a.id)
+                              )
+                            }
+                          />
+                          <span className={styles.logoKecil} style={{ color: WARNA[a.platform] }}>
+                            <LogoSosmed platform={a.platform} ukuran={15} />
+                          </span>
+                          <span className={styles.tujuanNama}>
+                            {a.nama_akun || a.session_name}
+                            {pf?.belumTeruji && (
+                              <span className={styles.tandaUji}>belum teruji</span>
+                            )}
+                          </span>
+                        </label>
+
+                        <input
+                          className={styles.tujuanCaption}
+                          value={captionAkun[a.id] || ""}
+                          placeholder="caption khusus (kosong = pakai caption di atas)"
+                          spellCheck={false}
+                          onChange={(e) =>
+                            setCaptionAkun((lama) => ({ ...lama, [a.id]: e.target.value }))
+                          }
+                        />
+
+                        <span className={styles.tujuanVideo} title={khusus ? khusus.nama : ""}>
+                          {khusus ? khusus.nama : "video utama"}
+                        </span>
+                        {khusus && (
+                          <button
+                            type="button"
+                            className={styles.btnSekunder}
+                            title="Kembalikan ke video utama"
+                            onClick={() =>
+                              setVideoAkun((lama) => {
+                                const s = { ...lama };
+                                delete s[a.id];
+                                return s;
+                              })
+                            }
+                          >
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className={styles.blok}>
@@ -969,7 +1172,7 @@ export default function AutoUploadPage() {
                 ? "Mengirim..."
                 : jadwal
                   ? "Jadwalkan"
-                  : `Kirim ke ${dipilih.length || 0} platform`}
+                  : `Kirim ke ${akunDipilih.length || 0} akun`}
             </button>
             {alasanBelumSiap && <p className={styles.alasan}>{alasanBelumSiap}</p>}
 
