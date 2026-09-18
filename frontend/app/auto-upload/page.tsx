@@ -80,6 +80,10 @@ const PLATFORM: {
   alasanJadwal?: string;
   /** Batasan penjadwalan pada platform yang BISA dijadwalkan. */
   catatanJadwal?: string;
+  /** Jeda minimum dari sekarang, dalam menit. TikTok menolak di bawah ini. */
+  jedaMinimalMenit?: number;
+  /** Batas terjauh jadwal, dalam hari. */
+  jedaMaksimalHari?: number;
 }[] = [
   {
     id: "instagram",
@@ -99,8 +103,11 @@ const PLATFORM: {
     cookie: ["sessionid"],
     petunjuk: "Buka tiktok.com, lalu salin nilai cookie sessionid.",
     bisaJadwal: true,
+    jedaMinimalMenit: 15,
+    jedaMaksimalHari: 10,
     catatanJadwal:
-      "menitnya dibulatkan ke kelipatan 5 dan jadwalnya paling jauh 10 hari ke depan",
+      "jadwalnya minimal 15 menit dari sekarang, paling jauh 10 hari ke depan, " +
+      "dan menitnya dibulatkan ke kelipatan 5",
 
   },
   {
@@ -406,6 +413,27 @@ export default function AutoUploadPage() {
     if (!berkas) return "Pilih dulu video atau fotonya.";
     if (!caption.trim()) return "Caption wajib diisi.";
     if (dipilih.length === 0) return "Centang dulu minimal satu platform tujuan.";
+    if (jadwal) {
+      const saat = new Date(jadwal).getTime();
+      if (Number.isNaN(saat)) return "Waktu jadwalnya belum lengkap.";
+      const menitLagi = (saat - Date.now()) / 60000;
+      if (menitLagi <= 0) return "Waktu jadwalnya sudah lewat.";
+      // Dicegah di sini, bukan dibiarkan gagal di tengah jalan: videonya
+      // sudah terlanjur diunggah beberapa menit sebelum platform menolak.
+      const tabrak = PLATFORM.filter(
+        (p) =>
+          dipilih.includes(p.id) &&
+          p.bisaJadwal &&
+          ((p.jedaMinimalMenit && menitLagi < p.jedaMinimalMenit) ||
+            (p.jedaMaksimalHari && menitLagi > p.jedaMaksimalHari * 1440))
+      );
+      if (tabrak.length > 0) {
+        const p = tabrak[0];
+        return menitLagi < (p.jedaMinimalMenit ?? 0)
+          ? `${p.nama} menolak jadwal kurang dari ${p.jedaMinimalMenit} menit dari sekarang.`
+          : `${p.nama} menolak jadwal lebih dari ${p.jedaMaksimalHari} hari ke depan.`;
+      }
+    }
     return "";
   })();
 

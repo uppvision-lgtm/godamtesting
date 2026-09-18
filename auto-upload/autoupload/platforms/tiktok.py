@@ -43,6 +43,13 @@ _BERHASIL = re.compile(
     re.IGNORECASE,
 )
 
+# Keluhan yang muncul di blok jadwal kalau waktunya tidak diterima. TikTok
+# menuntut minimal 15 menit dari sekarang dan maksimal 10 hari ke depan.
+_JADWAL_DITOLAK = re.compile(
+    r"(minimal\s*\d+\s*menit|at least\s*\d+\s*minutes|maksimal|at most|"
+    r"tidak valid|invalid)", re.IGNORECASE
+)
+
 _PEMILIH_POST = 'a[href*="/video/"]'
 
 # Daftar postingan dibaca dari TikTok Studio, BUKAN dari profil publik:
@@ -127,9 +134,20 @@ class TikTok(PlaywrightPlatform):
                 break
             await page.wait_for_timeout(5_000)
         if tombol is None:
+            # Ambil keterangan yang TikTok tampilkan sendiri. Tanpa ini yang
+            # sampai ke pengguna hanya jejak timeout Playwright, yang tidak
+            # menjelaskan apa pun.
+            alasan = await page.evaluate(
+                """() => [...document.querySelectorAll('*')]
+                    .filter(e => !e.children.length)
+                    .map(e => (e.innerText || '').trim())
+                    .filter(t => t && /minimal|at least|maksimal|at most|tidak valid|invalid|gagal|error/i.test(t))
+                    .slice(0, 3).join('; ')"""
+            )
             raise PlatformError(
-                "Tombol Posting TikTok tidak pernah aktif - videonya mungkin "
-                "masih diproses atau ditolak."
+                "Tombol Posting TikTok tidak pernah aktif"
+                + (f": {alasan}" if alasan else
+                   " - videonya mungkin masih diproses atau ditolak.")
             )
 
         # 4. Kirim.
@@ -244,6 +262,14 @@ class TikTok(PlaywrightPlatform):
                 f"TikTok tidak menerima jadwalnya (diminta {tgl} {jam}, "
                 f"terbaca {terbaca_tgl} {terbaca_jam})."
             )
+        keluhan = await kotak.inner_text()
+        if _JADWAL_DITOLAK.search(keluhan or ""):
+            baris = next(
+                (b.strip() for b in (keluhan or "").splitlines()
+                 if _JADWAL_DITOLAK.search(b)),
+                "waktunya tidak diterima",
+            )
+            raise PlatformError(f"TikTok menolak waktu jadwalnya: {baris}")
         print(f"[tiktok] jadwal dipasang: {tgl} {jam}", flush=True)
 
     @staticmethod
