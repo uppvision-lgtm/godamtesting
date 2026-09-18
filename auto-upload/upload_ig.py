@@ -33,7 +33,10 @@ AKAR = Path(__file__).resolve().parent
 sys.path.insert(0, str(AKAR))
 os.environ.setdefault("AUTOUPLOAD_DATA_DIR", str(AKAR))
 
-EKST_VIDEO = {".mp4", ".mov", ".m4v", ".webm"}
+EKST_VIDEO = {
+    ".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv",
+    ".mpg", ".mpeg", ".3gp", ".flv", ".wmv", ".ts", ".m2ts",
+}
 EKST_FOTO = {".jpg", ".jpeg", ".png", ".webp"}
 
 

@@ -11,6 +11,7 @@ sendiri, atau panggil `upload_sync()` langsung dari view tanpa lewat HTTP.
 
 import asyncio
 import logging
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +44,18 @@ API_PREFIX = os.getenv("AUTOUPLOAD_API_PREFIX", "/api")
 
 router = APIRouter(prefix=API_PREFIX, tags=["autoupload"])
 
-VIDEO_EXT = {".mp4", ".mov", ".avi", ".webm"}
+# Format video yang boleh diunggah. Daftar ini sengaja lebar: pemilih berkas
+# memakai accept="video/*", jadi apa pun yang dianggap video oleh sistem bisa
+# dipilih, dan menolaknya di server hanya membuat orang bingung kenapa
+# videonya "tidak didukung".
+VIDEO_EXT = {
+    ".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv",
+    ".mpg", ".mpeg", ".3gp", ".flv", ".wmv", ".ts", ".m2ts",
+}
+# Yang boleh dikirim apa adanya ke platform. Sisanya diubah dulu: Instagram,
+# Threads dan X hanya menerima MP4/MOV, jadi menerima .mkv tanpa mengubahnya
+# hanya memindahkan kegagalan ke tengah proses upload.
+VIDEO_LANGSUNG = {".mp4", ".mov"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -108,11 +120,68 @@ async def upload_media(file: UploadFile = File(...)) -> dict:
         dest.unlink(missing_ok=True)
         raise HTTPException(400, "File kosong")
 
+    if suffix in VIDEO_EXT and suffix not in VIDEO_LANGSUNG:
+        dest = await asyncio.to_thread(_jadikan_mp4, dest)
+        size = dest.stat().st_size
+
     return {
         "media_path": str(dest),
         "size_bytes": size,
         "media_kind": "video" if suffix in VIDEO_EXT else "photo",
     }
+
+
+def _codec_video(berkas: Path) -> str:
+    """Nama codec video berkas, atau "" kalau tidak terbaca."""
+    hasil = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(berkas)],
+        capture_output=True, text=True,
+    )
+    return hasil.stdout.strip().lower() if hasil.returncode == 0 else ""
+
+
+def _jadikan_mp4(asal: Path) -> Path:
+    """Ubah video ke MP4 supaya platformnya mau menerimanya.
+
+    Dicoba salin-aliran dulu (tanpa menyandi ulang): untuk .mkv atau .m4v yang
+    isinya sudah H.264/AAC, ini hanya menukar wadahnya dan selesai dalam
+    hitungan detik tanpa menurunkan mutu. Kalau codec-nya tidak cocok, barulah
+    disandikan ulang.
+    """
+    tujuan = asal.with_suffix(".mp4")
+    if tujuan.exists() and tujuan != asal:
+        tujuan = asal.with_name(f"{asal.stem}-mp4.mp4")
+
+    sandi_ulang = ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+    # Salin-aliran HANYA kalau videonya sudah H.264. Wadah MP4 menerima codec
+    # lain (mpeg4 dari .avi, misalnya), tetapi Instagram dan TikTok tidak -
+    # jadi menyalinnya begitu saja hanya memindahkan kegagalan ke tengah
+    # proses upload, saat videonya sudah terlanjur terkirim.
+    percobaan = (
+        ([ "-c", "copy", "-movflags", "+faststart"], sandi_ulang)
+        if _codec_video(asal) == "h264"
+        else (sandi_ulang,)
+    )
+    for opsi in percobaan:
+        hasil = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(asal),
+             *opsi, str(tujuan)],
+            capture_output=True, text=True,
+        )
+        if hasil.returncode == 0 and tujuan.exists() and tujuan.stat().st_size > 0:
+            asal.unlink(missing_ok=True)
+            log.info("%s diubah ke MP4 (%s)", asal.name, "salin" if "copy" in opsi else "sandi ulang")
+            return tujuan
+        tujuan.unlink(missing_ok=True)
+
+    asal.unlink(missing_ok=True)
+    raise HTTPException(
+        400,
+        f"Video '{asal.suffix}' tidak bisa diubah ke MP4. Coba ekspor ulang "
+        "videonya sebagai MP4 (H.264) lalu unggah lagi.",
+    )
 
 
 # ---------------------------------------------------------------- upload

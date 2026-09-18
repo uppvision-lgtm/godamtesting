@@ -950,7 +950,7 @@ export default function AutoUploadPage() {
                   <input
                     type="file"
                     disabled={!!unggahan}
-                    accept="video/*,image/*"
+                    accept="video/*,image/*,.mp4,.mov,.m4v,.webm,.avi,.mkv,.mpg,.mpeg,.3gp,.flv,.wmv,.ts,.m2ts,.jpg,.jpeg,.png,.webp"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       if (f) void pilihBerkas(f);
@@ -1021,7 +1021,7 @@ export default function AutoUploadPage() {
                     {membagiVideo ? "Membagi..." : "Beda video per akun"}
                     <input
                       type="file"
-                      accept="video/*,image/*"
+                      accept="video/*,image/*,.mp4,.mov,.m4v,.webm,.avi,.mkv,.mpg,.mpeg,.3gp,.flv,.wmv,.ts,.m2ts,.jpg,.jpeg,.png,.webp"
                       multiple
                       hidden
                       disabled={membagiVideo || akunDipilih.length === 0}
