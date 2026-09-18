@@ -28,9 +28,13 @@ log = logging.getLogger("autoupload")
 # videonya dua kali.
 _SESAAT = re.compile(
     r"(timeout|timed out|net::|econnreset|econnrefused|target closed|"
-    r"browser has been closed|connection closed|temporarily)",
+    r"target crashed|browser has been closed|connection closed|temporarily)",
     re.IGNORECASE,
 )
+
+# Peramban mati di tengah jalan. Di kontainer kecil ini hampir selalu berarti
+# kehabisan memori, dan "Target crashed" tidak memberi tahu apa pun soal itu.
+_PERAMBAN_MATI = re.compile(r"(target crashed|browser has been closed)", re.IGNORECASE)
 
 
 def _layak_diulang(hasil) -> bool:
@@ -88,6 +92,13 @@ async def fan_out_upload(
     async def _run(t: dict) -> UploadResult:
         t = dict(t)
         hasil = await _sekali(t)
+        if not hasil.success and _PERAMBAN_MATI.search(hasil.error or ""):
+            hasil.error = (
+                "Peramban mati di tengah upload - biasanya karena servernya "
+                "kehabisan memori saat beberapa akun dikerjakan bersamaan. "
+                "Kurangi AUTOUPLOAD_MAKS_PARALEL, atau kirim ke lebih sedikit "
+                f"akun sekaligus. ({(hasil.error or '')[:80]})"
+            )
         if _layak_diulang(hasil):
             log.warning("%s gagal sesaat (%s); diulang sekali",
                         t.get("platform"), (hasil.error or "")[:80])

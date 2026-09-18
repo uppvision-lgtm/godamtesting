@@ -286,12 +286,17 @@ class Instagram(PlaywrightPlatform):
         # handles any sequence: Share if present, else Next, else caption.
         # Semua selektor DI-SCOPE ke dalam dialog komposer: bisa ada >1
         # dialog terbuka, dan tombol di dialog lain tidak relevan.
-        composer_sel = 'div[role="dialog"]:has([role="button"]:has-text(' \
-            '"Selanjutnya")), div[role="dialog"]:has([role="button"]:has-text(' \
-            '"Berikutnya")), div[role="dialog"]:has([role="button"]:has-text(' \
-            '"Bagikan")), div[role="dialog"]:has([role="button"]:has-text(' \
-            '"Share")), div[role="dialog"]:has(textarea), ' \
-            'div[role="dialog"]:has([role="textbox"])'
+        # Dialog mana yang dianggap komposer. Daftarnya HARUS memuat kedua
+        # bahasa: Instagram memberi antarmuka Inggris di server dan Indonesia
+        # di laptop. Tanpa "Next" di sini, layar Crop berbahasa Inggris - yang
+        # hanya punya tombol "Crop" dan "Next" - tidak cocok dengan selektor
+        # mana pun, sehingga seluruh klik sesudahnya menyasar elemen yang
+        # tidak ada dan prosesnya mandek di situ sampai batas waktu.
+        _LABEL_KOMPOSER = ("Next", "Selanjutnya", "Berikutnya", "Share", "Bagikan")
+        composer_sel = ", ".join(
+            f'div[role="dialog"]:has([role="button"]:has-text("{x}"))'
+            for x in _LABEL_KOMPOSER
+        ) + ', div[role="dialog"]:has(textarea), div[role="dialog"]:has([role="textbox"])'
         composer = page.locator(composer_sel).first
         caption_done = False
         shared = False
@@ -343,7 +348,9 @@ class Instagram(PlaywrightPlatform):
                 try:
                     crop_toggle = composer.locator(
                         '[role="button"]:has-text("Pangkas"), '
-                        'button:has-text("Pangkas"), [role="combobox"]'
+                        'button:has-text("Pangkas"), '
+                        '[role="button"]:has-text("Crop"), '
+                        'button:has-text("Crop"), [role="combobox"]'
                     ).first
                     await crop_toggle.click(timeout=2_000)
                     await page.wait_for_timeout(800)
