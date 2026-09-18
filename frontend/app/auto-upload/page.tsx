@@ -79,10 +79,6 @@ const PLATFORM: {
     batas: 2200,
     cookie: ["sessionid"],
     petunjuk: "Buka instagram.com, lalu salin nilai cookie sessionid.",
-    catatanJadwal:
-      "Instagram membuka jendela Chrome dan memakai kursor tetikus saat waktunya tiba, " +
-      "karena tombol Buat (+) hanya menerima klik tingkat sistem. Pastikan laptop menyala " +
-      "dan tidak terkunci; kalau sedang kamu pakai, kursormu akan ikut terpakai sebentar.",
   },
   {
     id: "tiktok",

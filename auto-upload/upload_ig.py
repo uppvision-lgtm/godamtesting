@@ -2,8 +2,8 @@
 """Unggah satu postingan Instagram dari berkas di folder, lewat Chrome.
 
 Cara kerjanya persis seperti orang mengunggah manual: Chrome dibuka dengan
-Session ID akunmu, tombol Buat (+) di sidebar diklik, baris "Postingan"
-dipilih, file dilampirkan, caption diisi, lalu tombol Bagikan ditekan.
+Session ID akunmu, tombol Buat (+) di sidebar diketuk, file dilampirkan,
+caption diisi, lalu tombol Bagikan ditekan. Semuanya di latar belakang.
 
     python3 upload_ig.py                       # ambil dari folder berkas/
     python3 upload_ig.py --video klip.mp4 --caption "halo"
@@ -15,14 +15,9 @@ ISI FOLDER berkas/
     Caption dicari berurutan: <nama-video>.txt, lalu caption.txt.
     Contoh: berkas/klip.mp4 + berkas/klip.txt
 
-HARUS DIJALANKAN DARI Terminal.app, BUKAN dari terminal VS Code.
-    Instagram diam-diam mengabaikan klik yang dikirim Playwright/CDP pada
-    tombol Buat (+) - ini sudah diuji dengan empat metode (locator.click,
-    mouse down/up, focus+Enter, dispatch_event) dalam keadaan tanpa dialog
-    penghalang dan tombol terbukti terekspos: keempatnya diabaikan. Yang
-    diterima hanya klik level OS (CGEventPost lewat pyautogui), dan macOS
-    cuma mengizinkannya untuk aplikasi yang punya izin Accessibility.
-    Terminal.app punya izin itu; VS Code tidak.
+Sejak upload Instagram memakai event SENTUH (bukan klik mouse tingkat
+sistem), skrip ini berjalan headless dan tidak butuh izin Accessibility,
+jendela terlihat, maupun Terminal.app. Jalankan dari mana saja.
 """
 
 from __future__ import annotations
@@ -32,7 +27,6 @@ import asyncio
 import os
 import shutil
 import sys
-import time
 from pathlib import Path
 
 AKAR = Path(__file__).resolve().parent
@@ -46,41 +40,6 @@ EKST_FOTO = {".jpg", ".jpeg", ".png", ".webp"}
 def gagal(pesan: str) -> None:
     print(f"\nGAGAL: {pesan}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def periksa_izin_klik() -> None:
-    """Berhenti sekarang kalau macOS tidak mengizinkan klik sintetis.
-
-    Tanpa cek ini, skrip tetap berjalan beberapa menit lalu berhenti dengan
-    "popover tidak muncul" - pesan yang menyesatkan, karena koordinatnya
-    sebenarnya sudah tepat sasaran dan yang salah cuma izinnya. Membaca posisi
-    kursor TIDAK butuh izin, menggerakkannya butuh; itulah cara mendeteksinya.
-    """
-    try:
-        import pyautogui
-    except Exception as exc:  # noqa: BLE001 - pesannya harus tetap jelas
-        gagal(
-            f"pyautogui tidak bisa diimpor ({exc}).\n"
-            f"Pasang dengan: {sys.executable} -m pip install pyautogui"
-        )
-
-    pyautogui.FAILSAFE = False
-    awal = pyautogui.position()
-    pyautogui.moveTo(awal.x + 60, awal.y + 60, 0.2)
-    time.sleep(0.3)
-    bergerak = pyautogui.position() != awal
-    pyautogui.moveTo(awal.x, awal.y, 0.2)
-    if not bergerak:
-        gagal(
-            "macOS tidak mengizinkan skrip ini menggerakkan kursor, jadi klik "
-            "tombol Buat (+) pasti diabaikan.\n\n"
-            "  1. Buka System Settings -> Privacy & Security -> Accessibility\n"
-            "  2. Centang Terminal (kalau belum ada, tambahkan dengan tombol +)\n"
-            "  3. Tutup Terminal, buka lagi, jalankan ulang skrip ini\n\n"
-            "Catatan: menjalankannya dari terminal VS Code tidak akan pernah "
-            "berhasil kecuali VS Code sendiri diberi izin yang sama."
-        )
-    print("izin Accessibility: OK")
 
 
 def cari_berkas(folder: Path) -> tuple[Path, str]:
@@ -152,12 +111,11 @@ async def unggah(media: Path, caption: str, ssid: str) -> str | None:
     from autoupload.platforms import REGISTRY
 
     kind = MediaKind.VIDEO if media.suffix.lower() in EKST_VIDEO else MediaKind.PHOTO
-    adapter = REGISTRY["instagram"](session_name="default", headless=False)
+    adapter = REGISTRY["instagram"](session_name="default", headless=True)
 
     print(f"\nfile    : {media.name} ({media.stat().st_size / 1024:.0f} KB, {kind.value})")
     print(f"caption : {caption[:70]}{'...' if len(caption) > 70 else ''}")
-    print("\nChrome akan terbuka dan kursor dipakai otomatis.")
-    print("JANGAN sentuh mouse/keyboard sampai selesai.\n")
+    print("\nBerjalan di latar belakang; mouse dan keyboard tidak dipakai.\n")
 
     hasil = await adapter.upload(media, caption, kind, session_id=ssid)
     if not hasil.success:
@@ -177,12 +135,6 @@ def main() -> None:
                    help="jangan pindahkan file ke terkirim/ setelah berhasil")
     a = p.parse_args()
 
-    if sys.platform != "darwin":
-        gagal("Skrip ini khusus macOS (klik level OS lewat CGEvent).")
-
-    # Validasi berkas dulu, baru izin: pengecekan izin menggerakkan kursor
-    # sungguhan, jadi jangan sampai itu terjadi hanya untuk memberi tahu
-    # bahwa path-nya salah ketik.
     folder = Path(a.folder).expanduser().resolve()
     if a.video:
         media = Path(a.video).expanduser().resolve()
@@ -203,7 +155,6 @@ def main() -> None:
         gagal("Caption kosong.")
 
     ssid = ambil_ssid(a.ssid)
-    periksa_izin_klik()
     url = asyncio.run(unggah(media, caption, ssid))
 
     print(f"\nBERHASIL{': ' + url if url else ' (URL tidak terbaca)'}")
