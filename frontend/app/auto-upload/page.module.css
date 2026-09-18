@@ -952,8 +952,18 @@
 .sesiBaris .sambung,
 .sesiBaris .mati,
 .sesiBaris .belum {
-  flex: 1;
-  min-width: 90px;
+  flex: 1 1 90px;
+  /* Tanpa min-width: 0, nama akun panjang menolak menyusut dan menabrak
+     tombol di sebelahnya. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sesiBaris .btnSekunder,
+.sesiBaris .btnBahaya {
+  flex: none;
 }
 
 /* ---- Daftar akun tujuan ---- */
