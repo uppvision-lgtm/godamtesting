@@ -1074,6 +1074,48 @@ def _perintah_ytdlp() -> list[str]:
     return [sys.executable, "-m", "yt_dlp"]
 
 
+def _tanpa_cookie(perintah: list[str]) -> list[str]:
+    """Salinan perintah yt-dlp tanpa pasangan "--cookies <berkas>"."""
+    bersih: list[str] = []
+    lewati = False
+    for bagian in perintah:
+        if lewati:
+            lewati = False
+            continue
+        if bagian == "--cookies":
+            lewati = True
+            continue
+        bersih.append(bagian)
+    return bersih
+
+
+def _ytdlp_dengan_mundur(
+    perintah: list[str],
+    url: str,
+    pakai_cookie: bool,
+    batas: int,
+    log: Callable[[str], None] | None = None,
+) -> subprocess.CompletedProcess:
+    """Jalankan yt-dlp; kalau gagal DENGAN cookie, ulangi TANPA cookie.
+
+    Session ID yang sudah mati bukan sekadar tidak membantu - ia merusak.
+    Instagram membalas permintaan bercookie-mati dengan badan kosong, dan
+    yt-dlp berhenti dengan "Failed to parse JSON", padahal postingan publik
+    yang sama terbaca dengan mudah tanpa cookie sama sekali. Jadi cookie yang
+    ditolak dilepas dulu sebelum menyerah.
+    """
+    hasil = subprocess.run(perintah + [url], capture_output=True, text=True, timeout=batas)
+    if hasil.returncode == 0 or not pakai_cookie:
+        return hasil
+    if log:
+        log("Session ID-nya ditolak; mencoba lagi tanpa cookie.")
+    logger.info("yt-dlp gagal dengan cookie, diulang tanpa cookie: %s", url)
+    kedua = subprocess.run(
+        _tanpa_cookie(perintah) + [url], capture_output=True, text=True, timeout=batas
+    )
+    return kedua if kedua.returncode == 0 else hasil
+
+
 def download_source(
     url: str,
     tujuan: Path,
@@ -1188,9 +1230,8 @@ def download_source(
     if log:
         log(f"Mengunduh video dari {url}")
     try:
-        hasil = subprocess.run(
-            perintah + [url],
-            capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        hasil = _ytdlp_dengan_mundur(
+            perintah, url, berkas_cookie is not None, DOWNLOAD_TIMEOUT_SECONDS, log
         )
     except subprocess.TimeoutExpired as error:
         raise VideoError("Unduhan video melewati batas waktu") from error
@@ -1203,7 +1244,13 @@ def download_source(
             shutil.rmtree(kunci, ignore_errors=True)
         pesan = (hasil.stderr or hasil.stdout or "").strip().splitlines()
         detail = pesan[-1] if pesan else "penyebab tidak diketahui"
-        raise VideoError(f"Gagal mengunduh video: {detail[:300]}")
+        tambahan = (
+            " Tanpa cookie pun gagal, jadi videonya memang tidak bisa diambil "
+            "(mungkin akunnya privat)."
+            if berkas_cookie is not None
+            else ""
+        )
+        raise VideoError(f"Gagal mengunduh video: {detail[:300]}{tambahan}")
 
     berkas = sorted(tujuan.glob("source.*"))
     if not berkas:
@@ -1255,8 +1302,8 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
         perintah += ["--cookies", str(berkas_cookie)]
 
     try:
-        hasil = subprocess.run(
-            perintah + [url], capture_output=True, text=True, timeout=PREVIEW_TIMEOUT_SECONDS
+        hasil = _ytdlp_dengan_mundur(
+            perintah, url, berkas_cookie is not None, PREVIEW_TIMEOUT_SECONDS
         )
     except subprocess.TimeoutExpired as error:
         raise VideoError("Pratinjau link melewati batas waktu") from error
@@ -1267,7 +1314,13 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
     if hasil.returncode != 0:
         pesan = (hasil.stderr or hasil.stdout or "").strip().splitlines()
         detail = pesan[-1] if pesan else "penyebab tidak diketahui"
-        raise VideoError(f"Tidak bisa membaca link: {detail[:300]}")
+        tambahan = (
+            " Tanpa cookie pun gagal, jadi postingannya memang tidak bisa dibaca "
+            "(mungkin akunnya privat)."
+            if berkas_cookie is not None
+            else ""
+        )
+        raise VideoError(f"Tidak bisa membaca link: {detail[:300]}{tambahan}")
 
     try:
         data = json.loads(hasil.stdout or "{}")
