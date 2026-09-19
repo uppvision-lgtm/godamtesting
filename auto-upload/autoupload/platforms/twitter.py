@@ -50,6 +50,13 @@ class Twitter(PlaywrightPlatform):
     start_url = "https://x.com/compose/post"
     # Session ID: cookie "auth_token" saja sudah cukup untuk masuk.
     session_cookie_map = {"auth_token": ".x.com"}
+    # Mode headless LAMA, khusus X. Aplikasi web X memuat 143 berkas skrip dan
+    # merupakan halaman terberat yang dibuka alat ini; di kontainer 954 MB,
+    # headless bawaan (yang baru) menjalankan tumpukan peramban lengkap dan
+    # membuat pemakaian menyentuh batas sampai kernel membunuh renderernya.
+    # Hanya X yang memakainya: Instagram bergantung pada event sentuh yang
+    # belum tentu berperilaku sama di mode lama, dan Instagram sudah jalan.
+    extra_args = ("--headless=old",)
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
