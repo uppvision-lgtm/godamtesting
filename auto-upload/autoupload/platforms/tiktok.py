@@ -24,10 +24,18 @@ from autoupload.browser import (
     MediaKind,
     PlatformError,
     PlaywrightPlatform,
+    _tautan_di_halaman,
     tautan_baru,
-    tautan_profil,
     waktu_lokal_halaman,
 )
+
+
+async def _ditolak_login(page) -> bool:
+    """True kalau yang muncul halaman login, bukan halaman milik akun."""
+    alamat = (page.url or "").lower()
+    if "/login" in alamat or "/auth/" in alamat:
+        return True
+    return bool(await page.get_by_role("button", name="Log in", exact=True).count())
 
 # Popup informasi yang bisa menutupi tombol Posting.
 # "Batal" SENGAJA tidak ada di sini: itu tombol pada dialog konfirmasi
@@ -66,6 +74,13 @@ class TikTok(PlaywrightPlatform):
     # TikTok memindahkan pengunggah ke "TikTok Studio"; URL /upload lama 404.
     start_url = "https://www.tiktok.com/tiktokstudio/upload?lang=en"
     session_cookie_map = {"sessionid": ".tiktok.com"}
+    # TikTok menyimpan sesi di pusat data tempat ia dibuat dan memilih pusat
+    # data dari IP pemanggil. Sesi yang dibuat di Indonesia (alisg, Singapura)
+    # karena itu ditolak begitu dipakai dari server Amerika - halamannya
+    # melempar ke /login walau cookie-nya masih hidup. Urutannya dari yang
+    # paling sering dipakai pengguna di sini.
+    wilayah_cookie = "tt-target-idc"
+    wilayah_kandidat = ("alisg", "useast2a", "useast5", "maliva", "useast1a")
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
@@ -77,20 +92,24 @@ class TikTok(PlaywrightPlatform):
         jadwal = options.get("jadwal")
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://www.tiktok.com/@{nama}" if nama else ""
-        sebelum = await tautan_profil(page, _URL_DAFTAR, _PEMILIH_POST, _JEDA_DAFTAR)
+        # Halaman daftar sekaligus penentu wilayah data: kalau ditolak, cookie
+        # wilayah dicoba satu per satu di sini, sehingga halaman unggah di
+        # bawah sudah pasti memakai wilayah yang benar.
+        wilayah = await self.buka_masuk(page, _URL_DAFTAR, _ditolak_login, _JEDA_DAFTAR)
+        if wilayah is None:
+            raise PlatformError(
+                "Sesi TikTok sudah tidak valid (ter-logout). Perbarui Session ID "
+                "di halaman Kelola Akun."
+            )
+        sebelum = set(await _tautan_di_halaman(page, _PEMILIH_POST))
 
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(6_000)
 
-        if "/login" in page.url or "auth" in page.url:
-            raise PlatformError(
-                "Sesi TikTok sudah tidak valid (ter-logout). Perbarui Session ID "
-                "di halaman Auto Upload."
-            )
-        if await page.get_by_role("button", name="Log in", exact=True).count():
+        if await _ditolak_login(page):
             raise PlatformError(
                 "Sesi TikTok sudah tidak valid (halaman login muncul). Perbarui "
-                "Session ID di halaman Auto Upload."
+                "Session ID di halaman Kelola Akun."
             )
 
         # 1. Lampirkan berkas.

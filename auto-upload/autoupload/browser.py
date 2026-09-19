@@ -254,6 +254,56 @@ class PlaywrightPlatform(ABC):
     # timestamp pendek yang di-refresh sendiri oleh platform.
     session_cookie_optional: tuple[str, ...] = ()
 
+    # Sebagian platform menyimpan sesi PER WILAYAH DATA dan memilih wilayahnya
+    # dari IP pemanggil. Sesi yang dibuat di Indonesia karena itu ditolak saat
+    # dipakai dari server di benua lain: cookie-nya sah, tapi dicari di pusat
+    # data yang salah, dan hasilnya tampak persis seperti sesi mati. Kalau
+    # kedua nilai ini diisi, wilayahnya dicoba satu per satu.
+    wilayah_cookie: str = ""
+    wilayah_kandidat: tuple[str, ...] = ()
+
+    def cookie_wilayah(self, nilai: str) -> list[dict]:
+        """Cookie penunjuk wilayah data, untuk semua domain cookie sesi."""
+        domains: list[str] = []
+        for nilai_domain in self.session_cookie_map.values():
+            for domain in [nilai_domain] if isinstance(nilai_domain, str) else nilai_domain:
+                if domain not in domains:
+                    domains.append(domain)
+        return [
+            {
+                "name": self.wilayah_cookie,
+                "value": nilai,
+                "domain": domain,
+                "path": "/",
+                "secure": True,
+                "httpOnly": False,
+            }
+            for domain in domains
+        ]
+
+    async def buka_masuk(self, page, url: str, ditolak, tunggu_ms: int = 4_000) -> str | None:
+        """Buka `url` sebagai akun yang sudah masuk.
+
+        `ditolak(page)` mengembalikan True kalau yang muncul halaman login.
+        Kalau ditolak dan platform ini punya wilayah kandidat, tiap wilayah
+        dicoba sampai ada yang diterima. Kembaliannya wilayah yang berhasil
+        ("" = tidak perlu cookie wilayah), atau None kalau semua ditolak.
+        """
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await page.wait_for_timeout(tunggu_ms)
+        if not await ditolak(page):
+            return ""
+        if not (self.wilayah_cookie and self.wilayah_kandidat):
+            return None
+        for wilayah in self.wilayah_kandidat:
+            await page.context.add_cookies(self.cookie_wilayah(wilayah))
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            await page.wait_for_timeout(tunggu_ms)
+            if not await ditolak(page):
+                print(f"[{self.platform_key}] wilayah data: {wilayah}", flush=True)
+                return wilayah
+        return None
+
     def __init__(self, session_name: str = "default", headless: bool = True, **_: object) -> None:
         self.session_name = session_name
         self.headless = headless

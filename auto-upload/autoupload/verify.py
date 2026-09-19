@@ -98,6 +98,22 @@ NAMA_JS: dict[str, str] = {
 TIMEOUT_MS = 25_000
 
 
+async def _tampak_login(halaman, platform: str) -> bool:
+    """True kalau halamannya meminta login, bukan menampilkan isi akun."""
+    akhir = (halaman.url or "").lower()
+    if any(p in akhir for p in PENANDA_LOGIN):
+        return True
+    wajib = HARUS_BERTAHAN.get(platform)
+    if wajib:
+        # Halaman pengaturan wajar memuat kotak sandi, jadi untuk platform ini
+        # bertahannya alamat yang menentukan - bukan isi halaman.
+        return wajib not in akhir
+    if await halaman.locator('input[type="password"]').count():
+        return True
+    judul = (await halaman.title() or "").lower()
+    return any(j in judul for j in JUDUL_LOGIN)
+
+
 async def periksa_sesi(platform: str, session_id: str) -> dict:
     """Buka beranda platform dengan cookie ini. Kembalikan {ok, pesan, url}."""
     kelas = REGISTRY.get(platform)
@@ -128,10 +144,15 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
             await konteks.add_cookies(cookies)
             halaman = await konteks.new_page()
             try:
-                await halaman.goto(url_awal, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
                 # Beri waktu pengalihan sisi-klien selesai; banyak platform
                 # baru melempar ke halaman login setelah JavaScript berjalan.
-                await halaman.wait_for_timeout(3500)
+                # buka_masuk juga mencoba wilayah data lain untuk platform yang
+                # sesinya terikat wilayah (TikTok), supaya sesi yang sah tidak
+                # divonis mati hanya karena servernya ada di benua lain.
+                async def ditolak(p) -> bool:
+                    return await _tampak_login(p, platform)
+
+                wilayah = await adapter.buka_masuk(halaman, url_awal, ditolak, 3500)
                 akhir = (halaman.url or "").lower()
                 # Alamat saja tidak cukup. Instagram dan X menampilkan formulir
                 # login di alamat yang sama persis, tanpa mengalihkan ke mana
@@ -157,6 +178,15 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
             "nama": "",
         }
 
+    if wilayah:
+        # Sesinya sah, tapi hanya lewat wilayah data itu. Disebut supaya kalau
+        # suatu saat gagal lagi, penyebabnya tidak perlu dicari dari nol.
+        return {
+            "ok": True,
+            "pesan": f"Halaman akun terbuka; sesinya sah (wilayah data: {wilayah}).",
+            "url": akhir,
+            "nama": nama,
+        }
     if next((p for p in PENANDA_LOGIN if p in akhir), ""):
         return {
             "ok": False,
