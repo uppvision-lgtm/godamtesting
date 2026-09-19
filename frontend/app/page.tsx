@@ -25,6 +25,15 @@ const tools: Tool[] = [
     badge: "Tersedia",
   },
   {
+    id: "threads",
+    icon: "🧵",
+    title: "Auto Komen & Like Threads",
+    desc: "via server, cara kerjanya sama dengan yang Instagram",
+    href: "/auto-comment-threads",
+    status: "ready",
+    badge: "Tersedia",
+  },
+  {
     id: "edit",
     icon: "🎬",
     title: "Auto Edit Video",

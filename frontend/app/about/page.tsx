@@ -43,14 +43,15 @@ const BAGIAN: Bagian[] = [
     ],
   },
   {
-    judul: "2. Auto Komen & Like Instagram",
-    untuk: "Berkomentar dan menyukai postingan terbaru sebuah akun.",
+    judul: "2. Auto Komen & Like (Instagram & Threads)",
+    untuk: "Berkomentar dan menyukai postingan terbaru sebuah akun. Ada dua halaman, satu per platform, dengan cara pakai yang sama persis.",
     href: "/auto-comment",
     isi: [
       <>
-        Pilih akun di kotak <strong>Akun</strong> — isinya diambil dari Kelola Akun.
-        Satu bot memakai satu akun; Session ID-nya diambil server, jadi tidak perlu
-        diketik di halaman ini.
+        Pilih akun di kotak <strong>Akun</strong> — isinya diambil dari Kelola Akun:
+        akun Instagram di halaman Instagram, akun Threads di halaman Threads. Satu bot
+        memakai satu akun; Session ID-nya diambil server, jadi tidak perlu diketik di
+        halaman ini.
       </>,
       <>
         Isi <strong>Channel</strong> (akun yang mau dikomentari), jumlah komentar per
@@ -68,6 +69,11 @@ const BAGIAN: Bagian[] = [
         panel <strong>Log</strong> menampilkan langkah yang sedang dikerjakan.
         Postingan yang disematkan (pin) dilewati. Bot berhenti sendiri setelah
         selesai; untuk berhenti lebih awal tekan <strong>Stop</strong> di kartunya.
+      </>,
+      <>
+        Jeda antar aksi di Threads sama dengan Instagram (beberapa detik antar balasan,
+        5–12 detik antar postingan), ketikannya per huruf, dan begitu Threads memberi
+        tanda pembatasan bot berhenti dengan pesan jelas — bukan terus menghantam.
       </>,
     ],
   },

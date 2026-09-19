@@ -45,6 +45,23 @@ from auth_api import identitas
 router = APIRouter(prefix="/api/live", tags=["live"])
 _SESSIONS: dict[str, "LiveSession"] = {}
 
+# Platform yang bisa dijalankan bot komentar. Alurnya sama persis; yang beda
+# hanya modul DOM-nya. Menambah platform = menambah satu baris di sini.
+PLATFORM_KOMENTAR: dict[str, str] = {"instagram": "tasks", "threads": "tasks_threads"}
+
+
+def _modul_bot(platform: str):
+    """Modul bot untuk platform itu: punya _add_session_cookie dan _process_posts."""
+    import importlib
+
+    nama = PLATFORM_KOMENTAR.get(platform)
+    if not nama:
+        raise HTTPException(
+            status_code=422,
+            detail=f"platform harus salah satu dari: {', '.join(PLATFORM_KOMENTAR)}",
+        )
+    return importlib.import_module(nama)
+
 # Batas browser yang boleh jalan bersamaan. Default 0 = tanpa batas: berapa pun
 # bot yang diminta akan dijalankan. Setiap sesi memakan satu Chromium (±300MB
 # di server), jadi kalau suatu saat server terasa berat, batas bisa dipasang
@@ -173,8 +190,11 @@ class StartRequest(BaseModel):
     # diambil dari akun yang tertaut di Kelola Akun.
     username: str = ""
     session_id: str = ""
-    # Akun Instagram tertaut yang dipakai bot ini. Satu bot = satu akun.
+    # Akun tertaut yang dipakai bot ini. Satu bot = satu akun.
     account_id: int | None = None
+    # instagram (bawaan) atau threads. Menentukan modul bot dan akun mana
+    # yang boleh dipilih.
+    platform: str = "instagram"
     target: str
     comment_count: int = 3
     max_posts: int = 3
@@ -182,8 +202,10 @@ class StartRequest(BaseModel):
     tone: str = "positif"
 
 
-def _akun_tertaut(account_id: int, pengguna: dict[str, Any] | None) -> tuple[str, str]:
-    """Nama akun dan Session ID dari akun Instagram yang tertaut.
+def _akun_tertaut(
+    account_id: int, pengguna: dict[str, Any] | None, platform: str = "instagram"
+) -> tuple[str, str]:
+    """Nama akun dan Session ID dari akun tertaut milik ``platform``.
 
     Dipakai supaya orang tidak perlu menempel Session ID lagi di halaman Auto
     Comment: cukup memilih akunnya. Nilainya diambil di server, jadi cookie-nya
@@ -206,8 +228,10 @@ def _akun_tertaut(account_id: int, pengguna: dict[str, Any] | None) -> tuple[str
             .filter(SocialAccount.id == account_id, SocialAccount.is_active.is_(True))
             .first()
         )
-        if akun is None or akun.platform != "instagram":
-            raise HTTPException(status_code=400, detail="Akun Instagram itu tidak ditemukan.")
+        if akun is None or akun.platform != platform:
+            raise HTTPException(
+                status_code=400, detail=f"Akun {platform.capitalize()} itu tidak ditemukan."
+            )
         sesi = buka(akun.session_id or "")
         if not sesi:
             raise HTTPException(
@@ -272,21 +296,24 @@ class LiveSession:
         comment_count: int,
         max_posts: int = 3,
         tone: str = "positif",
+        platform: str = "instagram",
     ) -> None:
         """Dipanggil dari loop FastAPI; browsernya dibuka di thread khusus."""
+        bot = _modul_bot(platform)
         await _RUNTIME.run(
             self._start_di_thread_browser(
                 username,
                 session_id,
                 pesan=f"Session dipasang. Membuka @{target} ...",
                 awal=[
-                    f"Session diterima untuk akun {username}",
+                    f"Session diterima untuk akun {username} ({platform})",
                     f"Tone komentar: {tone}",
                     f"Menuju channel @{target}",
                 ],
                 buat_job=lambda: self._run_job(
-                    username, target, comment_count, max_posts, tone
+                    username, target, comment_count, max_posts, tone, proses=bot._process_posts
                 ),
+                pasang_cookie=bot._add_session_cookie,
             )
         )
 
@@ -316,6 +343,7 @@ class LiveSession:
         pesan: str,
         awal: list[str],
         buat_job: Any,
+        pasang_cookie: Any = None,
     ) -> None:
         headless = os.getenv("LIVE_HEADLESS", "false").lower() == "true"
         try:
@@ -339,9 +367,10 @@ class LiveSession:
                 int(os.getenv("PLAYWRIGHT_NAVIGATION_TIMEOUT_MS", "30000"))
             )
             await self._blokir_resource_berat()
-            from tasks import _add_session_cookie
+            if pasang_cookie is None:
+                from tasks import _add_session_cookie as pasang_cookie
 
-            await _add_session_cookie(self._page, unquote(session_id).strip())
+            await pasang_cookie(self._page, unquote(session_id).strip())
             self.status = "running"
             self.message = pesan
             for baris in awal:
@@ -421,11 +450,13 @@ class LiveSession:
         comment_count: int,
         max_posts: int = 3,
         tone: str = "positif",
+        proses: Any = None,
     ) -> None:
         try:
-            from tasks import _process_posts
+            if proses is None:
+                from tasks import _process_posts as proses
 
-            result = await _process_posts(
+            result = await proses(
                 self._page,
                 username,
                 target,
@@ -568,9 +599,11 @@ def _get_session(token: str) -> LiveSession:
 async def start_live(
     request: StartRequest, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict:
+    platform = str(request.platform or "instagram").strip().lower()
+    _modul_bot(platform)  # tolak platform yang tidak dikenal sebelum apa pun dibuka
     nama_akun, sesi = request.username.strip(), request.session_id.strip()
     if request.account_id:
-        nama_akun, sesi = _akun_tertaut(request.account_id, pengguna)
+        nama_akun, sesi = _akun_tertaut(request.account_id, pengguna, platform)
     if not nama_akun or not sesi or not request.target.strip():
         raise HTTPException(status_code=422, detail="Akun dan channel target wajib diisi")
     if not (1 <= request.comment_count <= 100):
@@ -607,6 +640,7 @@ async def start_live(
         request.comment_count,
         request.max_posts,
         tone,
+        platform,
     )
     return {"token": token, "width": session.width, "height": session.height}
 

@@ -80,16 +80,16 @@ const PANDUAN: Panduan[] = [
     id: "komen",
     ikon: "💬",
     nama: "Auto Komen",
-    untuk: "Berkomentar dan menyukai postingan terbaru sebuah akun, otomatis.",
+    untuk: "Berkomentar dan menyukai postingan terbaru sebuah akun, otomatis. Ada versi Instagram dan versi Threads; cara pakainya sama.",
     href: "/auto-comment",
     langkah: [
       {
         judul: "Pilih akunnya",
         isi: (
           <>
-            Di kotak <b>Akun</b> pilih salah satu akun Instagram yang sudah tertaut.
-            Satu bot memakai satu akun. Belum ada isinya? Tautkan dulu di{" "}
-            <b>Kelola Akun</b>.
+            Di kotak <b>Akun</b> pilih salah satu akun yang sudah tertaut - akun
+            Instagram di halaman Instagram, akun Threads di halaman Threads. Satu bot
+            memakai satu akun. Belum ada isinya? Tautkan dulu di <b>Kelola Akun</b>.
           </>
         ),
       },
