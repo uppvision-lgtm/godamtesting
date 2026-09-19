@@ -41,6 +41,37 @@ def _layak_diulang(hasil) -> bool:
     return not hasil.success and bool(_SESAAT.search(hasil.error or ""))
 
 
+def _keadaan_memori() -> str:
+    """Batas, puncak, dan jumlah pembunuhan OOM kontainer ini.
+
+    Dibaca dari cgroup Linux. "Target crashed" tidak pernah menyebutkan
+    penyebabnya, jadi tanpa angka ini setiap kegagalan hanya bisa ditebak.
+    Di luar Linux (mis. laptop) berkasnya tidak ada dan hasilnya kosong.
+    """
+    akar = Path("/sys/fs/cgroup")
+
+    def baca(nama: str) -> str:
+        try:
+            return (akar / nama).read_text().strip()
+        except OSError:
+            return ""
+
+    def mb(teks: str) -> str:
+        try:
+            return f"{int(teks) / 1048576:.0f} MB"
+        except (TypeError, ValueError):
+            return teks or "?"
+
+    batas, puncak = baca("memory.max"), baca("memory.peak")
+    dibunuh = ""
+    for baris in baca("memory.events").splitlines():
+        if baris.startswith(("oom_kill ", "oom ")):
+            dibunuh += f" {baris.split()[0]}={baris.split()[1]}"
+    if not (batas or puncak or dibunuh):
+        return ""
+    return f"memori kontainer: batas {mb(batas)}, puncak {mb(puncak)},{dibunuh or ' oom_kill=?'}"
+
+
 async def upload_one(
     media_path: str | Path,
     caption: str,
@@ -93,11 +124,14 @@ async def fan_out_upload(
         t = dict(t)
         hasil = await _sekali(t)
         if not hasil.success and _PERAMBAN_MATI.search(hasil.error or ""):
+            jejak = _keadaan_memori()
+            log.warning("%s: peramban mati. %s", t.get("platform"), jejak or "keadaan memori tidak terbaca")
             hasil.error = (
                 "Peramban mati di tengah upload - biasanya karena servernya "
                 "kehabisan memori saat beberapa akun dikerjakan bersamaan. "
                 "Kurangi AUTOUPLOAD_MAKS_PARALEL, atau kirim ke lebih sedikit "
                 f"akun sekaligus. ({(hasil.error or '')[:80]})"
+                + (f" [{jejak}]" if jejak else "")
             )
         if _layak_diulang(hasil):
             log.warning("%s gagal sesaat (%s); diulang sekali",
