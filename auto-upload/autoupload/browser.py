@@ -61,6 +61,11 @@ STEALTH_ARGS = [
     "--disable-translate",
     "--mute-audio",
     "--renderer-process-limit=1",
+    # Satu renderer untuk seluruh halaman (iframe tidak dapat proses sendiri),
+    # dan batas tumpukan JS. "--single-process" SENGAJA tidak dipakai: diuji
+    # dan peramban langsung mati sebelum halaman pertama selesai.
+    "--disable-features=site-per-process,Translate,BackForwardCache,MediaRouter,OptimizationHints",
+    "--js-flags=--max-old-space-size=256",
 ]
 
 # Chrome headless mengiklankan 'HeadlessChrome' di navigator.userAgent dan
@@ -114,7 +119,11 @@ window.chrome = window.chrome || { runtime: {} };
 })();
 """
 
-VIEWPORT = {"width": 1366, "height": 900}
+# Layar 1366x900 berarti Chromium menyiapkan petak gambar seluas itu untuk
+# tiap halaman. Di kontainer 1 GB itu pemborosan yang tidak dibutuhkan bot:
+# semua tombol yang dipakai tetap terlihat pada 1000x700, ukuran yang sama
+# dengan yang dipakai bot komentar.
+VIEWPORT = {"width": 1000, "height": 700}
 
 
 async def _tautan_di_halaman(page, pemilih: str) -> list[str]:
