@@ -26,15 +26,22 @@ log = logging.getLogger("autoupload")
 # platform menolak jadwal, media ditolak) tidak diulang karena percobaan kedua
 # pasti gagal dengan cara yang sama - dan mengulangnya berarti mengunggah
 # videonya dua kali.
+# Catatan: Playwright menulis kelas galatnya TANPA spasi
+# ("TargetClosedError"), sedangkan pesannya memakai spasi ("Target crashed",
+# "Page crashed"). Pola lama hanya mengenali yang berspasi, jadi peramban yang
+# mati dengan "TargetClosedError: ... Page crashed" tidak pernah diulang dan
+# tidak pernah dikenali sebagai peramban mati.
 _SESAAT = re.compile(
-    r"(timeout|timed out|net::|econnreset|econnrefused|target closed|"
-    r"target crashed|browser has been closed|connection closed|temporarily)",
+    r"(timeout|timed out|net::|econnreset|econnrefused|target ?closed|"
+    r"target ?crashed|page ?crashed|browser has been closed|connection closed|temporarily)",
     re.IGNORECASE,
 )
 
 # Peramban mati di tengah jalan. Di kontainer kecil ini hampir selalu berarti
 # kehabisan memori, dan "Target crashed" tidak memberi tahu apa pun soal itu.
-_PERAMBAN_MATI = re.compile(r"(target crashed|browser has been closed)", re.IGNORECASE)
+_PERAMBAN_MATI = re.compile(
+    r"(target ?crashed|page ?crashed|target ?closed|browser has been closed)", re.IGNORECASE
+)
 
 
 def _layak_diulang(hasil) -> bool:
