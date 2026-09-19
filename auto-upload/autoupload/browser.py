@@ -46,6 +46,21 @@ STEALTH_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-infobars",
     "--start-maximized",
+    # Penghemat memori. Kontainer server hanya punya ~1 GB, dan Chromium yang
+    # kehabisan memori tidak melapor dengan sopan: renderernya dibunuh, lalu
+    # perintah Playwright berikutnya gagal dengan "Page crashed" atau
+    # "net::ERR_ABORTED; maybe frame was detached?" - pesan yang tidak ada
+    # hubungannya dengan penyebab aslinya. Flag yang sama sudah lama dipakai
+    # bot komentar di berkas browser_config.py.
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-default-apps",
+    "--disable-translate",
+    "--mute-audio",
+    "--renderer-process-limit=1",
 ]
 
 # Chrome headless mengiklankan 'HeadlessChrome' di navigator.userAgent dan

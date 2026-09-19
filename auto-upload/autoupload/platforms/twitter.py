@@ -22,9 +22,14 @@ from autoupload.browser import (
     PlatformError,
     PlaywrightPlatform,
     tautan_baru,
-    tautan_profil,
     waktu_lokal_halaman,
 )
+
+# Halaman X penuh gambar dan video yang memutar sendiri. Bot ini tidak
+# membutuhkan satu pun: caption diketik, berkas dilampirkan lewat input file,
+# dan kesiapan dibaca dari toast - semuanya teks. Memblokirnya memangkas
+# memori yang jadi biang kegagalan di server.
+_JENIS_DIBLOKIR = {"image", "media", "font"}
 
 # Toast yang berarti postingan sudah benar-benar terkirim, EN + ID.
 _TERKIRIM = re.compile(
@@ -56,12 +61,15 @@ class Twitter(PlaywrightPlatform):
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://x.com/{nama}" if nama else ""
 
-        # Daftar postingan sebelum upload, supaya tautan hasilnya bisa
-        # dipastikan yang baru - bukan postingan tersemat di urutan atas.
-        sebelum: set[str] = set()
-        if url_profil:
-            sebelum = await tautan_profil(page, url_profil, _PEMILIH_POST)
+        await self._blokir_berat(page)
 
+        # Halaman profil SENGAJA tidak dimuat lagi di sini. Dulu ia dibuka
+        # sekali sebelum upload (untuk mendaftar postingan lama) dan sampai
+        # delapan kali sesudahnya (mencari postingan baru) - sembilan kali
+        # memuat halaman X terberat, tepat saat memori sudah terpakai video
+        # yang barusan diunggah. Itulah yang membunuh peramban di server.
+        # Tautan hasilnya diambil dari toast "Your post was sent" yang memang
+        # sudah memuat tautan "View" ke postingan itu.
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         try:
             await page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=30_000)
@@ -111,9 +119,11 @@ class Twitter(PlaywrightPlatform):
         lapor(*tahap.KIRIM)
         await page.click('[data-testid="tweetButton"]')
 
-        # 6. Tunggu konfirmasi, bukan sekadar jeda tetap.
+        # 6. Tunggu konfirmasi, bukan sekadar jeda tetap. Toast yang sama
+        #    sekaligus membawa tautan postingannya.
         lapor(*tahap.TUNGGU)
-        if not await self._tunggu_terkirim(page):
+        tautan_toast = await self._tunggu_terkirim(page)
+        if tautan_toast is None:
             raise PlatformError(
                 "Tombol kirim sudah ditekan tetapi X tidak pernah memberi "
                 "konfirmasi terkirim; status postingan tidak bisa dipastikan."
@@ -126,11 +136,19 @@ class Twitter(PlaywrightPlatform):
         if jadwal:
             return "https://x.com/compose/post/unsent/scheduled"
 
-        # 7. Ambil tautan postingannya.
+        # 7. Tautan postingannya.
+        lapor(*tahap.TAUTAN)
+        if tautan_toast:
+            print(f"[x] tautan: {tautan_toast}", flush=True)
+            return tautan_toast
+        # Cadangan, kalau toast keburu hilang sebelum terbaca: satu kali muat
+        # profil, ambil postingan teratas. Tidak sebaik tautan dari toast -
+        # postingan yang disematkan juga ada di atas - tapi jauh lebih baik
+        # daripada tidak memberi tautan sama sekali, dan hanya sekali muat.
         if url_profil:
-            tautan = await tautan_baru(page, url_profil, _PEMILIH_POST, sebelum)
+            tautan = await tautan_baru(page, url_profil, _PEMILIH_POST, set(), percobaan=1)
             if tautan:
-                print(f"[x] tautan: {tautan}", flush=True)
+                print(f"[x] tautan (cadangan dari profil): {tautan}", flush=True)
                 return tautan
         return url_profil or "https://x.com/"
 
@@ -169,12 +187,37 @@ class Twitter(PlaywrightPlatform):
         await page.wait_for_timeout(2_000)
         print(f"[x] jadwal dipasang: {diminta}", flush=True)
 
+    async def _blokir_berat(self, page) -> None:
+        """Batalkan gambar, video, dan font: hemat memori, tidak mengubah alur."""
+        async def penangan(route) -> None:
+            try:
+                if route.request.resource_type in _JENIS_DIBLOKIR:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:  # noqa: BLE001 - permintaan sudah selesai duluan
+                pass
+
+        try:
+            await page.route("**/*", penangan)
+        except Exception:  # noqa: BLE001 - hemat memori tidak boleh menggagalkan upload
+            pass
+
     @staticmethod
     async def _toast(page) -> str:
         return await page.evaluate(
             """() => [...document.querySelectorAll('[data-testid="toast"], [role="alert"]')]
                     .map(e => (e.innerText || '')).join(' | ')"""
         )
+
+    @staticmethod
+    async def _tautan_toast(page) -> str:
+        """Tautan "View" di dalam toast - alamat postingan yang baru dibuat."""
+        tautan = await page.evaluate(
+            """() => [...document.querySelectorAll('[data-testid="toast"], [role="alert"]')]
+                    .flatMap(e => [...e.querySelectorAll('a')].map(a => a.href))"""
+        )
+        return next((t for t in tautan if "/status/" in t), "")
 
     async def _tunggu_siap(self, page) -> bool:
         """Tombol kirim sudah aktif dan tidak ada unggahan yang berjalan."""
@@ -190,13 +233,23 @@ class Twitter(PlaywrightPlatform):
             await page.wait_for_timeout(2_000)
         return False
 
-    async def _tunggu_terkirim(self, page) -> bool:
+    async def _tunggu_terkirim(self, page) -> str | None:
+        """Tunggu konfirmasi kirim; kembalikan tautan postingannya.
+
+        Kembaliannya alamat postingan, "" kalau terkirim tapi tautannya tidak
+        terbaca, dan None kalau konfirmasinya tidak pernah muncul. Tautan
+        dibaca lebih dulu setiap putaran: toast bisa hilang sendiri, dan sekali
+        hilang tautannya tidak bisa diambil lagi.
+        """
         for _ in range(90):  # ~3 menit
             toast = await self._toast(page)
             if toast:
                 if _GAGAL.search(toast):
                     raise PlatformError(f"X menolak postingan: {toast.strip()[:160]}")
+                tautan = await self._tautan_toast(page)
+                if tautan:
+                    return tautan
                 if _TERKIRIM.search(toast):
-                    return True
-            await page.wait_for_timeout(2_000)
-        return False
+                    return ""
+            await page.wait_for_timeout(1_000)
+        return None
