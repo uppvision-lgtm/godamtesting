@@ -249,3 +249,9 @@
   min-width: 140px;
   max-width: 260px;
 }
+
+/* Penolakan, bukan peringatan: videonya memang tidak akan diproses. */
+.tolak {
+  color: #ff9b95;
+  font-weight: 700;
+}

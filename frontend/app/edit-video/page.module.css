@@ -1113,3 +1113,28 @@
 
 .stopSatuBtn:hover { border-color: #e0574f; color: #ff9b95; }
 .stopSatuBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Penolakan, bukan peringatan: videonya memang tidak akan diproses. */
+.tolak {
+  color: #ff9b95;
+  font-weight: 700;
+}
+
+/* ---- Sisa jatah tamu ---- */
+.jatahSisa,
+.jatahHabis {
+  margin: 0;
+  padding: 9px 12px;
+  border-left: 3px solid #3fce6f;
+  border-radius: 0 8px 8px 0;
+  background: #121a14;
+  color: #b8c6bd;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.jatahHabis {
+  border-left-color: #e0b43f;
+  background: #1f1a12;
+  color: #e6d3a3;
+}

@@ -11,11 +11,20 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 import storage
+import jatah_tamu
 import video_edit as ve
 import video_hook as vh
 import video_tasks as vt
@@ -387,7 +396,9 @@ def _job_terjangkau(job_id: str, pengguna: dict[str, Any] | None) -> dict[str, A
 
 
 @router.get("/info")
-def info_video(pengguna: dict[str, Any] | None = Depends(identitas)) -> dict[str, Any]:
+def info_video(
+    request: Request, pengguna: dict[str, Any] | None = Depends(identitas)
+) -> dict[str, Any]:
     """Batas dan sisa jatah, dibaca halaman saat dibuka.
 
     Angkanya dikirim dari server, bukan ditanam di frontend: dulu keduanya
@@ -401,6 +412,10 @@ def info_video(pengguna: dict[str, Any] | None = Depends(identitas)) -> dict[str
     batas = kuota.batas_byte(pemilik)
     return {
         "worker_aktif": vt.worker_hidup(),
+        "jatah_tamu": {
+            fitur: jatah_tamu.sisa(fitur, pengguna, request)
+            for fitur in ("render", "unggah-sumber")
+        },
         "maks_aset_mb": MAX_ASSET_MB,
         "maks_sumber_mb": ve.MAX_SOURCE_UPLOAD_MB,
         "jenis_aset": sorted(JENIS_ASET),
@@ -722,10 +737,13 @@ def hapus_aset(
 
 @router.post("/jobs")
 def mulai_job(
-    body: JobBody, pengguna: dict[str, Any] | None = Depends(identitas)
+    request: Request,
+    body: JobBody,
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     _template_terlihat(body.template_id, pengguna)
 
+    jatah_tamu.pakai("render", pengguna, request)
     _pastikan_kuota(pengguna)
     _pastikan_antrean_muat(1)
     job_id = vt.buat_job(
@@ -757,7 +775,12 @@ def _pastikan_antrean_muat(tambahan: int) -> None:
 
 
 @router.post("/sources")
-async def unggah_sumber(latar: BackgroundTasks, file: UploadFile = File(...)) -> dict[str, Any]:
+async def unggah_sumber(
+    request: Request,
+    latar: BackgroundTasks,
+    file: UploadFile = File(...),
+    pengguna: dict[str, Any] | None = Depends(identitas),
+) -> dict[str, Any]:
     """Terima video sumber dari komputer pengguna.
 
     Mengembalikan alamat "upload://<id>" yang dipakai persis seperti link:
@@ -769,6 +792,7 @@ async def unggah_sumber(latar: BackgroundTasks, file: UploadFile = File(...)) ->
             status_code=415,
             detail=f"Jenis berkas tidak didukung. Pakai: {', '.join(sorted(JENIS_VIDEO))}",
         )
+    jatah_tamu.pakai("unggah-sumber", pengguna, request)
     id_unggahan = uuid.uuid4().hex[:12]
     folder = ve.uploads_dir() / id_unggahan
     folder.mkdir(parents=True, exist_ok=True)
@@ -793,6 +817,18 @@ async def unggah_sumber(latar: BackgroundTasks, file: UploadFile = File(...)) ->
     except ve.VideoError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=415, detail=f"Berkas bukan video yang bisa dibaca: {error}")
+    durasi = float(info.get("duration") or 0)
+    if durasi > ve.MAX_SOURCE_SECONDS + 1:
+        # Ditolak di sini juga, bukan hanya saat render: percuma menyimpan
+        # berkas yang sudah pasti tidak akan mau diproses.
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Videonya {durasi / 60:.0f} menit, lebih panjang dari batas "
+                f"{ve.MAX_SOURCE_SECONDS / 60:.0f} menit."
+            ),
+        )
     # Didorong ke Supabase supaya worker render bisa mengambilnya walaupun
     # berjalan sebagai layanan terpisah yang tidak berbagi disk dengan API.
     # Seperti aset layer, dorongannya menyusul setelah jawaban dikirim.
@@ -812,7 +848,9 @@ async def unggah_sumber(latar: BackgroundTasks, file: UploadFile = File(...)) ->
 
 @router.post("/jobs/batch")
 def mulai_banyak_job(
-    body: BatchBody, pengguna: dict[str, Any] | None = Depends(identitas)
+    request: Request,
+    body: BatchBody,
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     """Buat satu job per set layer untuk link yang sama.
 
@@ -830,6 +868,10 @@ def mulai_banyak_job(
         raise HTTPException(status_code=400, detail="Pilih minimal satu set layer.")
     for tid in ids:
         _template_terlihat(tid, pengguna)
+    # Satu template = satu video, jadi mengirim lima template memakai lima
+    # jatah - bukan satu. Kalau tidak, batasnya bisa dilewati dengan
+    # mencentang semua template sekaligus.
+    jatah_tamu.pakai("render", pengguna, request, len(ids))
     _pastikan_kuota(pengguna)
     _pastikan_antrean_muat(len(ids))
 
@@ -1032,7 +1074,9 @@ def hentikan_satu_job(
 
 @router.post("/jobs/{job_id}/ulangi")
 def ulangi_job(
-    job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
+    request: Request,
+    job_id: str,
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     """Jalankan ulang satu job dengan bahan yang sama persis.
 
@@ -1053,6 +1097,7 @@ def ulangi_job(
             status_code=409, detail="Alamat sumbernya tidak tersimpan; buat ulang dari awal."
         )
     _template_terlihat(template_id, pengguna)
+    jatah_tamu.pakai("render", pengguna, request)
     _pastikan_kuota(pengguna)
     _pastikan_antrean_muat(1)
     pemilik = _nama_akun(pengguna) or ""

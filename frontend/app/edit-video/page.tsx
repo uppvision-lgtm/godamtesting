@@ -119,6 +119,8 @@ type Susunan = {
 /** Batas dan sisa jatah, dikirim server lewat /api/video/info. */
 type InfoServer = {
   worker_aktif: boolean;
+  // Sisa jatah tamu per fitur. null = sudah masuk, tanpa batas.
+  jatah_tamu: { render: number | null; "unggah-sumber": number | null };
   maks_aset_mb: number;
   maks_sumber_mb: number;
   jenis_aset: string[];
@@ -1440,6 +1442,9 @@ export default function EditVideoPage() {
         ? "Tunggu sebentar, isi linknya sedang dibaca."
         : "Tempel dulu link videonya di atas.";
     }
+    if (modeSumber === "link" && pratinjau?.too_long) {
+      return `Videonya lebih dari ${Math.round((pratinjau.max_seconds || 600) / 60)} menit — terlalu panjang untuk diedit.`;
+    }
     if (modeSumber === "file" && !berkasSumber) return "Pilih dulu video dari komputer.";
     if (modeSumber === "file" && captionManual.trim().length < 3) return "Isi dulu caption videonya.";
     if (pilihanSet.length === 0) return "Centang dulu minimal satu template di bawah.";
@@ -1881,10 +1886,10 @@ export default function EditVideoPage() {
                             .join(" · ")}
                         </span>
                         {pratinjau.too_long && (
-                          <span className={styles.peringatan}>
-                            Lebih panjang dari batas{" "}
-                            {Math.round(pratinjau.max_seconds / 60)} menit — hanya bagian awal
-                            yang dipakai.
+                          <span className={styles.tolak}>
+                            Videonya lebih panjang dari batas{" "}
+                            {Math.round((pratinjau.max_seconds || 600) / 60)} menit, jadi tidak
+                            bisa diedit. Pakai video yang lebih pendek.
                           </span>
                         )}
                       </div>
@@ -2139,6 +2144,15 @@ export default function EditVideoPage() {
               <p className={styles.peringatanWorker}>
                 Mesin perender sedang tidak aktif. Video yang dikirim sekarang akan
                 menunggu di antrean sampai mesinnya hidup lagi.
+              </p>
+            )}
+
+            {info?.jatah_tamu?.render !== null && info?.jatah_tamu !== undefined && (
+              <p className={info.jatah_tamu.render ? styles.jatahSisa : styles.jatahHabis}>
+                {info.jatah_tamu.render
+                  ? `Mode tamu: sisa ${info.jatah_tamu.render} kali membuat video. `
+                  : "Jatah tamu untuk membuat video sudah habis. "}
+                Masuk atau daftar — gratis, tanpa batas, dan pekerjaanmu ikut tersimpan.
               </p>
             )}
 

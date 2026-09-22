@@ -302,6 +302,9 @@ export default function AutoEditUploadPage() {
     if (!link.trim()) return "Tempel dulu link videonya.";
     if (membaca) return "Tunggu sebentar, isi linknya sedang dibaca.";
     if (!pratinjau) return galatLink || "Linknya belum terbaca.";
+    if (pratinjau.too_long) {
+      return `Videonya lebih dari ${Math.round((pratinjau.max_seconds || 600) / 60)} menit — terlalu panjang untuk diedit.`;
+    }
     if (akunDipilih.length === 0) return "Centang dulu minimal satu akun tujuan.";
     const tanpaTemplate = akunDipilih.filter((id) => !templateAkun[id]);
     if (tanpaTemplate.length > 0) {
@@ -560,10 +563,10 @@ export default function AutoEditUploadPage() {
                               .join(" · ")}
                           </span>
                           {pratinjau.too_long && (
-                            <span className={styles.peringatan}>
-                              Lebih panjang dari batas{" "}
-                              {Math.round((pratinjau.max_seconds || 0) / 60)} menit — hanya bagian
-                              awal yang dipakai.
+                            <span className={styles.tolak}>
+                              Videonya lebih panjang dari batas{" "}
+                              {Math.round((pratinjau.max_seconds || 600) / 60)} menit, jadi tidak
+                              bisa diedit. Pakai video yang lebih pendek.
                             </span>
                           )}
                         </div>

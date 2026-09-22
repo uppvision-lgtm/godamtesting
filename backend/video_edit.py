@@ -62,7 +62,12 @@ VIDEO_CRF = os.getenv("VIDEO_CRF", "23")
 VIDEO_THREADS = os.getenv("VIDEO_THREADS", "0")
 
 # Batas aman supaya satu job tidak menyandera server selamanya.
-MAX_SOURCE_SECONDS = float(os.getenv("VIDEO_MAX_SOURCE_SECONDS", "300"))
+# Durasi terpanjang video sumber yang mau diproses. LEBIH DARI INI DITOLAK,
+# bukan dipotong: memotong diam-diam berarti orang menunggu render selesai
+# lalu menemukan videonya terpenggal di menit kelima tanpa pernah diberi tahu.
+# Sekaligus menutup jalur pemborosan - satu tautan ke video berjam-jam dulu
+# tetap diunduh utuh sebelum dipotong.
+MAX_SOURCE_SECONDS = float(os.getenv("VIDEO_MAX_SOURCE_SECONDS", "600"))
 RENDER_TIMEOUT_SECONDS = float(os.getenv("VIDEO_RENDER_TIMEOUT", "1800"))
 DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "600"))
 PREVIEW_TIMEOUT_SECONDS = float(os.getenv("VIDEO_PREVIEW_TIMEOUT", "45"))
@@ -1218,6 +1223,15 @@ def download_source(
         "--no-playlist",
         "--no-progress",
         "--retries", "3",
+        # Ditolak SEBELUM diunduh. Tanpa ini, video berjam-jam tetap masuk
+        # disk lebih dulu baru ketahuan kepanjangan - dan itu jalur termurah
+        # untuk memenuhi penyimpanan server. Dua penyaring terpisah berarti
+        # ATAU: durasinya di bawah batas, ATAU durasinya memang tidak
+        # diketahui (mis. tautan mp4 langsung). Menulisnya sebagai satu
+        # penyaring ber-"|" ditolak yt-dlp dengan galat yang menyesatkan.
+        "--match-filter", f"duration <= {int(MAX_SOURCE_SECONDS)}",
+        "--match-filter", "!duration",
+        "--max-filesize", os.getenv("VIDEO_MAX_UNDUH_MB", "600") + "M",
         # Utamakan mp4 h264+aac supaya ffmpeg tidak perlu kerja ekstra.
         "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
         "--merge-output-format", "mp4",
@@ -1266,6 +1280,20 @@ def download_source(
 
     berkas = sorted(tujuan.glob("source.*"))
     if not berkas:
+        keluaran_ytdlp = f"{hasil.stdout}\n{hasil.stderr}"
+        if "does not pass filter" in keluaran_ytdlp:
+            # Ditolak penyaring durasi di atas: yt-dlp berhenti dengan kode 0
+            # dan tidak membuat berkas apa pun, jadi tanpa pemeriksaan ini
+            # pesannya jadi "berkasnya tidak ditemukan" yang membingungkan.
+            raise VideoError(
+                f"Videonya lebih panjang dari batas {MAX_SOURCE_SECONDS / 60:.0f} menit, "
+                "jadi tidak diunduh. Pakai video yang lebih pendek."
+            )
+        if "File is larger than max-filesize" in keluaran_ytdlp:
+            raise VideoError(
+                f"Berkas videonya melebihi batas unduhan "
+                f"{os.getenv('VIDEO_MAX_UNDUH_MB', '600')} MB."
+            )
         raise VideoError("Video terunduh tetapi berkasnya tidak ditemukan")
     if log:
         ukuran = berkas[0].stat().st_size / 1_048_576
@@ -1375,7 +1403,8 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
         "width": data.get("width") or 0,
         "height": data.get("height") or 0,
         "webpage_url": data.get("webpage_url") or url,
-        # Peringatan kalau videonya lebih panjang dari batas render.
+        # Videonya terlalu panjang untuk diproses - ini penolakan, bukan
+        # sekadar peringatan bahwa bagian awalnya saja yang dipakai.
         "too_long": bool(durasi and durasi > MAX_SOURCE_SECONDS),
         "max_seconds": MAX_SOURCE_SECONDS,
     }
@@ -1653,6 +1682,12 @@ def _bangun_perintah(
     fps = int(template.get("fps") or 30)
 
     info_sumber = probe(source)
+    if info_sumber["duration"] and info_sumber["duration"] > MAX_SOURCE_SECONDS + 1:
+        raise VideoError(
+            f"Videonya {info_sumber['duration'] / 60:.0f} menit, lebih panjang dari "
+            f"batas {MAX_SOURCE_SECONDS / 60:.0f} menit. Potong dulu videonya, "
+            "atau pakai sumber yang lebih pendek."
+        )
     batas = MAX_SOURCE_SECONDS
     if template.get("max_duration"):
         batas = min(batas, float(template["max_duration"]))

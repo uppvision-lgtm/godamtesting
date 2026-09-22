@@ -25,7 +25,7 @@ import uuid
 from typing import Any
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from playwright.async_api import async_playwright
@@ -40,6 +40,7 @@ from browser_config import (
 )
 
 logger = logging.getLogger("live")
+import jatah_tamu
 from auth_api import identitas
 
 router = APIRouter(prefix="/api/live", tags=["live"])
@@ -604,8 +605,13 @@ def _get_session(token: str) -> LiveSession:
 
 @router.post("/start")
 async def start_live(
-    request: StartRequest, pengguna: dict[str, Any] | None = Depends(identitas)
+    request: StartRequest,
+    permintaan: Request,
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict:
+    # Satu bot = satu Chromium, dan itu bagian termahal dari seluruh aplikasi.
+    # Tamu tetap boleh mencobanya, hanya dibatasi berapa kali.
+    jatah_tamu.pakai("bot-komentar", pengguna, permintaan)
     platform = str(request.platform or "instagram").strip().lower()
     _modul_bot(platform)  # tolak platform yang tidak dikenal sebelum apa pun dibuka
     nama_akun, sesi = request.username.strip(), request.session_id.strip()
