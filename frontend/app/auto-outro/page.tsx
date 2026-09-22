@@ -68,8 +68,7 @@ export default function AutoOutroPage() {
   const [videoUrl, setVideoUrl] = useState("");
   const videoUrlRef = useRef("");
 
-  // Pantau pekerjaan sampai berhenti; begitu videonya ada, tarik sebagai blob
-  // supaya bisa diputar dan diunduh tanpa menempelkan token di alamat.
+  // Pantau pekerjaan selama masih berjalan.
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
     let batal = false;
@@ -78,24 +77,41 @@ export default function AutoOutroPage() {
         const r = await apiFetch(`/api/outro/jobs/${job.job_id}`);
         if (!r.ok || batal) return;
         const j = (await r.json()) as Job;
-        setJob(j);
-        if (j.status === "done" && j.punya_video) {
-          const v = await apiFetch(`/api/outro/jobs/${j.job_id}/video`);
-          if (v.ok && !batal) {
-            const blob = await v.blob();
-            if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
-            const url = URL.createObjectURL(blob);
-            videoUrlRef.current = url;
-            setVideoUrl(url);
-          }
-        }
+        if (!batal) setJob(j);
       } catch {
         // dicoba lagi pada detik berikutnya
       }
-    }, 3000);
+    }, 2000);
     return () => {
       batal = true;
       clearInterval(timer);
+    };
+  }, [job]);
+
+  // Begitu pekerjaan SELESAI, tarik videonya sebagai blob supaya bisa diputar
+  // dan diunduh tanpa menempelkan token di alamat. Sengaja efek terpisah dari
+  // pemantauan: dulu pengambilannya di dalam putaran pantau, dan saat status
+  // berubah jadi "done" efek itu langsung dibersihkan - videonya keburu batal
+  // sebelum sempat terpasang. Di sini ia berjalan setelah status jadi "done".
+  useEffect(() => {
+    if (!job || job.status !== "done" || !job.punya_video) return;
+    let batal = false;
+    void (async () => {
+      try {
+        const v = await apiFetch(`/api/outro/jobs/${job.job_id}/video`);
+        if (!v.ok || batal) return;
+        const blob = await v.blob();
+        if (batal) return;
+        if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+        const url = URL.createObjectURL(blob);
+        videoUrlRef.current = url;
+        setVideoUrl(url);
+      } catch {
+        // tombol unduh langsung tetap disediakan sebagai cadangan
+      }
+    })();
+    return () => {
+      batal = true;
     };
   }, [job]);
 
