@@ -386,6 +386,34 @@ def _job_terjangkau(job_id: str, pengguna: dict[str, Any] | None) -> dict[str, A
 # ============================================================
 
 
+@router.get("/info")
+def info_video(pengguna: dict[str, Any] | None = Depends(identitas)) -> dict[str, Any]:
+    """Batas dan sisa jatah, dibaca halaman saat dibuka.
+
+    Angkanya dikirim dari server, bukan ditanam di frontend: dulu keduanya
+    punya angka sendiri-sendiri, jadi berkas bisa ditolak SESUDAH terunggah
+    penuh hanya karena kedua sisi tidak sepakat.
+    """
+    import kuota
+
+    pemilik = _pemilik(pengguna)
+    dipakai = kuota.pemakaian_byte(pemilik)
+    batas = kuota.batas_byte(pemilik)
+    return {
+        "worker_aktif": vt.worker_hidup(),
+        "maks_aset_mb": MAX_ASSET_MB,
+        "maks_sumber_mb": ve.MAX_SOURCE_UPLOAD_MB,
+        "jenis_aset": sorted(JENIS_ASET),
+        "jenis_sumber": sorted(JENIS_VIDEO),
+        "kuota": {
+            "dipakai_mb": round(dipakai / 1_048_576, 1),
+            "batas_mb": round(batas / 1_048_576),
+            "persen": min(100, round(dipakai * 100 / batas)) if batas else 0,
+            "tamu": not pemilik or pemilik.startswith("guest:"),
+        },
+    }
+
+
 @router.post("/preview")
 def pratinjau_link(
     body: PreviewBody, pengguna: dict[str, Any] | None = Depends(identitas)
@@ -450,7 +478,17 @@ def buat_template(
     elif not pengguna:
         raise HTTPException(status_code=401, detail="Muat ulang halaman, lalu coba lagi.")
     try:
-        return ve.save_template(body.model_dump(), template_id, owner=_nama_akun(pengguna))
+        hasil = ve.save_template(body.model_dump(), template_id, owner=_nama_akun(pengguna))
+        # Berkas layer yang sudah tidak dirujuk tidak punya gunanya lagi dan
+        # tetap memakan jatah penyimpanan pemiliknya.
+        try:
+            ve.buang_aset_tak_terpakai(str(hasil.get("id") or template_id), hasil)
+            import kuota
+
+            kuota.lupakan(_pemilik(pengguna))
+        except Exception:  # noqa: BLE001 - kebersihan tidak boleh menggagalkan simpan
+            logger.exception("Pembersihan aset %s gagal", template_id)
+        return hasil
     except ve.VideoError as error:
         raise _tangani(error) from error
 
@@ -476,14 +514,28 @@ def ambil_template(
 
 @router.get("/templates/{template_id}/preview.png")
 def pratinjau_template(
-    template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
+    template_id: str,
+    teks: int = 0,
+    contoh_hook: str = "",
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> Response:
-    """Gambar komposit layer statis template (tanpa video), untuk halaman."""
+    """Gambar komposit layer statis template (tanpa video), untuk halaman.
+
+    `teks=1` ikut menggambar tulisan contoh memakai perender yang sama dengan
+    pembuatan video, supaya yang terlihat di halaman benar-benar bentuk
+    akhirnya - bukan sekadar kotak kosong.
+    """
     import io
 
     template = _template_terlihat(template_id, pengguna)
+    contoh = None
+    if teks:
+        contoh = {
+            "hook": (contoh_hook or "VIRAL! CONTOH TULISAN BERITA UNTUK MELIHAT LETAK DAN UKURANNYA")[:180],
+            "sumber": "SUMBER: CONTOH",
+        }
     try:
-        kanvas = ve.komposit_statis(template)
+        kanvas = ve.komposit_statis(template, contoh)
     except ve.VideoError as error:
         raise _tangani(error)
     buf = io.BytesIO()
@@ -492,11 +544,26 @@ def pratinjau_template(
                     headers={"Cache-Control": "no-store"})
 
 
+# Kapan tiap pemilik terakhir menjalankan deteksi. Analisisnya membaca
+# seluruh gambar layer, jadi menekan tombolnya berkali-kali adalah cara
+# termurah membuat server sibuk tanpa hasil apa pun.
+_deteksi_terakhir: dict[str, float] = {}
+JEDA_DETEKSI_DETIK = float(os.getenv("VIDEO_JEDA_DETEKSI", "3"))
+
+
 @router.post("/templates/{template_id}/detect-box")
 def deteksi_kotak(
     template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     """Tebak posisi kotak teks dari layer gambar template."""
+    pemilik = _pemilik(pengguna)
+    sekarang = time.time()
+    if sekarang - _deteksi_terakhir.get(pemilik, 0) < JEDA_DETEKSI_DETIK:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Tunggu {JEDA_DETEKSI_DETIK:.0f} detik sebelum mendeteksi lagi.",
+        )
+    _deteksi_terakhir[pemilik] = sekarang
     template = _template_terlihat(template_id, pengguna)
     try:
         kotak = ve.deteksi_kotak_teks(ve.komposit_statis(template))
@@ -530,11 +597,55 @@ def duplikat_template(
     return {**hasil, "assets": aset, "badge_box_default": ve.kotak_kategori_bawaan(hasil.get("text_box"))}
 
 
+def _pastikan_isi_media(berkas: Path) -> None:
+    """Pastikan berkasnya benar-benar gambar/video, bukan sekadar bernama .png.
+
+    Ekstensi datang dari pengguna dan tidak membuktikan apa pun. Berkas yang
+    tidak bisa dibuka di sini akan gagal jauh di belakang - saat ffmpeg
+    berjalan - dengan pesan yang tidak bisa dipahami siapa pun.
+    """
+    suffix = berkas.suffix.lower()
+    if suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        try:
+            from PIL import Image
+
+            with Image.open(berkas) as im:
+                im.verify()
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=415, detail="Berkas ini bukan gambar yang bisa dibaca."
+            ) from error
+        return
+    try:
+        info = ve.probe(berkas)
+    except Exception as error:  # noqa: BLE001
+        raise HTTPException(
+            status_code=415, detail="Berkas ini bukan video yang bisa dibaca."
+        ) from error
+    if not info.get("width") or not info.get("height"):
+        raise HTTPException(status_code=415, detail="Video ini tidak punya gambar.")
+
+
 @router.delete("/templates/{template_id}")
 def hapus_template(
     template_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, bool]:
     _template_milik(template_id, pengguna)
+    # Menghapus template yang sedang dipakai membuat job berjalan kehilangan
+    # bahannya di tengah jalan, dan hasil yang sudah ada kehilangan namanya.
+    berjalan = [
+        j
+        for j in vt.daftar_job(200, owner=_nama_akun(pengguna) or "")
+        if j.get("template_id") == template_id and j.get("status") in STATUS_AKTIF
+    ]
+    if berjalan:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Template ini sedang dipakai {len(berjalan)} video yang belum selesai. "
+                "Tunggu sampai selesai atau hentikan dulu."
+            ),
+        )
     ve.delete_template(template_id)
     return {"ok": True}
 
@@ -578,6 +689,11 @@ async def unggah_aset(
         import kuota
 
         kuota.lupakan(_pemilik(pengguna))
+    try:
+        _pastikan_isi_media(tujuan)
+    except HTTPException:
+        tujuan.unlink(missing_ok=True)
+        raise
 
     ukuran = _rapikan_gambar(tujuan) or _rapikan_video(tujuan) or ukuran
 
@@ -886,6 +1002,63 @@ def hapus_job(
     vt.buang_job(job_id)
     shutil.rmtree(vt.job_path(job_id), ignore_errors=True)
     return {"ok": True}
+
+
+@router.post("/jobs/{job_id}/stop")
+def hentikan_satu_job(
+    job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
+) -> dict[str, Any]:
+    """Hentikan SATU pembuatan video. "Hentikan semua" terlalu kasar kalau
+    yang bermasalah cuma satu dari beberapa template yang sedang dikerjakan."""
+    status = _job_terjangkau(job_id, pengguna)
+    if status.get("status") not in ("queued", "downloading", "rendering"):
+        raise HTTPException(status_code=409, detail="Video ini sudah tidak berjalan.")
+    vt.minta_batal(job_id)
+    tugas = status.get("task_id")
+    if tugas:
+        try:
+            vt.celery_app.control.revoke(str(tugas))
+        except Exception:  # noqa: BLE001
+            logger.warning("Gagal mencabut tugas %s", tugas)
+    if status.get("status") == "queued":
+        vt.tulis_status(job_id, status="dibatalkan", log="Dihentikan sebelum mulai.")
+    else:
+        # Penghentian bersifat kooperatif: worker baru berhenti di sela
+        # langkah berikutnya. Tanpa catatan ini, menekan Hentikan terasa
+        # seperti tidak terjadi apa-apa selama beberapa detik.
+        vt.tulis_status(job_id, log="Diminta berhenti; menunggu proses berhenti.")
+    return {"ok": True, "job_id": job_id}
+
+
+@router.post("/jobs/{job_id}/ulangi")
+def ulangi_job(
+    job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
+) -> dict[str, Any]:
+    """Jalankan ulang satu job dengan bahan yang sama persis.
+
+    Kegagalan paling sering bersifat sesaat - jaringan putus, platform
+    sedang rewel - dan tanpa ini orang harus menempel ulang linknya,
+    menyusun teksnya lagi, dan mencentang templatenya dari awal.
+    """
+    status = _job_terjangkau(job_id, pengguna)
+    sumber = str(status.get("sumber_url") or status.get("url") or "")
+    template_id = str(status.get("template_id") or "")
+    if not sumber or not template_id:
+        raise HTTPException(
+            status_code=409, detail="Bahan job ini sudah tidak lengkap; buat ulang dari awal."
+        )
+    if sumber.startswith("http") and "/storage/v1/object/" in sumber:
+        # Kolom url sudah tertimpa alamat hasil render, bukan sumbernya lagi.
+        raise HTTPException(
+            status_code=409, detail="Alamat sumbernya tidak tersimpan; buat ulang dari awal."
+        )
+    _template_terlihat(template_id, pengguna)
+    _pastikan_kuota(pengguna)
+    _pastikan_antrean_muat(1)
+    pemilik = _nama_akun(pengguna) or ""
+    baru = vt.buat_job(sumber, template_id, status.get("texts") or {}, owner=pemilik)
+    vt.render_video.delay(baru, sumber, template_id, status.get("texts") or {}, "")
+    return {"job_id": baru, "template_id": template_id, "status": "queued"}
 
 
 @router.post("/jobs/cleanup")

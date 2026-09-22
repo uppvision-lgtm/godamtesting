@@ -299,3 +299,49 @@
 .menuDev {
   color: #7fe0a0;
 }
+
+/* ---- Pengukur kekuatan password ----
+   Tiga kotak: merah kalau lemah, kuning cukup, hijau kuat. Kotak yang belum
+   tercapai dibiarkan abu supaya targetnya terlihat, bukan disembunyikan. */
+.kuat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: -4px;
+}
+
+.kuatBar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.kuatKotak {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #2a3a2e;
+  transition: background 0.15s;
+}
+
+.kuat_lemah { background: #e0574f; }
+.kuat_sedang { background: #e0b43f; }
+.kuat_kuat { background: #3fce6f; }
+
+.kuatLabel {
+  min-width: 46px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.teks_lemah { color: #e0574f; }
+.teks_sedang { color: #e0b43f; }
+.teks_kuat { color: #3fce6f; }
+
+.kuatKurang {
+  color: #9aa89f;
+  font-size: 11px;
+  line-height: 1.5;
+}

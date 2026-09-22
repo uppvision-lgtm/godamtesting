@@ -26,9 +26,12 @@ import { useDialog } from "../components/Dialog";
 const ID_SET_PERTAMA = "utama";
 const NAMA_SET_PERTAMA = "TV Rakyat";
 
-const BATAS_UNGGAH_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || 200);
-// Video sumber dari komputer. Lebih kecil dari batas aset karena diproses utuh.
-const BATAS_SUMBER_MB = 100;
+// Batas ukuran TIDAK lagi ditulis di sini. Dulu frontend dan server punya
+// angkanya sendiri-sendiri, jadi berkas bisa ditolak SESUDAH terunggah penuh
+// hanya karena keduanya tidak sepakat. Sekarang angkanya diminta ke server
+// lewat /api/video/info; nilai di bawah hanya dipakai sebelum jawabannya
+// datang.
+const BATAS_AWAL = { aset: 200, sumber: 100 };
 
 // Unggahan besar dikirim langsung ke backend, bukan lewat proxy halaman:
 // fungsi serverless Vercel membatasi badan permintaan sekitar 4 MB. Kalau
@@ -67,6 +70,8 @@ type TextLayer = {
   color?: string;
   x?: number | null;
   y?: number | null;
+  // Perataan: "left"/"right" untuk layer biasa; untuk style "berita" juga
+  // menerima "justify" (bawaan) dan "center".
   align?: string;
   stroke?: number;
   stroke_color?: string;
@@ -111,6 +116,16 @@ type Susunan = {
   aset_dari?: string | null;
 };
 
+/** Batas dan sisa jatah, dikirim server lewat /api/video/info. */
+type InfoServer = {
+  worker_aktif: boolean;
+  maks_aset_mb: number;
+  maks_sumber_mb: number;
+  jenis_aset: string[];
+  jenis_sumber: string[];
+  kuota: { dipakai_mb: number; batas_mb: number; persen: number; tamu: boolean };
+};
+
 type Pratinjau = {
   title: string;
   description: string;
@@ -138,6 +153,8 @@ type JobStatus = {
   job_id: string;
   status: string;
   progress: number;
+  size?: number;
+  durasi?: number;
   message?: string;
   logs?: string[];
   output?: string | null;
@@ -175,9 +192,18 @@ const NAMA_SLOT = [
  * kanan — serapat contoh. Ukuran 38 dengan lebar itu memenggal kalimat contoh
  * persis seperti acuannya.
  */
+/** Pilihan perataan paragraf hook, beserta ikonnya. */
+const PILIHAN_RATA: { nilai: string; judul: string; garis: number[] }[] = [
+  { nilai: "justify", judul: "Rata kiri-kanan", garis: [100, 100, 100, 100] },
+  { nilai: "left", judul: "Rata kiri", garis: [100, 70, 90, 55] },
+  { nilai: "center", judul: "Rata tengah", garis: [100, 70, 90, 55] },
+  { nilai: "right", judul: "Rata kanan", garis: [100, 70, 90, 55] },
+];
+
 const TEKS_HOOK: TextLayer = {
   name: "hook",
   style: "berita",
+  align: "justify",
   size: 38,
   min_size: 22,
   max_lines: 4,
@@ -409,6 +435,14 @@ export default function EditVideoPage() {
   const [sumberHook, setSumberHook] = useState("");
   const [membuatHook, setMembuatHook] = useState(false);
 
+  // Batas & kuota dari server, plus keadaan worker.
+  const [info, setInfo] = useState<InfoServer | null>(null);
+  const batasAset = info?.maks_aset_mb || BATAS_AWAL.aset;
+  const batasSumber = info?.maks_sumber_mb || BATAS_AWAL.sumber;
+  // Perataan tulisan hook milik template yang sedang dibuka.
+  const [rataTeks, setRataTeks] = useState("justify");
+  const [menghentikanSatu, setMenghentikanSatu] = useState("");
+
   const [jobs, setJobs] = useState<JobStatus[]>([]);
   // Angka persen yang DITAMPILKAN, terpisah dari angka yang dilaporkan server.
   // Server hanya ditanya tiap dua detik, jadi angkanya melompat; yang ini
@@ -431,6 +465,7 @@ export default function EditVideoPage() {
   useEffect(() => {
     simpanForm("edit-video", { link });
   }, [link]);
+
 
   // Link tersimpan di server juga, supaya tidak perlu ditempel ulang setelah
   // tab ditutup. Tamu tidak ikut: isiannya hilang bersama tabnya.
@@ -456,9 +491,18 @@ export default function EditVideoPage() {
         return;
       }
       try {
-        const res = await apiFetch(`/api/video/templates/${idSet}/preview.png?v=${versiPratinjau}`, {
-          cache: "no-store",
-        });
+        // teks=1: pratinjau ikut menggambar tulisan contoh lewat perender yang
+        // sama dengan pembuatan video, jadi letak dan ukurannya benar-benar
+        // seperti hasil akhirnya - bukan sekadar kotak kosong.
+        const contoh = susunHook(
+          modeTeks === "manual" ? kickerManual : kicker,
+          modeTeks === "manual" ? isiManual : isi
+        );
+        const res = await apiFetch(
+          `/api/video/templates/${idSet}/preview.png?teks=1&v=${versiPratinjau}` +
+            (contoh ? `&contoh_hook=${encodeURIComponent(contoh)}` : ""),
+          { cache: "no-store" }
+        );
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           throw new Error(d.detail || "Pratinjau tidak bisa dibuat.");
@@ -481,6 +525,9 @@ export default function EditVideoPage() {
       batal = true;
       if (alamat) URL.revokeObjectURL(alamat);
     };
+    // Teks contoh sengaja TIDAK jadi pemicu: mengetik caption tidak perlu
+    // memuat ulang gambar pratinjau pada tiap huruf.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idSet, susunan, versiPratinjau]);
 
   // ===== SET LAYER =====
@@ -541,6 +588,11 @@ export default function EditVideoPage() {
         setBadgeBoxBawaan(ada.badge_box_default || null);
         setKategori(ada.kategori || "");
         setTeksWarna(ada.teks_warna === "black" ? "black" : "white");
+        setRataTeks(
+          PILIHAN_RATA.some((r) => r.nilai === ada.texts?.[0]?.align)
+            ? String(ada.texts[0].align)
+            : "justify"
+        );
         if (perluDisimpan && ada.can_edit) {
           // Penyelarasan ini berjalan sendiri saat set dibuka. Kalau gagal
           // (mis. namanya kembar dengan set lain), setnya tetap ditampilkan
@@ -575,6 +627,7 @@ export default function EditVideoPage() {
         setBadgeBoxBawaan(null);
         setKategori("");
         setTeksWarna("white");
+        setRataTeks("justify");
         await muatDaftar();
       }
     } catch {
@@ -679,7 +732,9 @@ export default function EditVideoPage() {
       await muatDaftar();
       // Langsung buka salinannya supaya bisa disunting.
       await muatSet(data.id, data.name);
-      setPesanLayer(`Template "${nama}" dibuat dari salinan "${namaSet}".`);
+      setPesanLayer(
+        `Template "${nama}" dibuat dari salinan "${namaSet}" dan sekarang milikmu — bisa disunting bebas.`
+      );
     } catch (err) {
       setPesanLayer(err instanceof Error ? err.message : "Gagal menyalin template.");
     }
@@ -716,6 +771,21 @@ export default function EditVideoPage() {
     setKategori(bersih);
     await simpanSusunan({ ...susunan, kategori: bersih });
     setPesanLayer(bersih ? `Kategori "${bersih}" tersimpan.` : "Kategori dikosongkan; badge tidak ditulis.");
+  }
+
+  /** Simpan perataan paragraf hook milik template ini. */
+  async function simpanRataTeks(rata: string) {
+    if (!susunan) return;
+    setRataTeks(rata);
+    const texts = (susunan.texts || []).map((l) =>
+      l.style === "berita" ? { ...l, align: rata } : l
+    );
+    await simpanSusunan({ ...susunan, texts });
+    setPesanLayer(
+      `Perataan tulisan diubah jadi ${
+        PILIHAN_RATA.find((r) => r.nilai === rata)?.judul.toLowerCase() || rata
+      }.`
+    );
   }
 
   async function simpanWarnaTeks(warna: "black" | "white") {
@@ -826,9 +896,9 @@ export default function EditVideoPage() {
       await muatDaftar();
       setPesanLayer(`Template "${nama}" tersimpan.`);
     } catch (err) {
-      // Nama yang sudah dipakai set lain ditolak server; kembalikan isian ke
-      // nama tersimpan supaya tidak tampak seolah perubahannya berhasil.
-      setNamaSet(susunan.name);
+      // Ketikan SENGAJA dipertahankan. Dulu isian dikembalikan ke nama lama,
+      // dan nama yang baru saja diketik hilang begitu saja - padahal biasanya
+      // hanya perlu diubah satu huruf supaya tidak bentrok.
       setPesanLayer(err instanceof Error ? err.message : "Gagal menyimpan template.");
     } finally {
       setMenyimpanNama(false);
@@ -855,9 +925,9 @@ export default function EditVideoPage() {
 
   /** Unggah satu berkas, kembalikan namanya ("assets/xxx.png"). */
   async function unggah(file: File, slot: string): Promise<string | null> {
-    if (file.size > BATAS_UNGGAH_MB * 1_048_576) {
+    if (file.size > batasAset * 1_048_576) {
       setPesanLayer(
-        `Berkas ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar (batas ${BATAS_UNGGAH_MB} MB).`
+        `Berkas ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar (batas ${batasAset} MB).`
       );
       return null;
     }
@@ -1036,10 +1106,10 @@ export default function EditVideoPage() {
 
   /** Unggah video sumber dari komputer; hasilnya alamat "upload://..." */
   async function unggahSumber(file: File) {
-    if (file.size > BATAS_SUMBER_MB * 1_048_576) {
+    if (file.size > batasSumber * 1_048_576) {
       setBerkasSumber(null);
       setGalatPratinjau(
-        `Video ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar — maksimal ${BATAS_SUMBER_MB} MB.`
+        `Video ${(file.size / 1_048_576).toFixed(1)} MB terlalu besar — maksimal ${batasSumber} MB.`
       );
       return;
     }
@@ -1146,6 +1216,45 @@ export default function EditVideoPage() {
     } finally {
       setMenghentikan(false);
     }
+  }
+
+  /** Hentikan SATU video yang sedang dibuat. */
+  async function hentikanSatu(jobId: string) {
+    setMenghentikanSatu(jobId);
+    try {
+      const res = await apiFetch(`/api/video/jobs/${jobId}/stop`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Gagal menghentikan.");
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal menghentikan.");
+    } finally {
+      setMenghentikanSatu("");
+    }
+  }
+
+  /** Jalankan ulang satu job dengan bahan yang sama. */
+  async function ulangiJob(jobId: string) {
+    setGalat("");
+    try {
+      const res = await apiFetch(`/api/video/jobs/${jobId}/ulangi`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Gagal mengulang.");
+      setJobs((lama) => [
+        { job_id: data.job_id, status: data.status, progress: 0, template_id: data.template_id },
+        ...lama.filter((j) => j.job_id !== jobId),
+      ]);
+      void hapusHasil(jobId);
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal mengulang.");
+    }
+  }
+
+  /** Ukuran/durasi hasil jadi keterangan pendek. */
+  function keteranganHasil(j: JobStatus): string {
+    const bagian: string[] = [];
+    if (j.durasi) bagian.push(formatDurasi(j.durasi));
+    if (j.size) bagian.push(`${(j.size / 1_048_576).toFixed(1)} MB`);
+    return bagian.join(" · ");
   }
 
   /** Buang satu hasil dari server, sekaligus dari daftar. */
@@ -1304,6 +1413,24 @@ export default function EditVideoPage() {
   }
 
   const sedangJalan = jobs.some((j) => !selesai(j.status));
+  // Pemakaian penyimpanan berubah setiap satu video selesai atau dihapus,
+  // jadi angkanya diambil ulang saat itu - bukan sekali saat halaman dibuka.
+  const jumlahSelesai = jobs.filter((j) => selesai(j.status)).length;
+  useEffect(() => {
+    if (!siap) return;
+    let batal = false;
+    void (async () => {
+      try {
+        const res = await apiFetch("/api/video/info", { cache: "no-store" });
+        if (res.ok && !batal) setInfo((await res.json()) as InfoServer);
+      } catch {
+        // batas awal tetap dipakai
+      }
+    })();
+    return () => {
+      batal = true;
+    };
+  }, [siap, akun, jumlahSelesai]);
 
   // Kenapa tombol Buat video belum bisa ditekan. Ditampilkan apa adanya di
   // bawah tombol supaya tidak perlu menebak bagian mana yang kurang.
@@ -1526,6 +1653,52 @@ export default function EditVideoPage() {
 
 
 
+            {/* ---- PERATAAN TULISAN ---- */}
+            <div className={styles.row}>
+              <label>
+                <span>
+                  Perataan tulisan
+                  <Bantuan>
+                    Rata kiri-kanan membuat tiap baris memenuhi lebar kotak (seperti
+                    koran). Tiga lainnya memakai sela kata biasa. Baris terakhir tidak
+                    pernah diregangkan.
+                  </Bantuan>
+                </span>
+              </label>
+              <div className={styles.pilihRata} role="radiogroup" aria-label="Perataan tulisan">
+                {PILIHAN_RATA.map((r) => (
+                  <button
+                    key={r.nilai}
+                    type="button"
+                    role="radio"
+                    aria-checked={rataTeks === r.nilai}
+                    title={r.judul}
+                    aria-label={r.judul}
+                    disabled={kunci}
+                    className={rataTeks === r.nilai ? styles.rataAktif : styles.rataBtn}
+                    onClick={() => void simpanRataTeks(r.nilai)}
+                  >
+                    <span className={styles.rataIkon} aria-hidden="true">
+                      {r.garis.map((lebar, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            width: `${lebar}%`,
+                            marginLeft:
+                              r.nilai === "right"
+                                ? "auto"
+                                : r.nilai === "center"
+                                  ? `${(100 - lebar) / 2}%`
+                                  : 0,
+                          }}
+                        />
+                      ))}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* ---- KOTAK TEKS ---- */}
             <div className={styles.blok}>
               <div className={styles.blokHead}>
@@ -1727,7 +1900,7 @@ export default function EditVideoPage() {
             ) : (
               <>
             <label>
-              <span>Video dari komputer (maksimal {BATAS_SUMBER_MB} MB)</span>
+              <span>Video dari komputer (maksimal {batasSumber} MB)</span>
               <input
                 type="file"
                 disabled={mengunggahSumber}
@@ -1962,6 +2135,34 @@ export default function EditVideoPage() {
               </p>
             </div>
 
+            {info && !info.worker_aktif && (
+              <p className={styles.peringatanWorker}>
+                Mesin perender sedang tidak aktif. Video yang dikirim sekarang akan
+                menunggu di antrean sampai mesinnya hidup lagi.
+              </p>
+            )}
+
+            {info && (
+              <div className={styles.kuotaBaris}>
+                <div className={styles.kuotaBarWrap}>
+                  <div
+                    className={
+                      info.kuota.persen >= 90
+                        ? styles.kuotaBarPenuh
+                        : info.kuota.persen >= 70
+                          ? styles.kuotaBarHampir
+                          : styles.kuotaBar
+                    }
+                    style={{ width: `${Math.max(2, info.kuota.persen)}%` }}
+                  />
+                </div>
+                <span className={styles.kuotaLabel}>
+                  Penyimpanan {info.kuota.dipakai_mb} dari {info.kuota.batas_mb} MB
+                  {info.kuota.tamu ? " (mode tamu)" : ""}
+                </span>
+              </div>
+            )}
+
             <button
               className={styles.mulaiBtn}
               onClick={mulaiRender}
@@ -2024,15 +2225,28 @@ export default function EditVideoPage() {
                               <div className={styles.barGerak} />
                             )}
                           </div>
-                          <p className={styles.hint}>
-                            {j.status === "rendering"
-                              ? `Menyusun video — ${progresTampil[j.job_id] ?? 0}% selesai`
-                              : labelStatus(j.status)}
-                          </p>
+                          <div className={styles.barisBawah}>
+                            <p className={styles.hint}>
+                              {j.status === "rendering"
+                                ? `Menyusun video — ${progresTampil[j.job_id] ?? 0}% selesai`
+                                : labelStatus(j.status)}
+                            </p>
+                            <button
+                              type="button"
+                              className={styles.stopSatuBtn}
+                              onClick={() => void hentikanSatu(j.job_id)}
+                              disabled={menghentikanSatu === j.job_id}
+                            >
+                              {menghentikanSatu === j.job_id ? "Menghentikan..." : "Hentikan"}
+                            </button>
+                          </div>
                         </>
                       )}
                       {j.status === "done" && (
-                        <p className={styles.hint}>Video siap diputar dan diunduh.</p>
+                        <p className={styles.hint}>
+                          Video siap diputar dan diunduh
+                          {keteranganHasil(j) ? ` — ${keteranganHasil(j)}` : ""}.
+                        </p>
                       )}
                       {j.status === "dibatalkan" && (
                         <p className={styles.hint}>Dihentikan sebelum videonya jadi.</p>
@@ -2060,13 +2274,22 @@ export default function EditVideoPage() {
                         </div>
                       )}
                       {selesai(j.status) && j.status !== "done" && (
-                        <button
-                          type="button"
-                          className={styles.hapusHasilBtn}
-                          onClick={() => void hapusHasil(j.job_id)}
-                        >
-                          Hapus
-                        </button>
+                        <div className={styles.hasilAksi}>
+                          <button
+                            type="button"
+                            className={styles.ulangiBtn}
+                            onClick={() => void ulangiJob(j.job_id)}
+                          >
+                            Coba lagi
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.hapusHasilBtn}
+                            onClick={() => void hapusHasil(j.job_id)}
+                          >
+                            Hapus
+                          </button>
+                        </div>
                       )}
                     </div>
                   );

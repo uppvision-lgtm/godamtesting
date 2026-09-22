@@ -896,18 +896,30 @@ def _gambar_teks_berita(
     warna_isi = _warna(teks.get("color"), "black")
     warna_pembuka = _warna(teks.get("kicker_color"), "#d32d27")
     lebar_spasi = gambar.textlength(" ", font=font)
+    # Perataan paragraf. "justify" (bawaan) meregangkan sela kata sampai rata
+    # kiri-kanan; tiga lainnya memakai sela biasa dan hanya menggeser titik
+    # mulai tiap baris.
+    rata = str(teks.get("align") or "justify").strip().lower()
+    if rata not in ("justify", "left", "center", "right"):
+        rata = "justify"
 
     for nomor, kata_baris in enumerate(baris):
         y = atas + nomor * tinggi_baris
         lebar_kata = [gambar.textlength(k, font=font) for k in kata_baris]
         terakhir = nomor == len(baris) - 1
-        # Baris terakhir dan baris satu kata tidak diregangkan (gaya justify
-        # pada umumnya), selebihnya sisa lebar dibagi rata ke sela kata.
-        if terakhir or len(kata_baris) < 2:
-            sela = lebar_spasi
+        # Baris terakhir dan baris satu kata tidak pernah diregangkan (aturan
+        # justify pada umumnya), selebihnya sisa lebar dibagi rata ke sela.
+        regang = rata == "justify" and not terakhir and len(kata_baris) >= 2
+        sela = (
+            (batas - sum(lebar_kata)) / (len(kata_baris) - 1) if regang else lebar_spasi
+        )
+        lebar_baris = sum(lebar_kata) + sela * max(0, len(kata_baris) - 1)
+        if rata == "center":
+            x = float(kiri) + max(0.0, (batas - lebar_baris) / 2)
+        elif rata == "right":
+            x = float(kiri) + max(0.0, batas - lebar_baris)
         else:
-            sela = (batas - sum(lebar_kata)) / (len(kata_baris) - 1)
-        x = float(kiri)
+            x = float(kiri)
         for urutan, (k, w) in enumerate(zip(kata_baris, lebar_kata)):
             warna = warna_pembuka if (nomor == 0 and urutan == 0) else warna_isi
             gambar.text((x, y), k, font=font, fill=warna)
@@ -1391,11 +1403,18 @@ def _angka_posisi(nilai: Any, ukuran_kanvas: int, ukuran_layer: int) -> int:
     return int(nilai)
 
 
-def komposit_statis(template: dict[str, Any]) -> Any:
+def komposit_statis(template: dict[str, Any], contoh: dict[str, str] | None = None) -> Any:
     """Susun layer gambar template di atas kanvas gelap, tanpa video.
 
     Dipakai halaman untuk menggambar kotak teks di atas tampilan sebenarnya,
     dan oleh deteksi otomatis. Layer video dilewati.
+
+    ``contoh`` berisi teks contoh per nama layer (mis. {"hook": "VIRAL! ..."}).
+    Kalau diisi, teksnya ikut digambar memakai perender yang SAMA dengan yang
+    dipakai saat membuat video - jadi yang terlihat di halaman benar-benar
+    bentuk akhirnya: perataan, warna, penyusutan font, dan pemenggalan baris.
+    Deteksi otomatis memanggilnya tanpa ``contoh`` supaya yang dianalisis
+    tetap gambar layer polos.
     """
     from PIL import Image
 
@@ -1429,7 +1448,85 @@ def komposit_statis(template: dict[str, Any]) -> Any:
             continue
         potongan = im.crop((kiri, atas, kanan, bawah))
         kanvas.alpha_composite(potongan, (x + kiri, y + atas))
+
+    if contoh:
+        kanvas = _tempel_contoh_teks(template, kanvas, contoh, lebar, tinggi)
     return kanvas
+
+
+def _tempel_contoh_teks(
+    template: dict[str, Any], kanvas: Any, contoh: dict[str, str], lebar: int, tinggi: int
+) -> Any:
+    """Gambar teks contoh di atas komposit, lewat jalur render yang sama."""
+    import tempfile
+
+    from PIL import Image
+
+    kotak_teks = template.get("text_box") if isinstance(template.get("text_box"), dict) else None
+    kotak_badge = template.get("badge_box") if isinstance(template.get("badge_box"), dict) else None
+    if not kotak_badge:
+        kotak_badge = kotak_kategori_bawaan(kotak_teks)
+
+    with tempfile.TemporaryDirectory(prefix="pratinjau-teks-") as kerja:
+        for nomor, teks in enumerate(template.get("texts") or []):
+            nama = str(teks.get("name") or f"teks{nomor}")
+            isi = contoh.get(nama)
+            if not isi and teks.get("source"):
+                isi = template.get(str(teks["source"]))
+            isi = str(isi or "").strip()
+            if not isi:
+                continue
+            gaya = str(teks.get("style") or "").lower()
+            if gaya == "berita":
+                warna = str(template.get("teks_warna") or "white").strip().lower()
+                teks = {**teks, "color": warna if warna in ("black", "white") else "white"}
+                if kotak_teks and not teks.get("box"):
+                    teks = {**teks, "box": kotak_teks}
+            if gaya == "kategori":
+                if not teks.get("box"):
+                    if not kotak_badge:
+                        continue
+                    teks = {**teks, "box": kotak_badge}
+            try:
+                png = _gambar_teks(teks, isi, lebar, tinggi, Path(kerja) / f"t{nomor}.png")
+                with Image.open(png) as lapis:
+                    kanvas.alpha_composite(lapis.convert("RGBA"))
+            except Exception:  # noqa: BLE001 - pratinjau tidak boleh menggagalkan halaman
+                logger.exception("Teks contoh '%s' gagal digambar di pratinjau", nama)
+    return kanvas
+
+
+def aset_terpakai(template: dict[str, Any]) -> set[str]:
+    """Nama berkas aset yang masih dirujuk template ini."""
+    dipakai = {str(o.get("file") or "") for o in (template.get("overlays") or [])}
+    for kunci in ("intro", "outro"):
+        nilai = template.get(kunci)
+        if nilai:
+            dipakai.add(str(nilai))
+    return {d for d in dipakai if d}
+
+
+def buang_aset_tak_terpakai(template_id: str, template: dict[str, Any]) -> int:
+    """Hapus berkas di folder assets yang sudah tidak dirujuk template.
+
+    Mengosongkan satu layer hanya melepas rujukannya; tanpa ini berkasnya
+    tetap tinggal selamanya dan ikut memakan jatah penyimpanan pemiliknya.
+    """
+    folder = template_path(template_id) / "assets"
+    if not folder.is_dir():
+        return 0
+    dipakai = {Path(n).name for n in aset_terpakai(template)}
+    dibuang = 0
+    for berkas in folder.iterdir():
+        if berkas.is_file() and berkas.name not in dipakai:
+            try:
+                berkas.unlink()
+                dibuang += 1
+            except OSError as galat:
+                logger.warning("Aset %s gagal dihapus: %s", berkas, galat)
+    if dibuang:
+        logger.info("%s: %d aset tak terpakai dibuang", template_id, dibuang)
+    return dibuang
 
 
 def deteksi_kotak_teks(kanvas: Any) -> dict[str, int] | None:

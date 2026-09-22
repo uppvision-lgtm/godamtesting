@@ -193,6 +193,72 @@ def password_bocor(password: str) -> bool | None:
     return False
 
 
+# Kata sandi yang paling sering dipakai orang. Daftarnya sengaja pendek:
+# yang panjang sudah ditangani pengecekan kebocoran ke Have I Been Pwned.
+_SANDI_UMUM = {
+    "password", "12345678", "123456789", "1234567890", "qwerty123", "qwertyui",
+    "password1", "password123", "iloveyou", "admin123", "welcome1", "abc12345",
+    "11111111", "00000000", "sayangkamu", "indonesia", "rahasia123",
+}
+
+
+def kekuatan_password(password: str, username: str = "") -> dict[str, Any]:
+    """Nilai kekuatan sandi: 0 lemah (ditolak), 1 sedang, 2 kuat.
+
+    Aturannya sengaja dapat dijelaskan, bukan skor rahasia: orang yang
+    ditolak harus tahu persis apa yang kurang. Perhitungan yang sama ada di
+    halaman supaya penilaiannya tidak berbeda antara yang terlihat dan yang
+    diterima server - tetapi yang MENENTUKAN tetap yang di sini.
+    """
+    sandi = str(password or "")
+    kurang: list[str] = []
+    jenis = sum(
+        [
+            any(c.islower() for c in sandi),
+            any(c.isupper() for c in sandi),
+            any(c.isdigit() for c in sandi),
+            any(not c.isalnum() for c in sandi),
+        ]
+    )
+    if len(sandi) < MIN_PASSWORD:
+        kurang.append(f"panjangnya minimal {MIN_PASSWORD} huruf")
+    if jenis < 2:
+        kurang.append("campur huruf dengan angka atau simbol")
+    if sandi.lower() in _SANDI_UMUM:
+        kurang.append("sandi ini terlalu sering dipakai orang")
+    if username and len(username) >= 3 and username.lower() in sandi.lower():
+        kurang.append("jangan memakai nama akunmu sendiri")
+    if len(set(sandi)) <= 2 and sandi:
+        kurang.append("jangan mengulang huruf yang sama")
+    # Urutan papan ketik / angka berurutan, mis. "abcdefgh" atau "12345678".
+    berurutan = all(
+        ord(sandi[i + 1]) - ord(sandi[i]) == 1 for i in range(len(sandi) - 1)
+    )
+    if len(sandi) >= 4 and berurutan:
+        kurang.append("jangan memakai urutan berurutan")
+
+    if kurang:
+        nilai = 0
+    elif len(sandi) >= 12 and jenis >= 3:
+        nilai = 2
+    else:
+        nilai = 1
+    return {
+        "nilai": nilai,
+        "label": ("lemah", "sedang", "kuat")[nilai],
+        "kurang": kurang,
+    }
+
+
+def _tolak_kalau_lemah(password: str, username: str = "") -> None:
+    hasil = kekuatan_password(password, username)
+    if hasil["nilai"] == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Password belum cukup kuat: " + "; ".join(hasil["kurang"]) + ".",
+        )
+
+
 def _tolak_kalau_bocor(password: str) -> None:
     if password_bocor(password):
         raise HTTPException(
@@ -412,9 +478,13 @@ def _siapkan_template_awal(username: str) -> None:
 
 
 @router.get("/config")
-def konfigurasi() -> dict[str, bool]:
-    """Dipakai frontend untuk tahu keadaan login dan pendaftaran."""
-    return {"enabled": _login_siap(), "register": IZINKAN_DAFTAR}
+def konfigurasi() -> dict[str, Any]:
+    """Dipakai frontend untuk tahu keadaan login, pendaftaran, dan aturan sandi."""
+    return {
+        "enabled": _login_siap(),
+        "register": IZINKAN_DAFTAR,
+        "min_password": MIN_PASSWORD,
+    }
 
 
 @router.post("/register")
@@ -428,6 +498,7 @@ def daftar(body: AkunBody) -> dict[str, Any]:
     username = _bersih(body.username)
     if AKUN_USERNAME and username == AKUN_USERNAME:
         raise HTTPException(status_code=409, detail="Username ini sudah dipakai.")
+    _tolak_kalau_lemah(body.password, username)
     _tolak_kalau_bocor(body.password)
     try:
         if db.select(TABEL, {"username": f"eq.{username}", "select": "id", "limit": "1"}):
@@ -536,6 +607,7 @@ def ganti_password(
         raise HTTPException(
             status_code=422, detail="Password baru harus berbeda dari password lama."
         )
+    _tolak_kalau_lemah(body.password_baru, username)
     _tolak_kalau_bocor(body.password_baru)
 
     sesi_baru = int(akun.get("sesi") or 0) + 1

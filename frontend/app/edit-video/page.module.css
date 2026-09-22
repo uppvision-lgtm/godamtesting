@@ -995,3 +995,121 @@
     opacity: 0.6;
   }
 }
+
+/* ---- Pilihan perataan tulisan (empat ikon garis) ---- */
+.pilihRata {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.rataBtn,
+.rataAktif {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #2a3a2e;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rataAktif {
+  background: #1c2b21;
+  border-color: #3fce6f;
+}
+
+.rataBtn:disabled,
+.rataAktif:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Empat garis kecil yang meniru bentuk paragrafnya. */
+.rataIkon {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 18px;
+}
+
+.rataIkon span {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: #b8c6bd;
+}
+
+.rataAktif .rataIkon span {
+  background: #7fe0a0;
+}
+
+/* ---- Sisa jatah penyimpanan ---- */
+.kuotaBaris {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 2px;
+}
+
+.kuotaBarWrap {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #1a221c;
+  overflow: hidden;
+}
+
+.kuotaBar { height: 100%; background: #3fce6f; }
+.kuotaBarHampir { height: 100%; background: #e0b43f; }
+.kuotaBarPenuh { height: 100%; background: #e0574f; }
+
+.kuotaLabel {
+  color: #9aa89f;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---- Peringatan mesin perender mati ---- */
+.peringatanWorker {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid #e0b43f;
+  border-radius: 0 8px 8px 0;
+  background: #1f1a12;
+  color: #e6d3a3;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- Baris bawah kartu job: keterangan + tombol hentikan ---- */
+.barisBawah {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stopSatuBtn,
+.ulangiBtn {
+  padding: 5px 11px;
+  border: 1px solid #2a3a2e;
+  border-radius: 8px;
+  background: transparent;
+  color: #b8c6bd;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ulangiBtn {
+  border-color: #3fce6f;
+  color: #7fe0a0;
+}
+
+.stopSatuBtn:hover { border-color: #e0574f; color: #ff9b95; }
+.stopSatuBtn:disabled { opacity: 0.6; cursor: not-allowed; }

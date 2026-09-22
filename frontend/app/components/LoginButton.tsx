@@ -70,7 +70,73 @@ function InputPassword({ label, value, onChange, autoComplete, placeholder, bant
   );
 }
 
-const BANTUAN_PASSWORD_BARU = `Minimal ${MIN_PASSWORD} karakter. Tidak perlu simbol atau angka; yang penting tidak mudah ditebak.`;
+const BANTUAN_PASSWORD_BARU = `Minimal ${MIN_PASSWORD} karakter, dicampur angka atau simbol.`;
+
+// Sandi yang paling sering dipakai orang. Daftar yang sama ada di server;
+// yang di sini hanya supaya penilaiannya terlihat seketika saat mengetik.
+const SANDI_UMUM = new Set([
+  "password", "12345678", "123456789", "1234567890", "qwerty123", "qwertyui",
+  "password1", "password123", "iloveyou", "admin123", "welcome1", "abc12345",
+  "11111111", "00000000", "sayangkamu", "indonesia", "rahasia123",
+]);
+
+type Kekuatan = { nilai: 0 | 1 | 2; label: string; kurang: string[] };
+
+/**
+ * Nilai kekuatan sandi: 0 lemah (ditolak), 1 sedang, 2 kuat.
+ *
+ * Aturannya SAMA dengan yang di server (auth_api.kekuatan_password) supaya
+ * yang terlihat saat mengetik tidak berbeda dengan yang diterima saat
+ * dikirim. Yang menentukan tetap server; ini hanya supaya orang tahu apa
+ * yang kurang sebelum menekan tombol.
+ */
+function nilaiSandi(sandi: string, username: string): Kekuatan {
+  const kurang: string[] = [];
+  const jenis =
+    Number(/[a-z]/.test(sandi)) +
+    Number(/[A-Z]/.test(sandi)) +
+    Number(/[0-9]/.test(sandi)) +
+    Number(/[^a-zA-Z0-9]/.test(sandi));
+  if (sandi.length < MIN_PASSWORD) kurang.push(`panjangnya minimal ${MIN_PASSWORD} huruf`);
+  if (jenis < 2) kurang.push("campur huruf dengan angka atau simbol");
+  if (SANDI_UMUM.has(sandi.toLowerCase())) kurang.push("sandi ini terlalu sering dipakai orang");
+  const nama = username.trim().toLowerCase();
+  if (nama.length >= 3 && sandi.toLowerCase().includes(nama)) {
+    kurang.push("jangan memakai nama akunmu sendiri");
+  }
+  if (sandi && new Set(sandi).size <= 2) kurang.push("jangan mengulang huruf yang sama");
+  const berurutan =
+    sandi.length >= 4 &&
+    [...sandi].every((c, i) => i === 0 || c.charCodeAt(0) - sandi.charCodeAt(i - 1) === 1);
+  if (berurutan) kurang.push("jangan memakai urutan berurutan");
+
+  if (kurang.length) return { nilai: 0, label: "lemah", kurang };
+  if (sandi.length >= 12 && jenis >= 3) return { nilai: 2, label: "kuat", kurang };
+  return { nilai: 1, label: "sedang", kurang };
+}
+
+/** Tiga kotak merah-kuning-hijau plus keterangan apa yang masih kurang. */
+function UkuranSandi({ sandi, username }: { sandi: string; username: string }) {
+  if (!sandi) return null;
+  const hasil = nilaiSandi(sandi, username);
+  const warna = ["lemah", "sedang", "kuat"][hasil.nilai];
+  return (
+    <div className={styles.kuat} aria-live="polite">
+      <div className={styles.kuatBar}>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className={`${styles.kuatKotak} ${i <= hasil.nilai ? styles[`kuat_${warna}`] : ""}`}
+          />
+        ))}
+        <span className={`${styles.kuatLabel} ${styles[`teks_${warna}`]}`}>{hasil.label}</span>
+      </div>
+      {hasil.kurang.length > 0 && (
+        <small className={styles.kuatKurang}>Perlu: {hasil.kurang.join("; ")}.</small>
+      )}
+    </div>
+  );
+}
 
 export default function LoginButton() {
   const [terbuka, setTerbuka] = useState(false);
@@ -161,8 +227,9 @@ export default function LoginButton() {
       setGalat("Username dan password wajib diisi.");
       return;
     }
-    if (mode === "daftar" && password.length < MIN_PASSWORD) {
-      setGalat(`Password minimal ${MIN_PASSWORD} karakter.`);
+    if (mode === "daftar" && nilaiSandi(password, username).nilai === 0) {
+      const kurang = nilaiSandi(password, username).kurang.join("; ");
+      setGalat(`Password belum cukup kuat: ${kurang}.`);
       return;
     }
     setSibuk(true);
@@ -194,8 +261,10 @@ export default function LoginButton() {
       setGalat("Isi password lama dan password baru.");
       return;
     }
-    if (passwordBaru.length < MIN_PASSWORD) {
-      setGalat(`Password baru minimal ${MIN_PASSWORD} karakter.`);
+    if (nilaiSandi(passwordBaru, username).nilai === 0) {
+      setGalat(
+        `Password baru belum cukup kuat: ${nilaiSandi(passwordBaru, username).kurang.join("; ")}.`
+      );
       return;
     }
     if (passwordBaru === passwordLama) {
@@ -221,7 +290,8 @@ export default function LoginButton() {
     } finally {
       setSibuk(false);
     }
-  }, [passwordLama, passwordBaru, peran]);
+    // username ikut: penilaian kekuatan menolak sandi yang memuat nama akun.
+  }, [passwordLama, passwordBaru, peran, username]);
 
   function keluar() {
     // Isian formulir milik akun ini ikut dibersihkan supaya tidak tertinggal
@@ -321,11 +391,16 @@ export default function LoginButton() {
                   placeholder={`minimal ${MIN_PASSWORD} karakter`}
                   bantuan={BANTUAN_PASSWORD_BARU}
                 />
+                <UkuranSandi sandi={passwordBaru} username={username} />
 
                 {galat && <p className={styles.galat} role="alert">{galat}</p>}
                 {sukses && <p className={styles.sukses} role="status">{sukses}</p>}
 
-                <button type="submit" className={styles.kirimBtn} disabled={sibuk}>
+                <button
+                  type="submit"
+                  className={styles.kirimBtn}
+                  disabled={sibuk || nilaiSandi(passwordBaru, username).nilai === 0}
+                >
                   {sibuk ? "Sebentar..." : "Simpan password baru"}
                 </button>
               </form>
@@ -356,10 +431,18 @@ export default function LoginButton() {
                   placeholder={mode === "daftar" ? `minimal ${MIN_PASSWORD} karakter` : "password kamu"}
                   bantuan={mode === "daftar" ? BANTUAN_PASSWORD_BARU : undefined}
                 />
+                {mode === "daftar" && <UkuranSandi sandi={password} username={username} />}
 
                 {galat && <p className={styles.galat} role="alert">{galat}</p>}
 
-                <button type="submit" className={styles.kirimBtn} disabled={sibuk}>
+                <button
+                  type="submit"
+                  className={styles.kirimBtn}
+                  disabled={
+                    sibuk ||
+                    (mode === "daftar" && nilaiSandi(password, username).nilai === 0)
+                  }
+                >
                   {sibuk ? "Sebentar..." : mode === "masuk" ? "Masuk" : "Daftar"}
                 </button>
               </form>

@@ -281,6 +281,9 @@ def buat_job(
         status="queued",
         progress=0,
         url=url,
+        # Alamat sumber disimpan terpisah: kolom "url" nanti ditimpa alamat
+        # hasil render, sedangkan tombol "coba lagi" butuh yang asli.
+        sumber_url=url,
         template_id=template_id,
         owner=str(owner or "").strip().lower(),
         texts=texts or {},
@@ -289,6 +292,43 @@ def buat_job(
         log="Job masuk antrean.",
     )
     return job_id
+
+
+# Jawaban ping worker diingat sebentar: halaman menanyakannya tiap kali
+# dibuka, dan ping menunggu balasan lewat Redis.
+_worker_cache: tuple[bool, float] = (False, 0.0)
+
+
+def worker_hidup(paksa: bool = False) -> bool:
+    """Apakah ada worker Celery yang siap mengerjakan render.
+
+    Tanpa ini, job yang dikirim saat worker mati hanya diam di "Menunggu
+    giliran" selamanya tanpa ada yang bisa menjelaskan kenapa.
+    """
+    global _worker_cache
+    ada, kedaluwarsa = _worker_cache
+    if not paksa and kedaluwarsa > time.time():
+        return ada
+    try:
+        balasan = celery_app.control.ping(timeout=0.6)
+        ada = bool(balasan)
+    except Exception:  # noqa: BLE001 - Redis mati juga berarti tidak ada worker
+        ada = False
+    _worker_cache = (ada, time.time() + 10)
+    return ada
+
+
+def _durasi_video(berkas: Path) -> float:
+    """Durasi hasil render dalam detik; 0 kalau tidak terbaca.
+
+    Dipakai halaman untuk menyebut panjang videonya sebelum diunduh.
+    """
+    try:
+        from video_edit import probe
+
+        return round(float(probe(berkas).get("duration") or 0), 1)
+    except Exception:  # noqa: BLE001 - keterangan tambahan, bukan hal kritis
+        return 0.0
 
 
 def _bersihkan_setelah_gagal(job_id: str, folder: Path) -> None:
@@ -375,6 +415,7 @@ def render_video(
             progress=100,
             output=hasil.name,
             url=url,
+            durasi=_durasi_video(hasil),
             # Jalur di dalam bucket ikut disimpan. URL bisa kedaluwarsa
             # (signed URL berumur pendek), jalurnya tidak - dan server punya
             # kunci untuk mengambilnya kapan pun.
