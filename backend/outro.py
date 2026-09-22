@@ -1,20 +1,28 @@
 """Auto Outro: dari isian nama channel + akun sosmed sampai video outro.
 
-Alurnya persis seperti yang dikerjakan orang secara manual, hanya dijalankan
-bot di peramban:
+Dua langkah:
 
-1. ChatGPT (chatgpt.com) diminta menulis prompt untuk Google Flow, dengan
-   kata-kata perintah yang sudah ditetapkan (PERMINTAAN di bawah).
+1. AI diminta menulis prompt untuk Google Flow, dengan kata-kata perintah
+   yang sudah ditetapkan (PERMINTAAN di bawah).
 2. Prompt itu ditempel ke Google Flow (labs.google/fx/tools/flow), videonya
    dibuat, lalu berkasnya diunduh ke folder media.
 
-Keduanya butuh akun yang sudah masuk, dan keduanya menolak login otomatis -
-jadi loginnya dilakukan sekali oleh developer di jendela peramban (lihat
+Langkah pertama SENGAJA tidak lewat peramban. Rencana awalnya membuka
+chatgpt.com seperti yang dikerjakan tangan, tetapi diuji langsung dan tidak
+bisa: Cloudflare menahan pemuatan halamannya sampai habis waktu, bahkan
+dengan Chrome asli - permintaan polos pun dibalas 403. Yang dipakai sekarang
+DeepSeek lewat API resminya, yang kuncinya memang sudah terpasang di
+aplikasi ini untuk bot komentar. Hasilnya sama - teks perintahnya persis
+sama - tetapi selesai dalam hitungan detik, tanpa login dan tanpa jendela.
+
+Langkah kedua tetap di peramban: Google Flow tidak punya API publik. Ia
+butuh akun Google yang sudah masuk, dan login otomatis ditolak, jadi
+loginnya dilakukan sekali oleh developer di jendela peramban (lihat
 autoupload.login), profilnya tersimpan, dan bot memakai profil itu.
 
 HANYA untuk backend lokal (mode via PC). Server Railway 1 GB tidak sanggup
-menjalankan dua aplikasi web seberat ini, dan login Google dari alamat pusat
-data hampir pasti ditolak. Penjaganya ada di outro_api.
+memuat aplikasi WebGL seberat Flow, dan login Google dari alamat pusat data
+hampir pasti ditolak. Penjaganya ada di outro_api.
 
 Pekerjaan berjalan di utas biasa (bukan Celery): ini alat developer di mesin
 sendiri, satu pekerjaan pada satu waktu, dan keadaannya cukup disimpan di
@@ -39,8 +47,8 @@ from video_edit import MEDIA_DIR
 
 logger = logging.getLogger(__name__)
 
-# Kata-kata perintah untuk ChatGPT, persis seperti yang ditetapkan. Yang
-# diganti hanya bagian dalam kurung siku.
+# Kata-kata perintah untuk AI, persis seperti yang ditetapkan. Yang diganti
+# hanya bagian dalam kurung siku.
 PERMINTAAN = """Buatkan prompt untuk Google Flow untuk menghasilkan video outro branding.
 Nama media: {channel}
 Spesifikasi:
@@ -68,15 +76,22 @@ Buat tanpa penjelasan tambahan."""
 # Urutan akun di PERMINTAAN mengikuti teks perintahnya, bukan urutan isian.
 KUNCI_AKUN = ("instagram", "tiktok", "x", "threads", "facebook", "youtube")
 
-URL_CHATGPT = "https://chatgpt.com/"
 URL_FLOW = "https://labs.google/fx/tools/flow"
+
+# Penulis prompt. Bawaannya DeepSeek, sebab kuncinya sudah ada di aplikasi
+# ini. Cukup ganti tiga setelan ini kalau mau pindah ke penyedia lain yang
+# bicara dengan gaya OpenAI (Kimi, Gemini lewat lapisan sesuai, dan
+# sejenisnya) - kodenya tidak perlu diubah.
+AI_KUNCI = os.getenv("OUTRO_AI_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")
+AI_ALAMAT = (os.getenv("OUTRO_AI_URL", "") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")).rstrip("/")
+AI_MODEL = os.getenv("OUTRO_AI_MODEL", "") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 # Jendelanya SENGAJA terlihat, bukan headless. Ini berjalan di Mac developer,
 # dan kedua situs jauh lebih jarang mencurigai peramban yang benar-benar
 # tampil. Bisa dimatikan lewat OUTRO_HEADLESS=1 untuk percobaan.
 HEADLESS = os.getenv("OUTRO_HEADLESS", "").lower() in ("1", "true", "yes")
-# Berapa lama menunggu ChatGPT selesai menulis, dan Flow selesai membuat video.
-TUNGGU_CHATGPT = float(os.getenv("OUTRO_TUNGGU_CHATGPT", "180"))
+# Berapa lama menunggu AI menulis prompt, dan Flow selesai membuat video.
+TUNGGU_AI = float(os.getenv("OUTRO_TUNGGU_AI", "120"))
 TUNGGU_FLOW = float(os.getenv("OUTRO_TUNGGU_FLOW", "900"))
 
 # Flag anti-deteksi yang dipakai autoupload, TANPA pembatas memorinya:
@@ -111,8 +126,8 @@ def outro_dir() -> Path:
 def susun_permintaan(channel: str, akun: dict[str, str]) -> str:
     """Isi kata-kata perintah dengan nama channel dan akun-akunnya.
 
-    Akun yang kosong ditulis "-" supaya kalimatnya tetap utuh dan ChatGPT
-    tidak mengarang username untuk mengisi kekosongan.
+    Akun yang kosong ditulis "-" supaya kalimatnya tetap utuh dan AI tidak
+    mengarang username untuk mengisi kekosongan.
     """
     nilai = {k: (str(akun.get(k) or "").strip() or "-") for k in KUNCI_AKUN}
     return PERMINTAAN.format(channel=channel.strip(), **nilai)
@@ -200,11 +215,9 @@ def _jalankan(job_id: str) -> None:
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum mulai.")
             job = baca_job(job_id) or {}
-            _catat(job_id, "Membuka ChatGPT untuk meminta prompt ...",
-                   status="running", langkah="chatgpt", progress=5)
-            prompt = minta_prompt_chatgpt(
-                job["permintaan"], lambda m: _catat(job_id, m), ev, folder
-            )
+            _catat(job_id, "Meminta AI menulis prompt untuk Google Flow ...",
+                   status="running", langkah="ai", progress=5)
+            prompt = minta_prompt_ai(job["permintaan"], lambda m: _catat(job_id, m), ev)
             (folder / "prompt.txt").write_text(prompt, encoding="utf-8")
             _catat(job_id, f"Prompt jadi ({len(prompt)} karakter).", prompt=prompt,
                    langkah="flow", progress=35)
@@ -298,80 +311,91 @@ def _simpan_jejak(page: Any, folder: Path, nama: str) -> str:
 
 
 # ============================================================
-#  LANGKAH 1: CHATGPT
+#  LANGKAH 1: PROMPT DARI AI
 # ============================================================
 
+# Kalimat perintah yang ikut terbawa ke jawaban. Sebagian model menyalin
+# baris terakhir permintaan ("Buat tanpa penjelasan tambahan") ke dalam
+# hasilnya; kalau ikut tertempel ke Flow, ia terbaca sebagai bagian dari
+# adegan yang diminta.
+_BARIS_PERINTAH = re.compile(
+    r"^\s*(output only|only output|buat tanpa penjelasan|tanpa penjelasan tambahan|"
+    r"no additional explanation|do not add any explanation)\b.*$",
+    re.I,
+)
 _PAGAR_KODE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$", re.S)
 
 
-def minta_prompt_chatgpt(
-    permintaan: str, log: Callable[[str], None], ev: threading.Event, folder: Path
+def _rapikan(teks: str) -> str:
+    """Buang pagar blok kode dan kalimat perintah yang ikut tersalin."""
+    teks = _PAGAR_KODE.sub("", teks.strip()).strip()
+    baris = [b for b in teks.splitlines() if not _BARIS_PERINTAH.match(b)]
+    return "\n".join(baris).strip()
+
+
+def minta_prompt_ai(
+    permintaan: str, log: Callable[[str], None], ev: threading.Event
 ) -> str:
-    """Kirim kata-kata perintah ke ChatGPT, kembalikan jawabannya utuh."""
-    from playwright.sync_api import sync_playwright
+    """Minta AI menulis prompt Google Flow. Kembalikan teksnya, sudah rapi.
 
-    with sync_playwright() as pw:
-        konteks = _buka_profil(pw, "chatgpt")
-        page = konteks.pages[0] if konteks.pages else konteks.new_page()
-        try:
-            page.goto(URL_CHATGPT, wait_until="domcontentloaded", timeout=60_000)
-            _ke_depan()
-            try:
-                page.wait_for_selector("#prompt-textarea", timeout=45_000)
-            except Exception as exc:  # noqa: BLE001
-                jejak = _simpan_jejak(page, folder, "chatgpt-komposer")
-                raise OutroError(
-                    "Kotak tulis ChatGPT tidak muncul. Sesinya mungkin sudah keluar - "
-                    f"login ulang lewat halaman Auto Outro.{jejak}"
-                ) from exc
-            if page.locator('[data-testid="login-button"]').count():
-                raise OutroError("ChatGPT belum masuk. Login ulang lewat halaman Auto Outro.")
+    Dipanggil dengan gaya OpenAI (POST /chat/completions), jadi penyedia mana
+    pun yang bicara dengan gaya itu bisa dipakai hanya dengan mengganti tiga
+    setelan di atas - tidak ada yang khusus DeepSeek di sini selain bawaannya.
+    """
+    import httpx
 
-            log("Menulis permintaan di ChatGPT ...")
-            kotak = page.locator("#prompt-textarea")
-            kotak.click()
-            kotak.fill(permintaan)
-            page.wait_for_timeout(600)
-            kirim = page.locator('[data-testid="send-button"]')
-            if kirim.count():
-                kirim.first.click()
-            else:
-                page.keyboard.press("Enter")
+    if not AI_KUNCI.strip():
+        raise OutroError(
+            "Kunci AI belum diisi. Isi DEEPSEEK_API_KEY (atau OUTRO_AI_KEY) di "
+            "berkas .env backend."
+        )
+    if ev.is_set():
+        raise Dibatalkan("Dihentikan sebelum meminta prompt.")
 
-            log("Menunggu ChatGPT selesai menulis ...")
-            # Selama menulis, tombol kirim berganti tombol berhenti. Ditunggu
-            # sampai tombol itu hilang, atau isi jawabannya diam beberapa
-            # detik (untuk jawaban yang selesai sebelum sempat terlihat).
-            batas = time.monotonic() + TUNGGU_CHATGPT
-            terakhir, diam_sejak = "", time.monotonic()
-            while time.monotonic() < batas:
-                _tunggu(page, 1.0, ev)
-                jawaban = page.locator('[data-message-author-role="assistant"]')
-                teks = jawaban.last.inner_text() if jawaban.count() else ""
-                if teks != terakhir:
-                    terakhir, diam_sejak = teks, time.monotonic()
-                masih = page.locator('[data-testid="stop-button"]').count() > 0
-                if teks and not masih and time.monotonic() - diam_sejak > 3.0:
-                    break
-            else:
-                jejak = _simpan_jejak(page, folder, "chatgpt-lama")
-                raise OutroError(f"ChatGPT tidak selesai menulis dalam {TUNGGU_CHATGPT:.0f} detik.{jejak}")
+    log(f"Mengirim permintaan ke {AI_MODEL} ...")
+    try:
+        balasan = httpx.post(
+            f"{AI_ALAMAT}/chat/completions",
+            timeout=TUNGGU_AI,
+            headers={"Authorization": f"Bearer {AI_KUNCI.strip()}", "Content-Type": "application/json"},
+            json={
+                "model": AI_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        # Tanpa ini sebagian model membalas dengan basa-basi
+                        # ("Tentu, ini promptnya:") yang ikut tertempel ke Flow.
+                        "content": (
+                            "Kamu penulis prompt untuk pembuat video AI. Balas HANYA "
+                            "dengan teks prompt akhirnya, tanpa pembuka, tanpa penutup, "
+                            "tanpa tanda kutip, dan tanpa blok kode."
+                        ),
+                    },
+                    {"role": "user", "content": permintaan},
+                ],
+                "temperature": 0.7,
+            },
+        )
+    except httpx.HTTPError as error:
+        raise OutroError(f"Tidak bisa menghubungi AI: {type(error).__name__}") from error
 
-            pesan = page.locator('[data-message-author-role="assistant"]').last
-            # Kalau jawabannya dibungkus blok kode, ambil isi bloknya saja -
-            # innerText pesan ikut membawa label "Copy code" di kepalanya.
-            kode = pesan.locator("pre code")
-            hasil = kode.first.inner_text() if kode.count() else pesan.inner_text()
-            hasil = _PAGAR_KODE.sub("", hasil.strip()).strip()
-            if len(hasil) < 40:
-                jejak = _simpan_jejak(page, folder, "chatgpt-pendek")
-                raise OutroError(f"Jawaban ChatGPT terlalu pendek untuk dipakai: {hasil[:80]!r}.{jejak}")
-            return hasil
-        finally:
-            try:
-                konteks.close()
-            except Exception:  # noqa: BLE001
-                pass
+    if balasan.status_code == 401:
+        raise OutroError("Kunci AI ditolak (401). Periksa DEEPSEEK_API_KEY di .env backend.")
+    if balasan.status_code == 402:
+        raise OutroError("Saldo AI habis (402). Isi ulang atau pakai kunci lain.")
+    if balasan.status_code != 200:
+        raise OutroError(
+            f"AI menolak permintaan ({balasan.status_code}): {balasan.text[:160]}"
+        )
+    try:
+        isi = balasan.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, ValueError) as error:
+        raise OutroError("Balasan AI tidak bisa dibaca.") from error
+
+    hasil = _rapikan(str(isi or ""))
+    if len(hasil) < 40:
+        raise OutroError(f"Jawaban AI terlalu pendek untuk dipakai: {hasil[:80]!r}")
+    return hasil
 
 
 # ============================================================

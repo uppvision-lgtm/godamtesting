@@ -2,8 +2,9 @@
 
 Dua kelompok endpoint:
 
-- /api/outro/sesi/...  : status dan kendali login peramban untuk ChatGPT dan
-  Google Flow (jendela dibuka, developer login sendiri, lalu "Selesai").
+- /api/outro/sesi/...  : status dan kendali login peramban Google Flow
+  (jendela dibuka, developer login sendiri, lalu "Selesai"). Penulis prompt
+  memakai API, jadi tidak ada sesi yang perlu disiapkan untuknya.
 - /api/outro/jobs/...  : menjalankan pembuatan outro, memantau, menghentikan,
   dan mengambil videonya.
 
@@ -27,7 +28,9 @@ from auth_api import developer_wajib
 
 router = APIRouter(prefix="/api/outro", tags=["outro"])
 
-PLATFORM = ("chatgpt", "flow")
+# Hanya Google Flow yang butuh sesi peramban. Penulis promptnya lewat API,
+# jadi tidak ada yang perlu di-login untuk langkah pertama.
+PLATFORM = ("flow",)
 LOKAL = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
 
 
@@ -116,8 +119,7 @@ def buat(body: OutroBody, _: dict[str, Any] = Depends(developer_wajib)) -> dict[
         if not outro.punya_sesi(p):
             raise HTTPException(
                 status_code=400,
-                detail=f"Belum ada sesi login {('ChatGPT' if p == 'chatgpt' else 'Google Flow')}. "
-                "Login dulu lewat tombol di atas.",
+                detail="Belum ada sesi login Google Flow. Login dulu lewat tombol di atas.",
             )
     try:
         job_id = outro.mulai_job(body.channel, body.akun)

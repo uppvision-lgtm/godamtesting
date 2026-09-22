@@ -9,11 +9,11 @@ import { PERAN_DEVELOPER, apiFetch, usePeran, useSudahHidrasi } from "../compone
 /**
  * Auto Outro — khusus akun developer, khusus backend lokal (mode via PC).
  *
- * Satu klik menjalankan alur yang biasanya dikerjakan tangan: ChatGPT diminta
- * menulis prompt, prompt itu ditempel ke Google Flow, videonya dibuat, lalu
- * diunduh. Kedua situs butuh akun yang sudah masuk, jadi di atas isian ada
- * dua baris sesi: jendela peramban dibuka, developer login sendiri sekali,
- * dan profilnya tersimpan untuk seterusnya.
+ * Satu klik: AI menulis prompt Google Flow, prompt itu ditempel ke Flow,
+ * videonya dibuat, lalu diunduh. Hanya Flow yang butuh akun masuk - jendela
+ * peramban dibuka sekali, developer login sendiri, profilnya tersimpan untuk
+ * seterusnya. Penulis promptnya lewat API, jadi tidak ada yang perlu
+ * di-login untuk langkah pertama.
  */
 
 type Sosmed = { kunci: string; nama: string; ikon: string; contoh: string };
@@ -32,7 +32,6 @@ const KOSONG: Record<string, string> = Object.fromEntries(SOSMED.map((s) => [s.k
 type Sesi = { running: boolean; message: string; has_session: boolean };
 type PetaSesi = Record<string, Sesi>;
 const PLATFORM: { kunci: string; nama: string; ikon: string }[] = [
-  { kunci: "chatgpt", nama: "ChatGPT", ikon: "💬" },
   { kunci: "flow", nama: "Google Flow", ikon: "🎞️" },
 ];
 
@@ -49,7 +48,7 @@ type Job = {
 
 const LANGKAH: Record<string, string> = {
   antre: "Menunggu giliran",
-  chatgpt: "1/2 · Meminta prompt ke ChatGPT",
+  ai: "1/2 · AI menulis prompt",
   flow: "2/2 · Membuat video di Google Flow",
   selesai: "Selesai",
   gagal: "Gagal",
@@ -255,9 +254,10 @@ export default function AutoOutroPage() {
                 <span className={styles.badge}>Developer</span>
               </div>
               <p className={styles.hint}>
-                ChatGPT dan Google Flow harus sudah masuk. Tekan <b>Buka jendela login</b>,
-                login di jendela Chrome yang muncul, lalu tekan <b>Selesai</b>. Cukup sekali —
-                sesinya tersimpan.
+                Google Flow harus sudah masuk. Tekan <b>Buka jendela login</b>, login dengan
+                akun Google di jendela Chrome yang muncul, lalu tekan <b>Selesai</b>. Cukup
+                sekali — sesinya tersimpan. Promptnya ditulis AI lewat API, jadi tidak perlu
+                login ke mana pun untuk langkah itu.
               </p>
               {lokal === false && (
                 <p className={styles.peringatan}>
@@ -327,8 +327,8 @@ export default function AutoOutroPage() {
                 <h2>Auto Outro</h2>
               </div>
               <p className={styles.hint}>
-                Isi nama channel dan nama akun tiap sosmed, lalu tekan sekali. ChatGPT
-                menulis promptnya, Google Flow membuat videonya, dan hasilnya muncul di bawah.
+                Isi nama channel dan nama akun tiap sosmed, lalu tekan sekali. AI menulis
+                promptnya, Google Flow membuat videonya, dan hasilnya muncul di bawah.
               </p>
 
               <div className={styles.form}>
@@ -457,7 +457,7 @@ export default function AutoOutroPage() {
                   {job.prompt && (
                     <div className={styles.blok}>
                       <div className={styles.blokHead}>
-                        <h3>Prompt dari ChatGPT</h3>
+                        <h3>Prompt dari AI</h3>
                       </div>
                       <textarea className={styles.naskah} value={job.prompt} readOnly rows={8} />
                     </div>

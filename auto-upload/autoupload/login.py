@@ -36,11 +36,9 @@ LOGIN_URLS = {
         "https://www.youtube.com/signin?action_handle_signin=true&app=desktop"
         "&next=https%3A%2F%2Fstudio.youtube.com%2F&feature=redirect_login"
     ),
-    # Dua platform untuk Auto Outro (khusus developer). Keduanya bukan tujuan
-    # unggah - profilnya dipakai bot yang menulis prompt di ChatGPT lalu
-    # membuat videonya di Google Flow, dan keduanya menolak login otomatis,
+    # Google Flow untuk Auto Outro (khusus developer). Bukan tujuan unggah -
+    # profilnya dipakai bot pembuat video outro. Flow menolak login otomatis,
     # jadi login manual di jendela inilah satu-satunya jalan yang tahan lama.
-    "chatgpt": "https://chatgpt.com/auth/login",
     "flow": "https://labs.google/fx/tools/flow",
 }
 
@@ -53,16 +51,13 @@ LOGIN_COOKIE = {
     "tiktok": ("sessionid", "sessionid_ss"),
     "threads": ("sessionid",),
     "youtube": ("SID", "SAPISID"),
-    # ChatGPT menyimpan sesinya di cookie next-auth; sebelum masuk cookie ini
-    # tidak ada sama sekali (pengunjung anonim hanya punya oai-did).
-    "chatgpt": ("__Secure-next-auth.session-token",),
     # Flow masuk lewat akun Google, jadi yang muncul cookie Google-nya.
-    "flow": ("SID", "SAPISID", "__Secure-next-auth.session-token"),
+    "flow": ("SID", "SAPISID"),
 }
 
 # Yang tampil di halaman Kelola Akun hanya tujuan unggah. chatgpt dan flow
 # tetap bisa dipakai start()/status(), tetapi lewat API Auto Outro sendiri.
-SUPPORTED = [p for p in LOGIN_URLS if p not in ("chatgpt", "flow")]
+SUPPORTED = [p for p in LOGIN_URLS if p != "flow"]
 
 # platform -> {running, message, saved_at, session_name}
 _state: dict[str, dict] = {}
