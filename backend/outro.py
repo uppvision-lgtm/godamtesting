@@ -341,16 +341,25 @@ def _badge(nama: str, diameter: int) -> Any:
     lapis(mask_okta(c * 0.815, c * 0.05), (220, 220, 226, 255))  # cincin perak dalam
     mask = mask_okta(c * 0.775, c * 0.045)
     lapis(mask, (200, 26, 26, 255))                               # bidang merah
-    # gradien radial di bidang merah: terang di tengah-atas
-    ys, xs = np.mgrid[0:n, 0:n].astype(np.float32)
+    # gradien radial di bidang merah: terang di tengah-atas. Dihitung dengan
+    # sumbu 1-D yang di-broadcast, bukan mgrid dua kisi penuh, dan hanya
+    # kanal warnanya yang diangkat ke float - puncak memorinya jauh lebih
+    # kecil di kanvas 4x (2400x2400) yang dipakai untuk menghaluskan tepi.
+    ys = np.arange(n, dtype=np.float32)[:, None]
+    xs = np.arange(n, dtype=np.float32)[None, :]
     r2 = ((xs - c) ** 2 + (ys - c * 0.85) ** 2) / (c * 0.8) ** 2
-    terang = np.clip(1 - r2, 0, 1) ** 1.2
-    arr = np.array(im).astype(np.float32)
-    m = np.array(mask).astype(np.float32) / 255
-    arr[:, :, 0] += 42 * terang * m
-    arr[:, :, 1] += 20 * terang * m
-    arr[:, :, 2] += 20 * terang * m
-    im = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
+    terang = (np.clip(1 - r2, 0, 1) ** 1.2) * (np.asarray(mask, dtype=np.float32) / 255)
+    del r2
+    arr = np.asarray(im)
+    rgb = arr[:, :, :3].astype(np.float32)
+    rgb[:, :, 0] += 42 * terang
+    rgb[:, :, 1] += 20 * terang
+    rgb[:, :, 2] += 20 * terang
+    keluar = np.empty_like(arr)
+    keluar[:, :, :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    keluar[:, :, 3] = arr[:, :, 3]
+    del rgb, terang
+    im = Image.fromarray(keluar, "RGBA")
     # kilau lembut kiri-atas
     kilau = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     ImageDraw.Draw(kilau).ellipse(
@@ -572,13 +581,42 @@ def render_video(
 
     total = max(1, int(FPS * VIDEO_DETIK))
     keluaran = folder / "video-tanpa-audio.mp4"
+    berkas_log = folder / "ffmpeg.log"
+    # "-threads" dibatasi. Tanpa ini x264 membuka utas sebanyak inti dan tiap
+    # utas memegang bufernya sendiri; di kontainer 1 GB bersama renderer
+    # Python, ffmpeg-lah yang ditembak kernel - mati diam-diam tanpa pesan,
+    # dan yang terlihat hanya "Broken pipe" di sisi kita. Mengikuti
+    # VIDEO_THREADS yang sudah dipakai render lain di server ini.
+    utas = os.getenv("VIDEO_THREADS", "1")
+    if utas == "0":
+        utas = "1"
+    galat = berkas_log.open("w", encoding="utf-8")
     proses = subprocess.Popen(
         [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-threads", utas,
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(FPS), "-i", "-",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p",
-         "-movflags", "+faststart", str(keluaran)],
-        stdin=subprocess.PIPE,
+         "-threads", utas, "-movflags", "+faststart", str(keluaran)],
+        stdin=subprocess.PIPE, stderr=galat,
     )
+
+    def _sebab_mati() -> str:
+        """Kalimat terakhir ffmpeg, atau tanda ia ditembak sistem."""
+        # Dipanggil setelah blok finally menutup berkas log (close sudah
+        # menulis semuanya), jadi cukup dibaca - jangan di-flush lagi.
+        try:
+            if not galat.closed:
+                galat.flush()
+            baris = [b for b in berkas_log.read_text(encoding="utf-8", errors="replace").splitlines() if b.strip()]
+        except (OSError, ValueError):
+            baris = []
+        if proses.returncode == -9:
+            return ("ffmpeg dihentikan paksa oleh sistem (SIGKILL) - hampir pasti kehabisan "
+                    "memori di kontainer. " + (f"Kata terakhirnya: {baris[-1][:160]}" if baris else ""))
+        if baris:
+            return f"ffmpeg keluar dengan kode {proses.returncode}: {baris[-1][:200]}"
+        return f"ffmpeg keluar dengan kode {proses.returncode} tanpa pesan."
+
     try:
         lapor_tiap = max(1, total // 12)
         for n in range(total):
@@ -629,15 +667,24 @@ def render_video(
                 _tempel(frame, tx, int(w * 0.22) + ikon_s + int(w * 0.03) + geser,
                         y + (ikon_s - tx.height) // 2, a)
 
-            proses.stdin.write(frame.convert("RGB").tobytes())
+            try:
+                proses.stdin.write(frame.convert("RGB").tobytes())
+            except BrokenPipeError:
+                # Pembacanya (ffmpeg) sudah tiada. Sebabnya ada di log-nya,
+                # atau di kode keluarnya - bukan di "Broken pipe" ini.
+                break
             if n % lapor_tiap == 0:
                 lapor(int(n / total * 100))
     finally:
         if proses.stdin:
-            proses.stdin.close()
+            try:
+                proses.stdin.close()
+            except OSError:
+                pass
         proses.wait()
+        galat.close()
     if proses.returncode != 0 or not keluaran.is_file():
-        raise OutroError("Gagal merender video outro.")
+        raise OutroError(f"Gagal merender video outro: {_sebab_mati()}")
     lapor(100)
     return keluaran
 
