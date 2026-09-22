@@ -333,6 +333,48 @@ def _rapikan(teks: str) -> str:
     return "\n".join(baris).strip()
 
 
+def _panggil_ai(httpx: Any, permintaan: str, model: str) -> Any:
+    """Satu permintaan ke penyedia AI, gaya OpenAI."""
+    return httpx.post(
+        f"{AI_ALAMAT}/chat/completions",
+        timeout=TUNGGU_AI,
+        headers={"Authorization": f"Bearer {AI_KUNCI.strip()}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    # Tanpa ini sebagian model membalas dengan basa-basi
+                    # ("Tentu, ini promptnya:") yang ikut tertempel ke Flow.
+                    "content": (
+                        "Kamu penulis prompt untuk pembuat video AI. Balas HANYA "
+                        "dengan teks prompt akhirnya, tanpa pembuka, tanpa penutup, "
+                        "tanpa tanda kutip, dan tanpa blok kode."
+                    ),
+                },
+                {"role": "user", "content": permintaan},
+            ],
+            "temperature": 0.7,
+        },
+    )
+
+
+def _model_tersedia(httpx: Any) -> str:
+    """Nama model pertama yang benar-benar ditawarkan penyedianya sekarang."""
+    try:
+        r = httpx.get(
+            f"{AI_ALAMAT}/models",
+            timeout=30,
+            headers={"Authorization": f"Bearer {AI_KUNCI.strip()}"},
+        )
+        if r.status_code != 200:
+            return ""
+        daftar = [str(m.get("id") or "") for m in r.json().get("data", [])]
+        return next((m for m in daftar if m), "")
+    except Exception:  # noqa: BLE001 - ini jalan cadangan, bukan jalan utama
+        return ""
+
+
 def minta_prompt_ai(
     permintaan: str, log: Callable[[str], None], ev: threading.Event
 ) -> str:
@@ -354,28 +396,18 @@ def minta_prompt_ai(
 
     log(f"Mengirim permintaan ke {AI_MODEL} ...")
     try:
-        balasan = httpx.post(
-            f"{AI_ALAMAT}/chat/completions",
-            timeout=TUNGGU_AI,
-            headers={"Authorization": f"Bearer {AI_KUNCI.strip()}", "Content-Type": "application/json"},
-            json={
-                "model": AI_MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        # Tanpa ini sebagian model membalas dengan basa-basi
-                        # ("Tentu, ini promptnya:") yang ikut tertempel ke Flow.
-                        "content": (
-                            "Kamu penulis prompt untuk pembuat video AI. Balas HANYA "
-                            "dengan teks prompt akhirnya, tanpa pembuka, tanpa penutup, "
-                            "tanpa tanda kutip, dan tanpa blok kode."
-                        ),
-                    },
-                    {"role": "user", "content": permintaan},
-                ],
-                "temperature": 0.7,
-            },
-        )
+        balasan = _panggil_ai(httpx, permintaan, AI_MODEL)
+        if balasan.status_code in (400, 404) and "model" in balasan.text.lower():
+            # Nama model yang dipakai sudah tidak dikenal penyedianya. Ini
+            # bukan hal jauh: saat perbaikan ini dibuat, daftar resmi DeepSeek
+            # sudah tidak memuat "deepseek-chat" walau namanya masih diterima.
+            # Daripada gagal dengan pesan yang tidak bisa ditindaklanjuti,
+            # diambil model pertama yang memang tersedia sekarang.
+            pengganti = _model_tersedia(httpx)
+            if pengganti and pengganti != AI_MODEL:
+                log(f"Model {AI_MODEL} sudah tidak ada; memakai {pengganti}.")
+                logger.warning("model AI %s ditolak, beralih ke %s", AI_MODEL, pengganti)
+                balasan = _panggil_ai(httpx, permintaan, pengganti)
     except httpx.HTTPError as error:
         raise OutroError(f"Tidak bisa menghubungi AI: {type(error).__name__}") from error
 
