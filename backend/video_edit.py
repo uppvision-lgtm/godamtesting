@@ -1601,9 +1601,17 @@ def _bangun_perintah(
             # Warna isi mengikuti set layer supaya cocok dengan kotaknya:
             # hitam di kotak terang, putih di kotak gelap. Kata pembuka tetap
             # merah karena kontras di keduanya.
-            warna = str(template.get("teks_warna") or "").strip().lower()
-            if warna in ("black", "white"):
-                teks = {**teks, "color": warna}
+            # Bawaannya PUTIH kalau template belum pernah menyimpan pilihan
+            # warna. Dulu bawaannya "tidak ada pendapat", sehingga warna jatuh
+            # ke milik layer - dan layer bawaan semua template berwarna hitam.
+            # Akibatnya halaman menampilkan "Putih" (bawaannya di sana putih)
+            # sementara videonya keluar hitam, dan menekan tombol yang sudah
+            # tersorot itu tidak mengubah apa pun. Satu-satunya sumber
+            # kebenaran warna tulisan berita sekarang adalah setelan ini.
+            warna = str(template.get("teks_warna") or "white").strip().lower()
+            if warna not in ("black", "white"):
+                warna = "white"
+            teks = {**teks, "color": warna}
             if kotak_teks and not teks.get("box"):
                 teks = {**teks, "box": kotak_teks}
         if gaya == "kategori" and not teks.get("box"):
