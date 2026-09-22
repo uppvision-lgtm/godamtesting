@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -2016,6 +2017,110 @@ def _klip(path: Path, lebar: int, tinggi: int, fps: int, idx: int, nama: str) ->
     )
 
 
+# Aset video yang jauh lebih besar dari tempat ia digambar. Satu frame
+# ProRes 1920x1080 12-bit berisi 16 MB, dan ffmpeg menahan belasan frame
+# sekaligus di rantai filternya - padahal stikernya cuma digambar 280x158.
+# Di atas batas ini, asetnya dikecilkan dulu sekali, lalu dipakai berulang.
+BATAS_FRAME_MB = float(os.getenv("VIDEO_ASET_FRAME_MB", "2"))
+_VIDEO_EXT = {".mov", ".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mpg", ".mpeg"}
+
+
+def _punya_alpha(berkas: Path) -> bool:
+    """True kalau berkas videonya menyimpan lapisan transparan."""
+    hasil = subprocess.run(
+        [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=pix_fmt", "-of", "default=nw=1:nk=1", str(berkas)],
+        capture_output=True, text=True,
+    )
+    px = (hasil.stdout or "").strip().lower()
+    return px.startswith(("yuva", "rgba", "argb", "bgra", "abgr")) or px.endswith("a")
+
+
+def _aset_ringan(berkas: Path, lebar_pakai: int, tinggi_pakai: int) -> Path:
+    """Kecilkan aset video yang kelewat besar untuk tempat ia digambar.
+
+    Ini bukan penghematan disk melainkan penghematan MEMORI. Yang menentukan
+    berapa RAM yang dipakai ffmpeg bukan besar berkasnya, melainkan besar satu
+    frame setelah dibuka: ProRes 1920x1080 12-bit = 16 MB per frame, dan
+    belasan frame hidup bersamaan di rantai filter. Itulah yang membuat render
+    720x1280 pun menyentuh batas 1 GB lalu ditembak kernel.
+
+    Mengecilkannya lebih dulu tidak mengubah hasil: asetnya toh diskala ke
+    ukuran yang sama di dalam rantai filter. Hasilnya disimpan di sebelah
+    aset aslinya, jadi cukup sekali untuk semua render berikutnya.
+    """
+    if berkas.suffix.lower() not in _VIDEO_EXT:
+        return berkas
+    try:
+        info = probe(berkas)
+    except VideoError:
+        return berkas
+    asal_w, asal_h = int(info.get("width") or 0), int(info.get("height") or 0)
+    if asal_w <= 0 or asal_h <= 0:
+        return berkas
+    if asal_w * asal_h * 4 / 1_048_576 <= BATAS_FRAME_MB:
+        return berkas  # framenya memang kecil, tidak ada yang perlu dihemat
+
+    # Ukuran tujuan: yang tidak disebut dihitung dari rasi aslinya.
+    if lebar_pakai and not tinggi_pakai:
+        tinggi_pakai = max(2, round(lebar_pakai * asal_h / asal_w))
+    elif tinggi_pakai and not lebar_pakai:
+        lebar_pakai = max(2, round(tinggi_pakai * asal_w / asal_h))
+    if not lebar_pakai or not tinggi_pakai:
+        return berkas
+    lebar_pakai -= lebar_pakai % 2
+    tinggi_pakai -= tinggi_pakai % 2
+    if lebar_pakai >= asal_w or tinggi_pakai >= asal_h:
+        return berkas  # tidak ada yang bisa dikecilkan
+
+    folder = berkas.parent / ".ringan"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return berkas
+    alpha = _punya_alpha(berkas)
+    # Nama ikut ukuran berkas asli, supaya aset yang diganti tidak memakai
+    # hasil kecil yang lama.
+    try:
+        tanda = berkas.stat().st_size
+    except OSError:
+        return berkas
+    tujuan = folder / f"{berkas.stem}-{lebar_pakai}x{tinggi_pakai}-{tanda}{'.mov' if alpha else '.mp4'}"
+    if tujuan.is_file():
+        return tujuan
+
+    if alpha:
+        # qtrle satu-satunya penyandi beralpha yang pasti ada di ffmpeg mana
+        # pun; berkasnya besar tapi ini hanya singgahan, dan yang dihemat
+        # memori saat render, bukan disk.
+        sandi = ["-c:v", "qtrle", "-pix_fmt", "argb"]
+    else:
+        sandi = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+    perintah = [
+        FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-threads", "1", "-i", str(berkas),
+        "-vf", f"scale={lebar_pakai}:{tinggi_pakai}", *sandi,
+        "-c:a", "copy", str(tujuan),
+    ]
+    try:
+        hasil = subprocess.run(perintah, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logger.warning("Aset %s gagal dikecilkan: %s", berkas.name, error)
+        return berkas
+    if hasil.returncode != 0 or not tujuan.is_file():
+        logger.warning(
+            "Aset %s gagal dikecilkan: %s",
+            berkas.name, (hasil.stderr or "").strip().splitlines()[-1:] or "tanpa pesan",
+        )
+        tujuan.unlink(missing_ok=True)
+        return berkas
+    logger.info(
+        "Aset %s dikecilkan %dx%d -> %dx%d supaya hemat memori",
+        berkas.name, asal_w, asal_h, lebar_pakai, tinggi_pakai,
+    )
+    return tujuan
+
+
 def _bangun_perintah(
     template: dict[str, Any],
     source: Path,
@@ -2118,9 +2223,12 @@ def _bangun_perintah(
             # durasi, masukannya tidak pernah habis dan ffmpeg menggantung
             # saat menutup berkas. Dibatasi sepanjang badan video saja.
             inputs += ["-stream_loop", "-1", "-t", f"{durasi_badan:.3f}"]
-        inputs += ["-i", str(item["path"])]
-        sumber_ov = f"{idx}:v"
         w, h = item.get("w"), item.get("h")
+        # Aset yang jauh lebih besar dari tempatnya digambar dikecilkan dulu:
+        # yang memakan RAM adalah frame setelah dibuka, bukan berkasnya.
+        jalur_ov = _aset_ringan(item["path"], int(w or 0), int(h or 0))
+        inputs += ["-i", str(jalur_ov)]
+        sumber_ov = f"{idx}:v"
         # "crop" opsional, formatnya sama seperti ffmpeg: "lebar:tinggi:x:y".
         # Dipakai kalau aset perlu dipotong dulu sebelum diskala, misalnya
         # panel lebar yang hanya sebagian isinya dipakai.
@@ -2174,6 +2282,7 @@ def _bangun_perintah(
         berkas = _aset(template, template.get(posisi))
         if berkas is None:
             continue
+        berkas = _aset_ringan(berkas, lebar, tinggi)
         info = probe(berkas)
         total += info["duration"]
         inputs += ["-i", str(berkas)]
@@ -2210,6 +2319,11 @@ def _bangun_perintah(
 
     perintah = [
         FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        # Ditulis SEBELUM masukan, jadi berlaku untuk semua pembaca video -
+        # yang di bawah hanya mengatur penyandi. Tiap utas pembaca menyimpan
+        # kumpulan framenya sendiri, dan itu berlipat jadi ratusan MB.
+        "-threads", VIDEO_THREADS if VIDEO_THREADS != "0" else "1",
+        "-filter_complex_threads", "1",
         *inputs,
         "-filter_complex", ";".join(filters),
         "-map", peta_v, "-map", peta_a,
@@ -2254,9 +2368,40 @@ def render(
             perintah, stdout=subprocess.PIPE, stderr=galat, text=True, bufsize=1
         )
         persen_terakhir = -1
+        # Kabar ffmpeg dibaca di utas terpisah, dan yang di bawah mengambilnya
+        # dari antrean dengan batas tunggu satu detik.
+        #
+        # Dulu perulangan ini membaca langsung dari ffmpeg. Selama ffmpeg
+        # mengabarkan kemajuan itu baik-baik saja, tetapi ffmpeg yang
+        # TERSANGKUT tidak mengabarkan apa pun - dan pembacaan itu menunggu
+        # selamanya. Akibatnya permintaan berhenti tidak pernah sampai
+        # terbaca dan batas waktu tidak pernah sampai diperiksa: video
+        # mandek di 2% dan tombol hentinya tidak berpengaruh, persis yang
+        # dilaporkan. Sekarang penantiannya ada di sisi kita, jadi berhenti
+        # dan batas waktu tetap bekerja walau ffmpeg membisu.
+        antrean: queue.Queue[str | None] = queue.Queue(maxsize=2000)
+
+        def _baca() -> None:
+            try:
+                for baris in proses.stdout or []:
+                    try:
+                        antrean.put_nowait(baris)
+                    except queue.Full:  # kemajuan boleh terlewat, kabar lain tidak
+                        pass
+            finally:
+                antrean.put(None)
+
+        pembaca = threading.Thread(target=_baca, name="ffmpeg-kabar", daemon=True)
+        pembaca.start()
         try:
             periksa_batal = 0.0
-            for baris in proses.stdout or []:
+            while True:
+                try:
+                    baris = antrean.get(timeout=1.0)
+                except queue.Empty:
+                    baris = ""
+                if baris is None:
+                    break
                 baris = baris.strip()
                 # Ditanya paling sering sekali per detik; ffmpeg mengirim kabar
                 # jauh lebih rapat dari itu dan tiap pertanyaan menyentuh Redis.
@@ -2276,7 +2421,10 @@ def render(
                         progress(persen)
                 if time.monotonic() > batas_waktu:
                     proses.kill()
-                    raise VideoError("Render video melewati batas waktu")
+                    raise VideoError(
+                        f"Render melewati batas waktu {RENDER_TIMEOUT_SECONDS / 60:.0f} menit "
+                        "dan dihentikan."
+                    )
         finally:
             if proses.stdout:
                 proses.stdout.close()

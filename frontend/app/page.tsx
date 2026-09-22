@@ -3,6 +3,7 @@ import styles from "./page.module.css";
 import LiveStats from "./components/LiveStats";
 import TutorialFab from "./components/TutorialFab";
 import LoginButton from "./components/LoginButton";
+import KartuOutro from "./components/KartuOutro";
 
 type Tool = {
   id: string;
@@ -115,6 +116,8 @@ export default function Home() {
               </div>
             )
           )}
+          {/* Hanya tampil untuk akun developer. */}
+          <KartuOutro />
         </section>
 
         <footer className={styles.footer}>
