@@ -371,12 +371,15 @@ def perbaiki_storage(template_id: str | None = None) -> dict[str, int]:
     Yang belum ada saja yang dikirim, jadi aman dijalankan berkali-kali.
     Template tamu dilewati: memang tidak untuk disimpan.
     """
-    hasil = {"template": 0, "aset": 0, "gagal": 0}
+    hasil = {"template": 0, "aset": 0, "pinjam": 0, "gagal": 0}
     if not storage.enabled():
         return hasil
     akar = templates_dir()
     if not akar.is_dir():
         return hasil
+    # Isi tiap set layer dikumpulkan sambil jalan, supaya pencarian pemberi
+    # pinjaman di bawah tidak perlu membaca ulang semuanya dari awal.
+    milik: dict[str, dict[str, Any]] = {}
     if template_id:
         folder_template = [akar / _aman(template_id)]
     else:
@@ -422,7 +425,71 @@ def perbaiki_storage(template_id: str | None = None) -> dict[str, int]:
             except storage.StorageError as error:
                 logger.warning("Aset %s/%s gagal didorong: %s", tid, aset.name, error)
                 hasil["gagal"] += 1
+        punya_aset |= {a.name for a in (folder / "assets").glob("*") if a.is_file()}
+        milik[tid] = {"isi": isi, "aset": punya_aset}
+
+    hasil["pinjam"] = _pinjamkan_aset_hilang(milik)
     return hasil
+
+
+def _pinjamkan_aset_hilang(milik: dict[str, dict[str, Any]]) -> int:
+    """Set layer yang berkasnya sudah lenyap dibuat meminjam dari set lain.
+
+    Beberapa set layer merujuk berkas yang sudah tidak ada di mana pun -
+    tidak di disk, tidak di Supabase. Hasilnya set itu tampak utuh di halaman
+    (pratinjaunya cuma kanvas kosong) tetapi setiap rendernya gagal dengan
+    "aset tidak ditemukan". Berkas itu sendiri biasanya masih ada di set lain
+    milik orang yang sama: set-set ini lahir dari menyalin, jadi nama
+    berkasnya sama persis.
+
+    Menyalin berkasnya kembali akan menggandakan puluhan MB untuk isi yang
+    identik, padahal volume backend sudah 404 dari 500 MB. Jadi yang dipakai
+    adalah "aset_dari" - mekanisme yang memang sudah ada di kode ini supaya
+    set salinan meminjam berkas set induknya alih-alih menyalinnya.
+
+    Pemberi pinjaman harus punya SELURUH berkas yang hilang dan dimiliki
+    orang yang sama; kalau tidak ada yang memenuhi, set itu dilewati.
+    """
+    dipinjamkan = 0
+    for tid, data in milik.items():
+        isi = data["isi"]
+        if str(isi.get("aset_dari") or "").strip():
+            continue  # sudah meminjam dari suatu tempat
+        perlu = {Path(n).name for n in aset_terpakai(isi)}
+        hilang = perlu - data["aset"]
+        if not hilang:
+            continue
+        pemilik = str(isi.get("owner") or "").strip().lower()
+        pemberi = next(
+            (
+                lain
+                for lain, d in sorted(milik.items())
+                if lain != tid
+                and hilang <= d["aset"]
+                and str(d["isi"].get("owner") or "").strip().lower() == pemilik
+            ),
+            "",
+        )
+        if not pemberi:
+            logger.warning(
+                "Set layer %s kehilangan %s dan tidak ada set lain yang punya",
+                tid, ", ".join(sorted(hilang)),
+            )
+            continue
+        isi["aset_dari"] = pemberi
+        berkas = template_path(tid) / "template.json"
+        try:
+            berkas.write_text(json.dumps(isi, indent=2, ensure_ascii=False), encoding="utf-8")
+            if storage.enabled():
+                storage.upload(f"templates/{tid}/template.json", berkas, "application/json")
+        except (OSError, storage.StorageError) as error:
+            logger.warning("Set layer %s gagal dibuat meminjam: %s", tid, error)
+            continue
+        dipinjamkan += 1
+        logger.info(
+            "Set layer %s meminjam %s dari %s", tid, ", ".join(sorted(hilang)), pemberi
+        )
+    return dipinjamkan
 
 
 def perbaiki_storage_di_latar() -> None:
