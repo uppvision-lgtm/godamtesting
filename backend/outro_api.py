@@ -86,7 +86,6 @@ def _ringkas(job: dict[str, Any]) -> dict[str, Any]:
         "progress": job.get("progress", 0),
         "channel": job.get("channel"),
         "akun": job.get("akun", {}),
-        "prompt": job.get("prompt", ""),
         "punya_video": bool(job.get("video")),
         "message": job.get("message", ""),
         "logs": job.get("logs", []),

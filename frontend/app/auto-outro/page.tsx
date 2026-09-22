@@ -9,10 +9,9 @@ import { PERAN_DEVELOPER, apiFetch, usePeran, useSudahHidrasi } from "../compone
 /**
  * Auto Outro — khusus akun developer.
  *
- * Satu klik: AI menulis gaya visual, Hugging Face ZeroGPU membuat latar
- * bergeraknya (gratis, tanpa login), lalu renderer aplikasi menempelkan nama
- * channel dan enam handle PERSIS di atasnya. Hasilnya muncul di bawah dengan
- * tombol unduh. Tidak ada sesi peramban yang perlu disiapkan.
+ * Satu klik: latar bergerak dirender sendiri (gratis, tanpa AI/API/antre),
+ * lalu renderer aplikasi menempelkan nama channel dan enam handle PERSIS di
+ * atasnya. Hasilnya muncul di bawah dengan tombol unduh.
  */
 
 type Sosmed = { kunci: string; nama: string; ikon: string; contoh: string };
@@ -33,7 +32,6 @@ type Job = {
   status: "queued" | "running" | "done" | "error" | "dibatalkan";
   langkah: string;
   progress: number;
-  prompt: string;
   punya_video: boolean;
   message: string;
   logs: string[];
@@ -41,9 +39,8 @@ type Job = {
 
 const LANGKAH: Record<string, string> = {
   antre: "Menunggu giliran",
-  ai: "1/3 · AI menulis gaya visual",
-  video: "2/3 · Membuat latar (ZeroGPU)",
-  teks: "3/3 · Menempel nama & akun",
+  latar: "1/2 · Merender latar bergerak",
+  teks: "2/2 · Menempel nama & akun",
   selesai: "Selesai",
   gagal: "Gagal",
   berhenti: "Dihentikan",
@@ -123,7 +120,6 @@ export default function AutoOutroPage() {
         status: "queued",
         langkah: "antre",
         progress: 0,
-        prompt: "",
         punya_video: false,
         message: "Menunggu giliran.",
         logs: [],
@@ -193,8 +189,9 @@ export default function AutoOutroPage() {
                 <span className={styles.badge}>Developer</span>
               </div>
               <p className={styles.hint}>
-                Isi nama channel dan akun tiap sosmed, lalu tekan sekali. AI membuat latar
-                bergeraknya (gratis), dan nama serta username ditulis persis di atasnya.
+                Isi nama channel dan akun tiap sosmed, lalu tekan sekali. Latar bergeraknya
+                dirender sendiri (gratis, tanpa batas), dan nama serta username ditulis persis
+                di atasnya.
               </p>
 
               <div className={styles.form}>

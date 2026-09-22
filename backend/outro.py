@@ -1,29 +1,33 @@
 """Auto Outro: dari isian nama channel + akun sosmed sampai video outro.
 
-Tiga langkah, semuanya lewat API - tidak ada peramban, tidak ada login:
+Dua langkah, semuanya dikerjakan sendiri di mesin ini - tanpa AI, tanpa API,
+tanpa jatah, tanpa antre, tanpa biaya:
 
-1. AI (DeepSeek) menulis prompt VISUAL untuk pembuat video: suasana, gerakan,
-   pencahayaan. Sengaja tanpa username - lihat alasannya di bawah.
-2. LTX-Video di Hugging Face ZeroGPU membuat latar bergeraknya dari prompt
-   itu. Gratis, dipanggil lewat gradio_client, hasilnya berkas mp4.
-3. Renderer teks aplikasi ini menempelkan nama channel dan enam handle di
-   atasnya - PERSIS, huruf demi huruf.
+1. Latar bergerak dirender prosedural dengan numpy + ffmpeg: gradien gelap,
+   sapuan cahaya diagonal yang melintas, partikel melayang, vignette. Tiap
+   video memakai seed berbeda, jadi 50 video sehari tidak ada yang kembar.
+2. Renderer teks menempelkan nama channel dan enam handle di atasnya -
+   PERSIS, huruf demi huruf, dengan fade-in lembut.
 
-Kenapa teksnya tidak diserahkan ke AI: diuji langsung, dan semua model video
-(termasuk Google Flow) tidak bisa menulis teks dengan tepat - "@tvrakyat"
-keluar jadi "Basahetwi". Untuk outro, yang paling penting justru username
-yang benar. Jadi AI hanya membuat suasananya, dan teksnya ditempel sendiri
-oleh alat yang memang sudah menulis teks pixel-perfect di Auto Edit Video.
+Kenapa tidak pakai AI video: dicoba dua-duanya. Google Flow tidak bisa
+diotomasi (Google + Chrome menutup semua jalannya). Hugging Face ZeroGPU
+bisa, tapi jatah gratisnya hanya ~1 video/hari tanpa token dan ~10 dengan
+token - sedangkan kebutuhannya 50/hari. Dan yang dibuat AI ternyata hanya
+"latar gelap + sapuan cahaya + partikel": grafis gerak sederhana yang bisa
+dirender sendiri dalam hitungan detik, dengan resolusi lebih tinggi pula.
+Teksnya memang sejak awal digambar sendiri, sebab semua model video tidak
+bisa mengeja username dengan benar.
 
 Berjalan di utas biasa (bukan Celery): alat developer, satu pekerjaan pada
-satu waktu, keadaannya di memori proses.
+satu waktu, keadaannya di memori proses. Ringan, jadi jalan di server pun bisa.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
-import re
+import random
 import shutil
 import subprocess
 import threading
@@ -32,31 +36,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR, VideoError, probe
+from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR
 
 logger = logging.getLogger(__name__)
-
-# Kata-kata perintah untuk AI. Yang diminta hanya SUASANA visualnya; username
-# sengaja tidak disebut, sebab AI video tidak bisa mengejanya dan teksnya
-# ditempel sendiri setelah video jadi. Center dimintai lapang supaya ada
-# ruang untuk logo dan teks yang ditempel di atasnya.
-PERMINTAAN = """Write a single English prompt for an AI video generator to create a 4-second premium brand outro background.
-Media brand theme: {channel}
-Requirements for the scene:
-- Portrait 9:16, dark elegant background (deep charcoal to black gradient)
-- Premium, modern, minimalist motion graphics: soft light sweep, subtle floating particles, gentle glow, smooth camera drift
-- Keep the CENTER of the frame calm and mostly empty (a logo and text will be placed there afterward)
-- No humans, no real events, no news, no politics, no real-world footage
-- No on-screen text, no letters, no words, no logos, no watermark
-Output ONLY the prompt text, one paragraph, no explanation."""
-
-# Kalau AI tak terpakai/gagal, prompt bawaan ini sudah cukup bagus sendiri.
-PROMPT_BAWAAN = (
-    "Premium minimalist brand outro background, portrait 9:16, deep charcoal to "
-    "black gradient, soft horizontal light sweep, subtle floating particles, gentle "
-    "glow, smooth slow camera drift, elegant cinematic motion graphics, calm empty "
-    "center, no text, no letters, no logos, no people"
-)
 
 # Urutan akun mengikuti teks perintah.
 KUNCI_AKUN = ("instagram", "tiktok", "x", "threads", "facebook", "youtube")
@@ -65,21 +47,12 @@ NAMA_TAMPIL = {
     "threads": "Threads", "facebook": "Facebook", "youtube": "YouTube",
 }
 
-# --- penyedia AI penulis prompt (sama seperti bot komentar) ---
-AI_KUNCI = os.getenv("OUTRO_AI_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")
-AI_ALAMAT = (os.getenv("OUTRO_AI_URL", "") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")).rstrip("/")
-AI_MODEL = os.getenv("OUTRO_AI_MODEL", "") or "deepseek-flash"
-TUNGGU_AI = float(os.getenv("OUTRO_TUNGGU_AI", "60"))
-
-# --- pembuat video: Hugging Face ZeroGPU Space ---
-# Gratis dan tanpa token untuk pemakaian sekali-sekali; token menaikkan jatah
-# harian kalau nanti sering dipakai. Space bisa diganti lewat setelan.
-HF_SPACE = os.getenv("OUTRO_HF_SPACE", "Lightricks/ltx-video-distilled")
-HF_TOKEN = os.getenv("OUTRO_HF_TOKEN", "").strip() or None
-VIDEO_W = int(os.getenv("OUTRO_VIDEO_W", "416"))   # kelipatan 32
-VIDEO_H = int(os.getenv("OUTRO_VIDEO_H", "704"))
+# 720x1280 potret 9:16 - lebih tajam dari 416x704 milik ZeroGPU, dan masih
+# dirender dalam beberapa detik. Semua bisa diubah lewat setelan.
+VIDEO_W = int(os.getenv("OUTRO_VIDEO_W", "720"))
+VIDEO_H = int(os.getenv("OUTRO_VIDEO_H", "1280"))
 VIDEO_DETIK = float(os.getenv("OUTRO_VIDEO_DETIK", "4"))
-TUNGGU_VIDEO = float(os.getenv("OUTRO_TUNGGU_VIDEO", "300"))
+FPS = int(os.getenv("OUTRO_FPS", "30"))
 
 
 class OutroError(Exception):
@@ -151,7 +124,6 @@ def mulai_job(channel: str, akun: dict[str, str]) -> str:
             "progress": 0,
             "channel": channel,
             "akun": {k: str(akun.get(k) or "").strip() for k in KUNCI_AKUN},
-            "prompt": "",
             "video": "",
             "message": "Menunggu giliran.",
             "logs": ["Pekerjaan masuk antrean."],
@@ -172,23 +144,19 @@ def _jalankan(job_id: str) -> None:
             job = baca_job(job_id) or {}
             channel = job["channel"]
             akun = job["akun"]
+            seed = int(uuid.UUID(job_id.ljust(32, "0")).int % (2**31))
 
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum mulai.")
-            _catat(job_id, "Menulis gaya visual lewat AI ...",
-                   status="running", langkah="ai", progress=8)
-            prompt = tulis_prompt_visual(channel, lambda m: _catat(job_id, m))
-            _catat(job_id, "Gaya visual siap.", prompt=prompt, langkah="video", progress=25)
-
-            if ev.is_set():
-                raise Dibatalkan("Dihentikan setelah prompt jadi.")
-            _catat(job_id, "Membuat latar video (Hugging Face ZeroGPU) ...")
-            latar = buat_video_ai(prompt, folder, ev, lambda m: _catat(job_id, m))
-            _catat(job_id, "Latar video jadi; menempelkan nama channel dan akun ...",
-                   langkah="teks", progress=80)
+            _catat(job_id, "Merender latar bergerak ...",
+                   status="running", langkah="latar", progress=10)
+            latar = render_latar(seed, folder, ev, lambda p: _catat(
+                job_id, f"Merender latar bergerak ... {p}%", progress=10 + int(p * 0.6)))
 
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum menempel teks.")
+            _catat(job_id, "Menempelkan nama channel dan akun ...",
+                   langkah="teks", progress=80)
             hasil = tempel_teks(latar, channel, akun, folder)
             _catat(job_id, f"Video outro siap ({hasil.stat().st_size / 1_048_576:.1f} MB).",
                    status="done", langkah="selesai", progress=100, video=str(hasil))
@@ -204,155 +172,117 @@ def _jalankan(job_id: str) -> None:
 
 
 # ============================================================
-#  LANGKAH 1: PROMPT VISUAL DARI AI
+#  LANGKAH 1: LATAR BERGERAK (prosedural, numpy + ffmpeg)
 # ============================================================
 
-_PAGAR = re.compile(r"^```[a-zA-Z]*\n?|\n?```$", re.S)
+# Semburat warna dasar yang dipilih per seed, supaya video tidak selalu abu.
+_TINT = [(18, 22, 34), (26, 18, 30), (16, 26, 26), (22, 20, 20), (20, 24, 38)]
 
 
-def tulis_prompt_visual(channel: str, log: Callable[[str], None]) -> str:
-    """Minta AI menulis prompt visual. Kalau gagal, pakai prompt bawaan."""
-    if not AI_KUNCI.strip():
-        log("Kunci AI kosong; memakai gaya bawaan.")
-        return PROMPT_BAWAAN
-    import httpx
+def _siapkan_latar(seed: int, w: int, h: int) -> dict[str, Any]:
+    """Tetapkan warna dasar, partikel, dan sudut sapuan dari satu seed."""
+    import numpy as np
 
-    try:
-        r = httpx.post(
-            f"{AI_ALAMAT}/chat/completions",
-            timeout=TUNGGU_AI,
-            headers={"Authorization": f"Bearer {AI_KUNCI.strip()}", "Content-Type": "application/json"},
-            json={
-                "model": AI_MODEL,
-                "messages": [
-                    {"role": "system", "content": "Reply with only the prompt text, no preamble, no quotes, no code block."},
-                    {"role": "user", "content": PERMINTAAN.format(channel=channel)},
-                ],
-                "temperature": 0.8,
-            },
-        )
-        if r.status_code != 200:
-            log(f"AI menolak ({r.status_code}); memakai gaya bawaan.")
-            return PROMPT_BAWAAN
-        isi = _PAGAR.sub("", str(r.json()["choices"][0]["message"]["content"]).strip()).strip()
-        return isi if len(isi) >= 40 else PROMPT_BAWAAN
-    except Exception as error:  # noqa: BLE001 - AI hanya penyempurna, bukan penentu
-        log(f"AI tak terjangkau ({type(error).__name__}); memakai gaya bawaan.")
-        return PROMPT_BAWAAN
+    rnd = random.Random(seed)
+    tint = rnd.choice(_TINT)
+    yy = np.linspace(0, 1, h, dtype=np.float32)[:, None]
+    base = np.zeros((h, w, 3), np.float32)
+    for i, c in enumerate(tint):
+        base[:, :, i] = c * (1.0 - 0.55 * yy)
+
+    jml = 90
+    px = np.array([rnd.uniform(0, w) for _ in range(jml)], np.float32)
+    py = np.array([rnd.uniform(0, h) for _ in range(jml)], np.float32)
+    pr = np.array([rnd.uniform(1.0, 3.2) for _ in range(jml)], np.float32)
+    pv = np.array([rnd.uniform(6, 22) for _ in range(jml)], np.float32)
+    pph = np.array([rnd.uniform(0, math.tau) for _ in range(jml)], np.float32)
+    sudut = rnd.uniform(math.radians(20), math.radians(52))
+    return {"base": base, "px": px, "py": py, "pr": pr, "pv": pv, "pph": pph,
+            "sudut": sudut, "w": w, "h": h}
 
 
-# ============================================================
-#  LANGKAH 2: VIDEO DARI HUGGING FACE ZEROGPU
-# ============================================================
+def _frame_latar(t: float, s: dict[str, Any]) -> Any:
+    """Satu frame latar pada detik ke-t."""
+    import numpy as np
 
-_NEG = ("text, letters, words, captions, subtitles, watermark, logo, blurry, "
-        "low quality, distorted, people, human, face, jittery")
+    w, h, sudut = s["w"], s["h"], s["sudut"]
+    img = s["base"].copy()
 
-# Pola pesan jatah ZeroGPU: "(120s requested vs. -60s left)".
-_JATAH = re.compile(r"\((\d+)s requested vs\. (-?\d+)s left\)")
+    # Sapuan cahaya diagonal yang melintas dari satu sudut ke sudut lain.
+    xs = np.arange(w, dtype=np.float32)[None, :]
+    ys = np.arange(h, dtype=np.float32)[:, None]
+    proj = xs * math.cos(sudut) + ys * math.sin(sudut)
+    pmax = w * math.cos(sudut) + h * math.sin(sudut)
+    pos = pmax * (0.15 + 0.7 * (t / VIDEO_DETIK))
+    sweep = np.exp(-((proj - pos) ** 2) / (2 * 130.0 ** 2)).astype(np.float32)
+    img += sweep[:, :, None] * np.array([200, 210, 235], np.float32) * 0.9
 
+    # Partikel: titik lembut melayang naik, berkedip halus.
+    yy = (s["py"] - s["pv"] * t) % h
+    kedip = 0.5 + 0.5 * np.sin(s["pph"] + t * 2.2)
+    px, pr = s["px"], s["pr"]
+    for i in range(len(px)):
+        cx, cy, r = float(px[i]), float(yy[i]), float(pr[i])
+        x0, x1 = max(0, int(cx - r * 3)), min(w, int(cx + r * 3))
+        y0, y1 = max(0, int(cy - r * 3)), min(h, int(cy + r * 3))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        gx = np.arange(x0, x1, dtype=np.float32)[None, :] - cx
+        gy = np.arange(y0, y1, dtype=np.float32)[:, None] - cy
+        g = np.exp(-(gx ** 2 + gy ** 2) / (2 * r ** 2)).astype(np.float32)
+        img[y0:y1, x0:x1, :] += g[:, :, None] * (180.0 * float(kedip[i]))
 
-def _pesan_jatah(mentah: str) -> str:
-    """Terjemahkan pesan jatah ZeroGPU jadi keterangan yang jujur dan bisa
-    ditindaklanjuti.
-
-    Angkanya dari dokumen resmi HF: jatah harian anonim 2 menit, akun gratis
-    5 menit, pulih 24 jam setelah pemakaian pertama. Space ini mendeklarasikan
-    120 detik per panggilan (tetap, tidak ikut panjang video - diuji), jadi
-    tanpa token jatahnya habis oleh SATU video. Ini bukan antrean yang bisa
-    ditunggu sebentar; menunggu beberapa menit tidak menolong, dan mengganti
-    IP hanya berakhir diblokir. Satu-satunya jalan wajar: token gratis.
-    """
-    m = _JATAH.search(mentah)
-    if m:
-        minta, sisa = int(m.group(1)), int(m.group(2))
-        keadaan = f"Space minta {minta}s GPU, jatahmu tersisa {sisa}s"
-    else:
-        keadaan = "jatah GPU gratis Hugging Face habis"
-    pakai_token = bool(HF_TOKEN)
-    if pakai_token:
-        return (
-            f"Jatah GPU harian habis ({keadaan}). Dengan token gratis jatahnya "
-            "5 menit/hari (~10 video); pulih 24 jam setelah pemakaian pertama. "
-            "Kalau butuh lebih, PRO memberi 40 menit/hari."
-        )
-    return (
-        f"Jatah GPU habis ({keadaan}). Tanpa token, Hugging Face hanya memberi "
-        "2 menit/hari - cukup untuk SATU video. Isi OUTRO_HF_TOKEN dengan token "
-        "gratis dari huggingface.co/settings/tokens untuk 5 menit/hari (~10 video); "
-        "tidak perlu kartu. Jatah pulih 24 jam setelah pemakaian pertama."
-    )
+    # Vignette lembut supaya tepi lebih gelap dan pusat menonjol.
+    vx = (np.arange(w, dtype=np.float32) - w / 2) / (w / 2)
+    vy = (np.arange(h, dtype=np.float32) - h / 2) / (h / 2)
+    vig = 1.0 - 0.35 * np.clip(vx[None, :] ** 2 + vy[:, None] ** 2, 0, 1)
+    img *= vig[:, :, None]
+    return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def buat_video_ai(
-    prompt: str, folder: Path, ev: threading.Event, log: Callable[[str], None]
+def render_latar(
+    seed: int, folder: Path, ev: threading.Event, lapor: Callable[[int], None]
 ) -> Path:
-    """Buat latar video dari prompt lewat Space text-to-video di ZeroGPU.
-
-    gradio_client memanggil Space seperti orang menekan tombolnya, dan
-    hasilnya berkas mp4 sementara yang lalu disalin ke folder pekerjaan.
-    ZeroGPU gratis tanpa token untuk pemakaian sekali-sekali; kalau jatah
-    hariannya habis, pesannya diteruskan apa adanya supaya jelas sebabnya.
-    """
+    """Render latar bergerak ke berkas mp4. Frame dikirim mentah ke ffmpeg."""
     try:
-        from gradio_client import Client
+        import numpy  # noqa: F401 - dipastikan ada sebelum mulai
     except Exception as error:  # noqa: BLE001
-        raise OutroError("Paket gradio_client belum terpasang di backend.") from error
+        raise OutroError("Paket numpy belum terpasang di backend.") from error
 
-    if ev.is_set():
-        raise Dibatalkan("Dihentikan sebelum membuat video.")
-    log(f"Menghubungi {HF_SPACE} ...")
+    w = VIDEO_W - VIDEO_W % 2
+    h = VIDEO_H - VIDEO_H % 2
+    s = _siapkan_latar(seed, w, h)
+    total = max(1, int(FPS * VIDEO_DETIK))
+    keluaran = folder / "latar.mp4"
+    proses = subprocess.Popen(
+        [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(FPS), "-i", "-",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", str(keluaran)],
+        stdin=subprocess.PIPE,
+    )
     try:
-        klien = Client(HF_SPACE, token=HF_TOKEN, verbose=False)
-    except Exception as error:  # noqa: BLE001
-        raise OutroError(
-            f"Tidak bisa membuka Space {HF_SPACE} ({type(error).__name__}). "
-            "Space-nya mungkin sedang tidur atau diperbaiki; coba lagi nanti."
-        ) from error
-
-    log("Antre di GPU gratis lalu membuat video (biasanya 15-60 detik) ...")
-    try:
-        hasil = klien.predict(
-            prompt=prompt,
-            negative_prompt=_NEG,
-            input_image_filepath=None,
-            input_video_filepath=None,
-            height_ui=VIDEO_H,
-            width_ui=VIDEO_W,
-            mode="text-to-video",
-            duration_ui=VIDEO_DETIK,
-            ui_frames_to_use=9,
-            seed_ui=42,
-            randomize_seed=True,
-            ui_guidance_scale=1,
-            improve_texture_flag=True,
-            api_name="/text_to_video",
-        )
-    except Exception as error:  # noqa: BLE001
-        pesan = str(error)
-        if "quota" in pesan.lower():
-            raise OutroError(_pesan_jatah(pesan)) from error
-        raise OutroError(f"Space gagal membuat video: {pesan[:200]}") from error
-
-    # Kembaliannya (video, seed); video berupa dict {"video": path} atau path.
-    berkas = hasil[0] if isinstance(hasil, (list, tuple)) else hasil
-    if isinstance(berkas, dict):
-        berkas = berkas.get("video") or berkas.get("path") or ""
-    if not berkas or not Path(berkas).is_file():
-        raise OutroError("Space selesai tetapi berkas videonya tidak ditemukan.")
-    tujuan = folder / "latar.mp4"
-    shutil.copy2(berkas, tujuan)
-    return tujuan
+        lapor_tiap = max(1, total // 10)
+        for n in range(total):
+            if ev.is_set():
+                proses.kill()
+                raise Dibatalkan("Render latar dihentikan.")
+            proses.stdin.write(_frame_latar(n / FPS, s).tobytes())
+            if n % lapor_tiap == 0:
+                lapor(int(n / total * 100))
+    finally:
+        if proses.stdin:
+            proses.stdin.close()
+        proses.wait()
+    if proses.returncode != 0 or not keluaran.is_file():
+        raise OutroError("Gagal merender latar video.")
+    lapor(100)
+    return keluaran
 
 
 # ============================================================
-#  LANGKAH 3: TEMPEL NAMA CHANNEL + HANDLE (PERSIS)
+#  LANGKAH 2: TEMPEL NAMA CHANNEL + HANDLE (PERSIS)
 # ============================================================
-
-def _lebar_teks(draw: Any, teks: str, font: Any) -> int:
-    kotak = draw.textbbox((0, 0), teks, font=font)
-    return kotak[2] - kotak[0]
-
 
 def _muat_font(ukuran: int) -> Any:
     from PIL import ImageFont
@@ -366,9 +296,8 @@ def _muat_font(ukuran: int) -> Any:
 def buat_lapisan_teks(w: int, h: int, channel: str, akun: dict[str, str], tujuan: Path) -> Path:
     """Gambar PNG transparan seukuran video: nama channel + handle, di tengah.
 
-    Semua teks digambar sendiri di sini, jadi username muncul PERSIS - tidak
-    ada yang diserahkan ke model video. Bayangan lembut ditaruh di belakang
-    supaya terbaca di atas latar yang bergerak dan berubah terang-gelap.
+    Semua teks digambar sendiri di sini, jadi username muncul PERSIS. Bayangan
+    lembut di belakang supaya terbaca di atas latar yang bergerak.
     """
     from PIL import Image, ImageDraw
 
@@ -376,51 +305,45 @@ def buat_lapisan_teks(w: int, h: int, channel: str, akun: dict[str, str], tujuan
     d = ImageDraw.Draw(kanvas)
 
     def tulis_tengah(teks: str, font: Any, y: int, warna: tuple) -> int:
-        lebar = _lebar_teks(d, teks, font)
+        kotak = d.textbbox((0, 0), teks, font=font)
+        lebar = kotak[2] - kotak[0]
         x = (w - lebar) // 2
-        # bayangan: beberapa lapis offset supaya lembut dan tetap terbaca
         for dx, dy in ((0, 2), (2, 0), (0, -2), (-2, 0), (2, 2), (-2, 2)):
             d.text((x + dx, y + dy), teks, font=font, fill=(0, 0, 0, 180))
         d.text((x, y), teks, font=font, fill=warna)
-        kotak = d.textbbox((x, y), teks, font=font)
-        return kotak[3] - kotak[1]
+        kk = d.textbbox((x, y), teks, font=font)
+        return kk[3] - kk[1]
 
-    # Nama channel: besar, sekitar 34% tinggi.
-    f_channel = _muat_font(max(28, int(w * 0.11)))
-    y = int(h * 0.34)
-    tinggi = tulis_tengah(channel.upper(), f_channel, y, (255, 255, 255, 255))
-    y += tinggi + int(h * 0.05)
+    # Handle yang terisi menentukan seberapa tinggi blok teks; blok dipusatkan.
+    isi = [(NAMA_TAMPIL[k], str(akun.get(k) or "").strip()) for k in KUNCI_AKUN]
+    isi = [(nama, nilai) for nama, nilai in isi if nilai]
 
-    # Garis pemisah tipis.
+    f_channel = _muat_font(max(28, int(w * 0.095)))
+    f_akun = _muat_font(max(16, int(w * 0.044)))
+    tinggi_akun = int(h * 0.052)
+    tinggi_blok = int(h * 0.10) + int(h * 0.05) + (len(isi) * tinggi_akun if isi else 0)
+    y = max(int(h * 0.22), (h - tinggi_blok) // 2)
+
+    t = tulis_tengah(channel.upper(), f_channel, y, (255, 255, 255, 255))
+    y += t + int(h * 0.045)
     d.line([(int(w * 0.30), y), (int(w * 0.70), y)], fill=(255, 255, 255, 120), width=2)
-    y += int(h * 0.035)
-
-    # Handle: hanya yang terisi, satu baris masing-masing.
-    f_akun = _muat_font(max(16, int(w * 0.052)))
-    for k in KUNCI_AKUN:
-        nilai = str(akun.get(k) or "").strip()
-        if not nilai:
-            continue
-        baris = f"{NAMA_TAMPIL[k]}   {nilai}"
-        tinggi = tulis_tengah(baris, f_akun, y, (235, 235, 235, 255))
-        y += tinggi + int(h * 0.028)
+    y += int(h * 0.03)
+    for nama, nilai in isi:
+        tulis_tengah(f"{nama}   {nilai}", f_akun, y, (235, 235, 235, 255))
+        y += tinggi_akun
 
     kanvas.save(tujuan)
     return tujuan
 
 
 def tempel_teks(latar: Path, channel: str, akun: dict[str, str], folder: Path) -> Path:
-    """Tempel lapisan teks di atas latar video. Muncul perlahan (fade in)."""
-    info = probe(latar)
-    w, h = int(info.get("width") or VIDEO_W), int(info.get("height") or VIDEO_H)
-    png = buat_lapisan_teks(w, h, channel, akun, folder / "teks.png")
+    """Tempel lapisan teks di atas latar video, muncul perlahan (fade in)."""
+    png = buat_lapisan_teks(VIDEO_W - VIDEO_W % 2, VIDEO_H - VIDEO_H % 2,
+                            channel, akun, folder / "teks.png")
     keluaran = folder / "outro.mp4"
-
     # PNG di-LOOP jadi aliran sepanjang video. Tanpa "-loop 1" ia hanya satu
-    # frame di detik 0, dan fade yang mulai 0,6 detik membuatnya tidak pernah
-    # terlihat sama sekali - teksnya hilang walau lapisannya benar. overlay
-    # dengan shortest=1 memotong keluaran sepanjang latar video.
-    # Teks muncul dari 0,6 detik, penuh pada 1,4 detik, lalu tetap.
+    # frame di detik 0, dan fade yang mulai 0,6 detik membuatnya tak pernah
+    # terlihat. overlay shortest=1 memotong keluaran sepanjang latar.
     perintah = [
         FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-i", str(latar), "-loop", "1", "-i", str(png),

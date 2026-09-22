@@ -19,6 +19,8 @@ python-multipart>=0.0.32,<1.0
 python-dotenv>=1.2.3,<2.0
 cryptography>=50.0.1,<51.0
 pillow>=12.0.0,<13.0
+# Auto Outro merender latar prosedural (gradien, partikel) dengan numpy.
+numpy>=1.26,<3
 sqlalchemy>=2.0.54,<3.0
 
 # yt-dlp SENGAJA tidak dipatok ke atas. Instagram, TikTok, dan YouTube
