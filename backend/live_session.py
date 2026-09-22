@@ -41,7 +41,7 @@ from browser_config import (
 
 logger = logging.getLogger("live")
 import jatah_tamu
-from auth_api import identitas
+from auth_api import identitas, pengguna_wajib
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 _SESSIONS: dict[str, "LiveSession"] = {}
@@ -67,7 +67,11 @@ def _modul_bot(platform: str):
 # bot yang diminta akan dijalankan. Setiap sesi memakan satu Chromium (±300MB
 # di server), jadi kalau suatu saat server terasa berat, batas bisa dipasang
 # lagi lewat env LIVE_MAX_SESSIONS (mis. 5) tanpa mengubah kode.
-MAX_CONCURRENT_SESSIONS = max(0, int(os.getenv("LIVE_MAX_SESSIONS", "0")))
+# Bawaannya 3, bukan tanpa batas. Tiap sesi memakai satu tab pada Chromium
+# bersama, dan di kontainer 954 MB beberapa tab instagram.com sudah cukup
+# untuk membuat kernel membunuh perambannya. Naikkan lewat LIVE_MAX_SESSIONS
+# kalau servernya memang lebih besar; 0 berarti tanpa batas seperti dulu.
+MAX_CONCURRENT_SESSIONS = max(0, int(os.getenv("LIVE_MAX_SESSIONS", "3")))
 
 # 1 Chromium dipakai bersama semua bot (tiap bot = 1 tab/context). Hasil ukur
 # lokal 5 bot: 5 browser terpisah 1392MB/21 proses vs 1 browser + 5 tab
@@ -325,25 +329,6 @@ class LiveSession:
             )
         )
 
-    async def start_upload(
-        self, username: str, session_id: str, berkas: str, caption: str
-    ) -> None:
-        """Ragam kedua: mengunggah satu video ke Instagram, bukan berkomentar."""
-        from pathlib import Path as _Path
-
-        await _RUNTIME.run(
-            self._start_di_thread_browser(
-                username,
-                session_id,
-                pesan="Session dipasang. Menyiapkan unggahan ...",
-                awal=[
-                    f"Session diterima untuk akun {username}",
-                    f"Berkas: {_Path(berkas).name}",
-                ],
-                buat_job=lambda: self._run_upload(username, berkas, caption),
-            )
-        )
-
     async def _start_di_thread_browser(
         self,
         username: str,
@@ -490,36 +475,6 @@ class LiveSession:
         finally:
             await self._selesaikan()
 
-    async def _run_upload(self, username: str, berkas: str, caption: str) -> None:
-        """Unggah satu video, lalu cari tautan postingan yang baru dibuat."""
-        from pathlib import Path as _Path
-
-        try:
-            from upload_ig import postingan_terbaru, upload_video
-
-            hasil = await upload_video(
-                self._page, _Path(berkas), caption, log=self.add_log
-            )
-            tautan = ""
-            if username:
-                self.add_log("Mencari tautan postingan yang baru diunggah ...")
-                try:
-                    tautan = await postingan_terbaru(self._page, username)
-                except Exception as error:
-                    self.add_log(f"Tautan postingan tidak terbaca: {error}")
-            self.result = {**hasil, "post_url": tautan}
-            self.status = "completed"
-            self.message = "Video terunggah ke Instagram."
-            self.add_log(self.message + (f" {tautan}" if tautan else ""))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.status = "error"
-            self.message = f"Unggah gagal: {exc}"
-            self.add_log(f"Error: {exc}")
-        finally:
-            await self._selesaikan()
-
     async def _selesaikan(self) -> None:
         """Ambil frame terakhir lalu tutup Chromium supaya memori dibebaskan."""
         self._running = False
@@ -607,10 +562,18 @@ def _get_session(token: str) -> LiveSession:
 async def start_live(
     request: StartRequest,
     permintaan: Request,
-    pengguna: dict[str, Any] | None = Depends(identitas),
+    pengguna: dict[str, Any] = Depends(pengguna_wajib),
 ) -> dict:
-    # Satu bot = satu Chromium, dan itu bagian termahal dari seluruh aplikasi.
-    # Tamu tetap boleh mencobanya, hanya dibatasi berapa kali.
+    """Jalankan satu bot komentar. WAJIB LOGIN.
+
+    Bukan untuk mempersempit fitur tamu: bot ini memakai akun sosmed yang
+    tertaut di Kelola Akun, dan menautkan akun sendiri sudah butuh login -
+    jadi tamu memang tidak pernah bisa memakainya. Yang ditutup di sini
+    adalah kemungkinan orang tanpa identitas apa pun menyuruh server membuka
+    Chromium, yang tiap satunya menghabiskan hampir seluruh jatah memori
+    kontainer. Jatah tamu tetap dipanggil sebagai lapis kedua seandainya
+    suatu saat jalur tamu dibuka lagi.
+    """
     jatah_tamu.pakai("bot-komentar", pengguna, permintaan)
     platform = str(request.platform or "instagram").strip().lower()
     _modul_bot(platform)  # tolak platform yang tidak dikenal sebelum apa pun dibuka
@@ -656,6 +619,14 @@ async def start_live(
         platform,
     )
     return {"token": token, "width": session.width, "height": session.height}
+
+
+# Catatan soal tiga endpoint di bawah: token sesi adalah kuncinya sendiri -
+# 32 huruf heksadesimal acak yang hanya pernah dikirim ke pembuatnya. Sengaja
+# TIDAK diminta login: halaman menarik frame lewat <img> dan menutup sesi
+# lewat sendBeacon saat tab ditutup, dan keduanya tidak bisa membawa header
+# Authorization. Menambahkan penjaga di sini akan mematikan tampilan Chrome
+# Live dan membuat peramban yang ditutup meninggalkan Chromium menggantung.
 
 
 @router.get("/{token}/frame")

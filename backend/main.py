@@ -24,7 +24,6 @@ from tasks import run_instagram_bot
 from live_session import router as live_login_router
 from presence import router as presence_router
 from video_api import router as video_router
-from upload_api import router as upload_router
 from auth_api import pengguna_wajib, router as auth_router
 from forms_api import router as forms_router
 from admin_api import router as admin_router
@@ -38,8 +37,10 @@ from admin_api import router as admin_router
 # Di sini ia dipasang ke website utama supaya tombol di halaman depan bisa
 # langsung menujunya, dan supaya semuanya hidup di satu alamat.
 #
-# Awalan alamatnya digeser ke /api/sosmed karena website ini sudah punya
-# /api/upload sendiri untuk unggah Instagram versi lama.
+# Awalan alamatnya digeser ke /api/sosmed karena dulu ada /api/upload
+# tersendiri untuk unggah Instagram versi lama. Jalur itu sudah dibuang
+# (lihat catatan di bawah), tetapi awalannya dipertahankan supaya alamat
+# yang sudah dipakai halaman tidak berubah.
 #
 # Kalau foldernya tidak ada (mis. di server yang tidak memuatnya), aplikasi
 # tetap berjalan tanpa fitur ini — hanya dicatat di log.
@@ -107,7 +108,6 @@ app.add_middleware(
 app.include_router(live_login_router)
 app.include_router(presence_router)
 app.include_router(video_router)
-app.include_router(upload_router)
 app.include_router(auth_router)
 app.include_router(forms_router)
 app.include_router(admin_router)
