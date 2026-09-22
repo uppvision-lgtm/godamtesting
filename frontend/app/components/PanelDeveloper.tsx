@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import styles from "./PanelDeveloper.module.css";
+import { useDialog } from "./Dialog";
 import { apiFetch } from "./auth";
 
 type Akun = {
@@ -53,6 +54,7 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
   const [memuat, setMemuat] = useState(true);
   const [galat, setGalat] = useState("");
   const [sibuk, setSibuk] = useState("");
+  const dialog = useDialog();
 
   // Sengaja tidak memasang keadaan apa pun sebelum permintaan dikirim:
   // memanggilnya dari dalam effect akan jadi setState langsung di dalam
@@ -112,8 +114,48 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
     }
   }
 
+  /** Hapus akun orang lain beserta seluruh isinya. Tidak bisa dibatalkan.
+   *
+   *  Namanya harus diketik ulang. Menghapus akun orang lain membuang
+   *  template, video, akun sosmed, dan riwayatnya sekaligus - terlalu berat
+   *  untuk dijalankan dari satu klik yang salah sasaran.
+   */
+  async function hapusAkun(u: Akun) {
+    const ketikan = await dialog.tanya({
+      judul: `Hapus akun @${u.username}?`,
+      pesan:
+        `Seluruh isinya ikut dibuang: ${u.jumlah_template} template, ` +
+        `${u.jumlah_job} video, akun sosmed yang ditautkan, dan riwayat unggahannya. ` +
+        "Ini tidak bisa dibatalkan.",
+      label: `Ketik "${u.username}" untuk menghapus`,
+      nilaiAwal: "",
+      tombolYa: "Hapus permanen",
+      bahaya: true,
+    });
+    if (ketikan === null) return;
+    if (ketikan.trim().toLowerCase() !== u.username.toLowerCase()) {
+      setGalat("Nama yang diketik tidak cocok; akun tidak jadi dihapus.");
+      return;
+    }
+    setSibuk(u.username);
+    setGalat("");
+    try {
+      const res = await apiFetch(`/api/admin/users/${encodeURIComponent(u.username)}`, {
+        method: "DELETE",
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.detail || "Gagal menghapus akun.");
+      await muat();
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal menghapus akun.");
+    } finally {
+      setSibuk("");
+    }
+  }
+
   return (
     <div className={styles.latar} onMouseDown={onTutup}>
+      {dialog.simpul}
       <div
         className={styles.panel}
         role="dialog"
@@ -174,18 +216,29 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
                     <td className={styles.kanan}>{u.jumlah_job}</td>
                     <td className={styles.kanan}>
                       {!u.diri_sendiri && (
-                        <button
-                          type="button"
-                          className={styles.peranBtn}
-                          disabled={sibuk === u.username}
-                          onClick={() => void ubahPeran(u)}
-                        >
-                          {sibuk === u.username
-                            ? "..."
-                            : u.peran === "developer"
-                              ? "Cabut dev"
-                              : "Jadikan dev"}
-                        </button>
+                        <span className={styles.aksiBaris}>
+                          <button
+                            type="button"
+                            className={styles.peranBtn}
+                            disabled={sibuk === u.username}
+                            onClick={() => void ubahPeran(u)}
+                          >
+                            {sibuk === u.username
+                              ? "..."
+                              : u.peran === "developer"
+                                ? "Cabut dev"
+                                : "Jadikan dev"}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.hapusAkunBtn}
+                            disabled={sibuk === u.username}
+                            title={`Hapus akun @${u.username} beserta isinya`}
+                            onClick={() => void hapusAkun(u)}
+                          >
+                            Hapus
+                          </button>
+                        </span>
                       )}
                     </td>
                   </tr>
@@ -197,7 +250,9 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
 
         <p className={styles.catatan}>
           Yang ditampilkan hanya pemakaian. Password, isian formulir, dan Session ID
-          milik akun lain tidak bisa dilihat dari sini.
+          milik akun lain tidak bisa dilihat dari sini. Menghapus akun membuang
+          seluruh isinya dan tidak bisa dibatalkan; akunmu sendiri dihapus lewat
+          menu akun, bukan dari sini.
         </p>
       </div>
     </div>
