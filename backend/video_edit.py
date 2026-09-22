@@ -29,6 +29,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 
 import storage
 
@@ -90,6 +91,20 @@ AWALAN_UNGGAHAN_STORAGE = "uploads/"
 # saat dijalankan dari virtualenv (mode lokal) sering tidak. Jadi dicari dulu,
 # dan kalau tetap tidak ketemu dipanggil sebagai modul: "python -m yt_dlp".
 YTDLP_BIN = os.getenv("YTDLP_BIN", "").strip()
+
+# Instagram membalas 429 ("Too Many Requests") ke pengunduh yang tidak masuk,
+# terutama dari alamat pusat data seperti Railway. Sekali kena, mencoba lagi
+# langsung justru memperpanjang hukumannya - jadi tautan Instagram ditahan
+# dulu selama jeda ini sebelum server berani menyentuh Instagram lagi.
+JEDA_BATAS_DETIK = float(os.getenv("VIDEO_JEDA_BATAS", "180"))
+# Berapa kali satu unduhan boleh diulang saat kena 429, dan berapa lama
+# menunggu sebelum tiap ulangan. Angkanya sengaja jauh lebih panjang dari
+# jeda bawaan yt-dlp: 429 dari Instagram tidak hilang dalam hitungan detik.
+TUNGGU_ULANG_DETIK = (20.0, 60.0)
+# Jalan keluar terakhir kalau alamat servernya memang sudah dicap Instagram:
+# lewatkan unduhan melalui proxy. Kosong = langsung, seperti biasa. Dibuat
+# sebagai setelan supaya nanti cukup diisi di Railway, tanpa ubah kode.
+UNDUH_PROXY = os.getenv("VIDEO_UNDUH_PROXY", "").strip()
 
 # Kandidat font untuk drawtext: Debian (image Docker) lalu macOS (mode via PC).
 # Poppins-Bold ikut dibundel supaya teks di video sama persis dengan skrip
@@ -1091,6 +1106,83 @@ def _perintah_ytdlp() -> list[str]:
     return [sys.executable, "-m", "yt_dlp"]
 
 
+# Kalimat yang berarti "kamu terlalu sering meminta". Dicocokkan pada
+# keluaran yt-dlp, sebab kode keluarnya sama saja dengan galat lain.
+_KENA_BATAS = re.compile(r"(HTTP Error 429|Too Many Requests|rate.?limit)", re.I)
+
+# Penahan kalau Redis tidak ada (mode lokal tanpa broker). Cukup untuk satu
+# proses, dan worker memang hanya menjalankan satu render pada satu waktu.
+_BATAS_LOKAL: dict[str, float] = {}
+
+
+def _situs(url: str) -> str:
+    """Nama situs untuk penahan: "instagram.com" dari alamat apa pun."""
+    try:
+        inang = urlparse(url).netloc.lower().split(":")[0]
+    except ValueError:
+        return ""
+    bagian = [b for b in inang.split(".") if b not in ("www", "m")]
+    return ".".join(bagian[-2:]) if len(bagian) >= 2 else inang
+
+
+def _redis_batas():
+    """Klien Redis untuk penahan, atau None kalau memang tidak ada."""
+    alamat = os.getenv("REDIS_URL", "").strip()
+    if not alamat:
+        return None
+    try:
+        import redis  # impor di dalam: mode lokal boleh jalan tanpa paket ini
+
+        return redis.Redis.from_url(alamat, decode_responses=True)
+    except Exception:  # noqa: BLE001 - penahan tidak boleh menggagalkan unduhan
+        return None
+
+
+def sisa_tahanan(url: str) -> float:
+    """Berapa detik lagi situs ini ditahan setelah kena 429. 0 = bebas."""
+    situs = _situs(url)
+    if not situs:
+        return 0.0
+    r = _redis_batas()
+    if r is not None:
+        try:
+            sisa = r.ttl("videojob:batas:" + situs)
+            return float(sisa) if sisa and sisa > 0 else 0.0
+        except Exception:  # noqa: BLE001 - jatuh ke penahan dalam proses
+            pass
+    return max(0.0, _BATAS_LOKAL.get(situs, 0.0) - time.time())
+
+
+def _tahan_situs(url: str) -> None:
+    """Catat bahwa situs ini baru saja menolak karena terlalu sering diminta."""
+    situs = _situs(url)
+    if not situs:
+        return
+    _BATAS_LOKAL[situs] = time.time() + JEDA_BATAS_DETIK
+    r = _redis_batas()
+    if r is None:
+        return
+    try:
+        r.set("videojob:batas:" + situs, "1", ex=int(JEDA_BATAS_DETIK))
+    except Exception:  # noqa: BLE001 - catatan lokal di atas sudah cukup
+        pass
+
+
+def _bebaskan_situs(url: str) -> None:
+    """Unduhan berhasil: tahanannya dicabut supaya job berikutnya tidak menunggu."""
+    situs = _situs(url)
+    if not situs:
+        return
+    _BATAS_LOKAL.pop(situs, None)
+    r = _redis_batas()
+    if r is None:
+        return
+    try:
+        r.delete("videojob:batas:" + situs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _tanpa_cookie(perintah: list[str]) -> list[str]:
     """Salinan perintah yt-dlp tanpa pasangan "--cookies <berkas>"."""
     bersih: list[str] = []
@@ -1113,24 +1205,64 @@ def _ytdlp_dengan_mundur(
     batas: int,
     log: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Jalankan yt-dlp; kalau gagal DENGAN cookie, ulangi TANPA cookie.
+    """Jalankan yt-dlp; lepas cookie yang ditolak, dan tunggu kalau kena 429.
+
+    Dua kegagalan yang berbeda sifatnya ditangani di sini.
 
     Session ID yang sudah mati bukan sekadar tidak membantu - ia merusak.
     Instagram membalas permintaan bercookie-mati dengan badan kosong, dan
     yt-dlp berhenti dengan "Failed to parse JSON", padahal postingan publik
     yang sama terbaca dengan mudah tanpa cookie sama sekali. Jadi cookie yang
     ditolak dilepas dulu sebelum menyerah.
+
+    HTTP 429 lain lagi: itu bukan galat tetap, melainkan "tunggu sebentar".
+    yt-dlp tidak mengulang galat ini sendiri - ``--retries`` hanya berlaku
+    untuk pengunduhan berkas, bukan untuk halaman yang dibaca extractor -
+    jadi ia langsung menyerah dalam hitungan detik. Di sinilah penantiannya
+    dilakukan, dengan jeda yang memanjang, dan hanya selama masih ada sisa
+    waktu unduhan.
     """
-    hasil = subprocess.run(perintah + [url], capture_output=True, text=True, timeout=batas)
-    if hasil.returncode == 0 or not pakai_cookie:
-        return hasil
-    if log:
-        log("Session ID-nya ditolak; mencoba lagi tanpa cookie.")
-    logger.info("yt-dlp gagal dengan cookie, diulang tanpa cookie: %s", url)
-    kedua = subprocess.run(
-        _tanpa_cookie(perintah) + [url], capture_output=True, text=True, timeout=batas
-    )
-    return kedua if kedua.returncode == 0 else hasil
+    tenggat = time.monotonic() + batas
+
+    def jalankan(pakai: list[str]) -> subprocess.CompletedProcess:
+        sisa = max(30.0, tenggat - time.monotonic())
+        return subprocess.run(
+            pakai + [url], capture_output=True, text=True, timeout=sisa
+        )
+
+    def keluaran(hasil: subprocess.CompletedProcess) -> str:
+        return f"{hasil.stdout or ''}\n{hasil.stderr or ''}"
+
+    dipakai = perintah
+    hasil = jalankan(dipakai)
+    if hasil.returncode != 0 and pakai_cookie and not _KENA_BATAS.search(keluaran(hasil)):
+        # Cookie ditolak, dan bukan karena kena batas: coba lagi sebagai tamu.
+        # Kalau yang kedua ini pun kena 429, itulah kabar yang lebih berguna
+        # untuk dibawa ke penantian di bawah - bukan galat cookie tadi.
+        if log:
+            log("Session ID-nya ditolak; mencoba lagi tanpa cookie.")
+        logger.info("yt-dlp gagal dengan cookie, diulang tanpa cookie: %s", url)
+        tanpa = _tanpa_cookie(perintah)
+        kedua = jalankan(tanpa)
+        if kedua.returncode == 0:
+            return kedua
+        if _KENA_BATAS.search(keluaran(kedua)):
+            dipakai, hasil = tanpa, kedua
+
+    for tunggu in TUNGGU_ULANG_DETIK:
+        if hasil.returncode == 0 or not _KENA_BATAS.search(keluaran(hasil)):
+            break
+        if time.monotonic() + tunggu + 30 > tenggat:
+            # Menunggu lalu kehabisan waktu sama saja dengan gagal, hanya
+            # lebih lama. Lebih baik berhenti sekarang dengan pesan yang jelas.
+            break
+        if log:
+            log(f"Situsnya sedang membatasi unduhan; menunggu {int(tunggu)} detik lalu mencoba lagi.")
+        logger.info("yt-dlp kena 429, menunggu %.0f detik: %s", tunggu, url)
+        time.sleep(tunggu)
+        hasil = jalankan(dipakai)
+
+    return hasil
 
 
 def download_source(
@@ -1219,10 +1351,32 @@ def download_source(
                 log("Memakai video sumber yang baru saja diunduh (cache).")
             return siap
 
-    perintah = _perintah_ytdlp() + [
+    # Situsnya baru saja menolak karena terlalu sering diminta. Mencoba lagi
+    # sekarang bukan cuma sia-sia - tiap percobaan memperpanjang penolakannya.
+    # Link yang sudah pernah berhasil tidak kena: ia sudah dilayani cache di
+    # atas. Yang bercookie juga lolos, sebab jalur masuknya memang lain.
+    tahanan = sisa_tahanan(url)
+    if tahanan > 0 and not (session_id and "instagram.com" in url.lower()):
+        if pemegang:
+            shutil.rmtree(kunci, ignore_errors=True)
+        raise VideoError(
+            f"{_situs(url) or 'Situs ini'} sedang membatasi unduhan dari server "
+            f"ini (429). Tunggu {int(tahanan) + 1} detik lagi, atau pilih akun "
+            f"Instagram di Kelola Akun supaya unduhannya memakai sesi akun itu."
+        )
+
+    perintah = _perintah_ytdlp() + (["--proxy", UNDUH_PROXY] if UNDUH_PROXY else []) + [
         "--no-playlist",
         "--no-progress",
         "--retries", "3",
+        # Galat extractor (termasuk 429 saat membaca halaman postingan) tidak
+        # ikut diatur "--retries"; ini yang mengaturnya, dengan jeda memanjang.
+        "--extractor-retries", "3",
+        "--retry-sleep", "extractor:exp=5:60",
+        "--retry-sleep", "http:exp=5:60",
+        # Satu postingan dibaca lewat beberapa permintaan beruntun. Diberi
+        # jeda supaya tidak terlihat sebagai serbuan oleh situsnya.
+        "--sleep-requests", "1",
         # Ditolak SEBELUM diunduh. Tanpa ini, video berjam-jam tetap masuk
         # disk lebih dulu baru ketahuan kepanjangan - dan itu jalur termurah
         # untuk memenuhi penyimpanan server. Dua penyaring terpisah berarti
@@ -1270,6 +1424,24 @@ def download_source(
             shutil.rmtree(kunci, ignore_errors=True)
         pesan = (hasil.stderr or hasil.stdout or "").strip().splitlines()
         detail = pesan[-1] if pesan else "penyebab tidak diketahui"
+        if _KENA_BATAS.search(f"{hasil.stdout or ''}\n{hasil.stderr or ''}"):
+            # Sudah ditunggu dan diulang di _ytdlp_dengan_mundur, tetap ditolak.
+            # Situsnya ditahan supaya job berikutnya tidak memperparah keadaan,
+            # dan orangnya diberi tahu jalan keluar yang benar-benar menolong.
+            _tahan_situs(url)
+            saran = (
+                "Sesi akun yang dipakai pun ikut ditolak, jadi tunggu beberapa menit."
+                if berkas_cookie is not None
+                else (
+                    "Pilih akun Instagram di Kelola Akun supaya unduhannya memakai "
+                    "sesi akun itu - permintaan yang sudah masuk jarang kena batas "
+                    "ini. Bisa juga unggah berkas videonya langsung."
+                )
+            )
+            raise VideoError(
+                f"{_situs(url) or 'Situs sumber'} menolak karena terlalu banyak "
+                f"permintaan dari server ini (429). {saran}"
+            )
         tambahan = (
             " Tanpa cookie pun gagal, jadi videonya memang tidak bisa diambil "
             "(mungkin akunnya privat)."
@@ -1295,6 +1467,9 @@ def download_source(
                 f"{os.getenv('VIDEO_MAX_UNDUH_MB', '600')} MB."
             )
         raise VideoError("Video terunduh tetapi berkasnya tidak ditemukan")
+    # Berhasil: tahanan situsnya dicabut, supaya job berikutnya tidak menunggu
+    # sisa jeda yang sudah tidak berlaku lagi.
+    _bebaskan_situs(url)
     if log:
         ukuran = berkas[0].stat().st_size / 1_048_576
         log(f"Video terunduh ({ukuran:.1f} MB)")
@@ -1320,13 +1495,29 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
     if not url.lower().startswith(("http://", "https://")):
         raise VideoError("Link video harus diawali http:// atau https://")
 
-    perintah = _perintah_ytdlp() + [
+    # Pratinjau adalah permintaan PERTAMA yang menyentuh Instagram setiap kali
+    # link ditempel. Kalau situsnya sedang menahan, menembaknya lagi hanya
+    # memperpanjang tahanan itu - dan pratinjaunya toh pasti gagal.
+    tahanan = sisa_tahanan(url)
+    if tahanan > 0 and not (session_id and "instagram.com" in url.lower()):
+        raise VideoError(
+            f"{_situs(url) or 'Situs ini'} sedang membatasi permintaan dari server "
+            f"ini (429). Tunggu {int(tahanan) + 1} detik lagi, atau pilih akun "
+            f"Instagram di Kelola Akun supaya dibaca memakai sesi akun itu."
+        )
+
+    perintah = _perintah_ytdlp() + (["--proxy", UNDUH_PROXY] if UNDUH_PROXY else []) + [
         "--no-playlist",
         "--no-warnings",
         "--no-progress",
         "--skip-download",
         "--dump-single-json",
         "--retries", "2",
+        # Pratinjau harus cepat (batasnya 45 detik), jadi ulangannya sedikit
+        # dan jedanya pendek - beda dengan unduhan yang boleh menunggu lama.
+        "--extractor-retries", "1",
+        "--retry-sleep", "extractor:3",
+        "--sleep-requests", "0.5",
     ]
 
     berkas_cookie: Path | None = None
@@ -1354,6 +1545,18 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
     if hasil.returncode != 0:
         pesan = (hasil.stderr or hasil.stdout or "").strip().splitlines()
         detail = pesan[-1] if pesan else "penyebab tidak diketahui"
+        if _KENA_BATAS.search(f"{hasil.stdout or ''}\n{hasil.stderr or ''}"):
+            _tahan_situs(url)
+            raise VideoError(
+                f"{_situs(url) or 'Situs sumber'} menolak karena terlalu banyak "
+                "permintaan dari server ini (429). "
+                + (
+                    "Sesi akun yang dipakai pun ikut ditolak, jadi tunggu beberapa menit."
+                    if berkas_cookie is not None
+                    else "Pilih akun Instagram di Kelola Akun supaya dibaca memakai "
+                    "sesi akun itu, atau unggah berkas videonya langsung."
+                )
+            )
         tambahan = (
             " Tanpa cookie pun gagal, jadi postingannya memang tidak bisa dibaca "
             "(mungkin akunnya privat)."
@@ -1361,6 +1564,8 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
             else ""
         )
         raise VideoError(f"Tidak bisa membaca link: {detail[:300]}{tambahan}")
+
+    _bebaskan_situs(url)
 
     try:
         data = json.loads(hasil.stdout or "{}")
@@ -1936,14 +2141,29 @@ def render(
         # melakukan itu pada dirinya sendiri, jadi penyebabnya hampir selalu
         # kehabisan memori. Tanpa penjelasan ini yang terbaca cuma "keluar
         # dengan kode -9", dan orang tidak punya petunjuk apa pun.
+        # Berkas log bisa saja tidak ada - ffmpeg yang gagal dijalankan sama
+        # sekali tidak sempat menulis apa pun. Membacanya tanpa pengaman
+        # membuat kegagalan apa pun berubah jadi FileNotFoundError, dan
+        # penyebab aslinya hilang sebelum sempat terbaca siapa pun.
+        try:
+            isi_log = berkas_log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            isi_log = ""
+        baris_log = [b for b in isi_log.strip().splitlines() if b.strip()]
         if proses.returncode == -9:
+            # Ditembak SIGKILL. ffmpeg tidak pernah melakukan itu pada dirinya
+            # sendiri, jadi penembaknya dari luar - paling sering kernel yang
+            # kehabisan memori. Tapi itu DUGAAN, jadi kalimat terakhir ffmpeg
+            # ikut dibawa: tanpa itu, sebab yang sebenarnya tidak bisa
+            # dilacak sesudahnya, karena log ini ikut terhapus bersama job.
+            ekor = baris_log[-1][:200] if baris_log else "ffmpeg tidak sempat menulis log"
             raise VideoError(
-                "Render dihentikan sistem karena server kehabisan memori. "
-                "Turunkan CELERY_CONCURRENCY supaya lebih sedikit video "
-                "dirender bersamaan, atau pakai server dengan RAM lebih besar."
+                f"Render dihentikan paksa oleh sistem (SIGKILL) pada kanvas "
+                f"{template.get('width')}x{template.get('height')}. Biasanya ini "
+                f"berarti servernya kehabisan memori - pakai kanvas lebih kecil, "
+                f"atau server dengan RAM lebih besar. Kata terakhir ffmpeg: {ekor}"
             )
-        pesan = berkas_log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-        detail = pesan[-1] if pesan else f"ffmpeg keluar dengan kode {proses.returncode}"
+        detail = baris_log[-1] if baris_log else f"ffmpeg keluar dengan kode {proses.returncode}"
         raise VideoError(f"Gagal menyusun video: {detail[:300]}")
 
     if progress:

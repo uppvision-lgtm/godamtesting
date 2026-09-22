@@ -323,6 +323,52 @@ def _sesi_dari_akun(account_id: int | None, pengguna: dict[str, Any] | None) -> 
         db.close()
 
 
+def _sesi_instagram_otomatis(pengguna: dict[str, Any] | None, url: str) -> str:
+    """Session ID Instagram mana pun milik pengguna ini, untuk link Instagram.
+
+    Instagram menolak pengunduh yang tidak masuk dengan HTTP 429, dan dari
+    alamat pusat data seperti Railway penolakan itu nyaris pasti. Permintaan
+    yang membawa sesi akun lewat jalur lain yang jauh lebih longgar, jadi
+    kalau pengguna punya akun Instagram tertaut, sesinya dipakai walau ia
+    tidak memilih akun apa pun di halaman Auto Edit - tidak ada gunanya
+    membiarkan unduhan gagal padahal kuncinya sudah ada di akun yang sama.
+
+    Hanya akun milik pengguna itu sendiri. Tamu tidak dapat apa-apa di sini:
+    sesi milik orang lain bukan untuk dipinjamkan.
+    """
+    if not pengguna or pengguna.get("tamu") or "instagram.com" not in url.lower():
+        return ""
+    try:
+        from autoupload.db import SessionLocal, SocialAccount
+        from autoupload.rahasia import buka
+    except Exception:  # noqa: BLE001 - autoupload tidak ada di server ini
+        return ""
+    db = SessionLocal()
+    try:
+        akun = (
+            db.query(SocialAccount)
+            .filter(
+                SocialAccount.platform == "instagram",
+                SocialAccount.is_active.is_(True),
+                SocialAccount.owner == str(pengguna.get("username") or ""),
+            )
+            .order_by(SocialAccount.id.desc())
+            .all()
+        )
+    except Exception:  # noqa: BLE001 - unduhan tanpa cookie masih boleh dicoba
+        return ""
+    finally:
+        db.close()
+    for a in akun:
+        try:
+            sesi = buka(a.session_id or "")
+        except Exception:  # noqa: BLE001 - sesi rusak, coba akun berikutnya
+            continue
+        if sesi.strip():
+            return sesi.strip()
+    return ""
+
+
 def _pemilik(pengguna: dict[str, Any] | None) -> str:
     """Nama pemilik untuk perhitungan kuota: akun, id tamu, atau kosong."""
     return str((pengguna or {}).get("username") or "").strip().lower()
@@ -434,7 +480,11 @@ def pratinjau_link(
     body: PreviewBody, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
     """Tampilkan isi link (judul, durasi, sampul) tanpa mengunduh videonya."""
-    sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
+    sesi = (
+        body.session_id.strip()
+        or _sesi_dari_akun(body.account_id, pengguna)
+        or _sesi_instagram_otomatis(pengguna, body.url)
+    )
     try:
         return ve.preview_source(body.url, sesi or None)
     except ve.VideoError as error:
@@ -749,7 +799,11 @@ def mulai_job(
     job_id = vt.buat_job(
         body.url.strip(), body.template_id, body.texts, owner=_nama_akun(pengguna) or ""
     )
-    sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
+    sesi = (
+        body.session_id.strip()
+        or _sesi_dari_akun(body.account_id, pengguna)
+        or _sesi_instagram_otomatis(pengguna, body.url)
+    )
     vt.render_video.delay(job_id, body.url.strip(), body.template_id, body.texts, sesi)
     return {"job_id": job_id, "status": "queued"}
 
@@ -877,7 +931,11 @@ def mulai_banyak_job(
 
     url = body.url.strip()
     pemilik = _nama_akun(pengguna) or ""
-    sesi = body.session_id.strip() or _sesi_dari_akun(body.account_id, pengguna)
+    sesi = (
+        body.session_id.strip()
+        or _sesi_dari_akun(body.account_id, pengguna)
+        or _sesi_instagram_otomatis(pengguna, url)
+    )
     jobs = []
     # Dikirim hanya kalau memang diminta, supaya worker versi lama pun tetap
     # menerima panggilan yang bentuknya persis seperti sebelumnya.
