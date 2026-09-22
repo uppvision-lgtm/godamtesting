@@ -248,6 +248,41 @@ def tulis_prompt_visual(channel: str, log: Callable[[str], None]) -> str:
 _NEG = ("text, letters, words, captions, subtitles, watermark, logo, blurry, "
         "low quality, distorted, people, human, face, jittery")
 
+# Pola pesan jatah ZeroGPU: "(120s requested vs. -60s left)".
+_JATAH = re.compile(r"\((\d+)s requested vs\. (-?\d+)s left\)")
+
+
+def _pesan_jatah(mentah: str) -> str:
+    """Terjemahkan pesan jatah ZeroGPU jadi keterangan yang jujur dan bisa
+    ditindaklanjuti.
+
+    Angkanya dari dokumen resmi HF: jatah harian anonim 2 menit, akun gratis
+    5 menit, pulih 24 jam setelah pemakaian pertama. Space ini mendeklarasikan
+    120 detik per panggilan (tetap, tidak ikut panjang video - diuji), jadi
+    tanpa token jatahnya habis oleh SATU video. Ini bukan antrean yang bisa
+    ditunggu sebentar; menunggu beberapa menit tidak menolong, dan mengganti
+    IP hanya berakhir diblokir. Satu-satunya jalan wajar: token gratis.
+    """
+    m = _JATAH.search(mentah)
+    if m:
+        minta, sisa = int(m.group(1)), int(m.group(2))
+        keadaan = f"Space minta {minta}s GPU, jatahmu tersisa {sisa}s"
+    else:
+        keadaan = "jatah GPU gratis Hugging Face habis"
+    pakai_token = bool(HF_TOKEN)
+    if pakai_token:
+        return (
+            f"Jatah GPU harian habis ({keadaan}). Dengan token gratis jatahnya "
+            "5 menit/hari (~10 video); pulih 24 jam setelah pemakaian pertama. "
+            "Kalau butuh lebih, PRO memberi 40 menit/hari."
+        )
+    return (
+        f"Jatah GPU habis ({keadaan}). Tanpa token, Hugging Face hanya memberi "
+        "2 menit/hari - cukup untuk SATU video. Isi OUTRO_HF_TOKEN dengan token "
+        "gratis dari huggingface.co/settings/tokens untuk 5 menit/hari (~10 video); "
+        "tidak perlu kartu. Jatah pulih 24 jam setelah pemakaian pertama."
+    )
+
 
 def buat_video_ai(
     prompt: str, folder: Path, ev: threading.Event, log: Callable[[str], None]
@@ -295,11 +330,8 @@ def buat_video_ai(
         )
     except Exception as error:  # noqa: BLE001
         pesan = str(error)
-        if "quota" in pesan.lower() or "gpu" in pesan.lower():
-            raise OutroError(
-                "Jatah GPU gratis Hugging Face sedang habis. Tunggu beberapa menit, "
-                "atau isi OUTRO_HF_TOKEN dengan token HF untuk jatah lebih besar."
-            ) from error
+        if "quota" in pesan.lower():
+            raise OutroError(_pesan_jatah(pesan)) from error
         raise OutroError(f"Space gagal membuat video: {pesan[:200]}") from error
 
     # Kembaliannya (video, seed); video berupa dict {"video": path} atau path.
