@@ -314,6 +314,21 @@ def _sesi_dari_akun(account_id: int | None, pengguna: dict[str, Any] | None) -> 
         db.close()
 
 
+def _pemilik(pengguna: dict[str, Any] | None) -> str:
+    """Nama pemilik untuk perhitungan kuota: akun, id tamu, atau kosong."""
+    return str((pengguna or {}).get("username") or "").strip().lower()
+
+
+def _pastikan_kuota(pengguna: dict[str, Any] | None, tambahan: int = 0) -> None:
+    """Tolak permintaan yang akan melewati jatah penyimpanan pemiliknya."""
+    import kuota
+
+    try:
+        kuota.pastikan_muat(_pemilik(pengguna), tambahan)
+    except kuota.KuotaHabis as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+
+
 def _nama_akun(pengguna: dict[str, Any] | None) -> str | None:
     return str(pengguna["username"]) if pengguna else None
 
@@ -533,6 +548,7 @@ async def unggah_aset(
 ) -> dict[str, Any]:
     """Terima satu berkas layer (PNG overlay, intro, atau outro)."""
     _template_milik(template_id, pengguna)
+    _pastikan_kuota(pengguna)
 
     nama = ve._aman(Path(file.filename or "aset").name)
     if Path(nama).suffix.lower() not in JENIS_ASET:
@@ -557,6 +573,11 @@ async def unggah_aset(
     except HTTPException:
         tujuan.unlink(missing_ok=True)
         raise
+    finally:
+        # Hitungan pemakaian yang diingat sudah tidak berlaku setelah ini.
+        import kuota
+
+        kuota.lupakan(_pemilik(pengguna))
 
     ukuran = _rapikan_gambar(tujuan) or _rapikan_video(tujuan) or ukuran
 
@@ -589,6 +610,7 @@ def mulai_job(
 ) -> dict[str, Any]:
     _template_terlihat(body.template_id, pengguna)
 
+    _pastikan_kuota(pengguna)
     _pastikan_antrean_muat(1)
     job_id = vt.buat_job(
         body.url.strip(), body.template_id, body.texts, owner=_nama_akun(pengguna) or ""
@@ -692,6 +714,7 @@ def mulai_banyak_job(
         raise HTTPException(status_code=400, detail="Pilih minimal satu set layer.")
     for tid in ids:
         _template_terlihat(tid, pengguna)
+    _pastikan_kuota(pengguna)
     _pastikan_antrean_muat(len(ids))
 
     url = body.url.strip()

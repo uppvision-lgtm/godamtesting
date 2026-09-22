@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from autoupload import login
 from autoupload.browser import session_names
+import hashlib
+
 from autoupload.config import (
     MAKS_AKUN_PER_PLATFORM,
     MAX_FILE_SIZE,
@@ -161,16 +163,43 @@ def info() -> dict:
 
 # ---------------------------------------------------------------- media
 
+def _pastikan_kuota_media(sidik: str, pemilik: str) -> None:
+    """Jatah folder unggahan sosmed per pemilik.
+
+    Berkas di sini bertahan sampai riwayatnya dihapus, jadi tanpa batas satu
+    orang bisa menghabiskan volume server untuk semua orang.
+    """
+    batas = int(os.getenv("KUOTA_MEDIA_MB", "3072")) * 1_048_576
+    dipakai = 0
+    for berkas in UPLOAD_DIR.glob(f"{sidik}_*"):
+        try:
+            dipakai += berkas.stat().st_size
+        except OSError:
+            continue
+    if dipakai >= batas:
+        raise HTTPException(
+            413,
+            f"Jatah penyimpanan video sudah terpakai {dipakai / 1_048_576:.0f} MB "
+            f"dari {batas / 1_048_576:.0f} MB. Hapus beberapa riwayat unggahan dulu.",
+        )
+
+
 @router.post("/media")
-async def upload_media(file: UploadFile = File(...)) -> dict:
+async def upload_media(
+    file: UploadFile = File(...), pemilik: str = Depends(pemilik_saat_ini)
+) -> dict:
     """Simpan file media, kembalikan `media_path` untuk dipakai POST /api/upload."""
     suffix = Path(file.filename or "media").suffix.lower()
     if suffix not in VIDEO_EXT | PHOTO_EXT:
         raise HTTPException(400, f"Tipe file '{suffix}' tidak didukung")
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # Nama berkas dibubuhi sidik pemiliknya supaya pemakaian per orang bisa
+    # dihitung tanpa tabel tambahan - cukup menjumlah berkas berawalan sama.
+    sidik = hashlib.sha256((pemilik or "tamu").encode()).hexdigest()[:8]
+    _pastikan_kuota_media(sidik, pemilik)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest = UPLOAD_DIR / f"{stamp}_{uuid.uuid4().hex[:8]}{suffix}"
+    dest = UPLOAD_DIR / f"{sidik}_{stamp}_{uuid.uuid4().hex[:8]}{suffix}"
 
     size = 0
     with open(dest, "wb") as out:

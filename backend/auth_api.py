@@ -69,7 +69,27 @@ PWNED_TIMEOUT = float(os.getenv("AUTH_PWNED_TIMEOUT", "4"))
 # Nomor sesi tiap akun diingat sebentar supaya polling halaman (tiap 2 detik)
 # tidak menghubungi Supabase pada setiap permintaan.
 SESI_CACHE_DETIK = 60.0
+# Dibatasi supaya tidak tumbuh tanpa akhir. Pendaftaran terbuka untuk umum,
+# jadi jumlah username yang mungkin masuk ke sini tidak ada batasnya - dan
+# dict yang tidak pernah menyusut adalah kebocoran memori yang sabar.
+SESI_CACHE_MAKS = int(os.getenv("AUTH_SESI_CACHE_MAKS", "2000"))
 _sesi_cache: dict[str, tuple[int | None, str, float]] = {}
+
+
+def _rapikan_cache_sesi() -> None:
+    """Buang entri kedaluwarsa; kalau masih penuh, buang yang paling tua."""
+    if len(_sesi_cache) < SESI_CACHE_MAKS:
+        return
+    sekarang = time.time()
+    for nama in [n for n, isi in _sesi_cache.items() if isi[2] <= sekarang]:
+        _sesi_cache.pop(nama, None)
+    if len(_sesi_cache) < SESI_CACHE_MAKS:
+        return
+    # Masih penuh berarti semuanya masih segar; buang seperempat yang paling
+    # dekat kedaluwarsa - itu yang paling lama tidak dipakai.
+    urut = sorted(_sesi_cache.items(), key=lambda x: x[1][2])
+    for nama, _ in urut[: max(1, len(urut) // 4)]:
+        _sesi_cache.pop(nama, None)
 
 
 def _kunci_tanda_tangan() -> bytes:
@@ -92,6 +112,12 @@ _KUNCI_SEMENTARA = ""
 class AkunBody(BaseModel):
     username: str = Field(min_length=3, max_length=30)
     password: str = Field(min_length=MIN_PASSWORD, max_length=200)
+
+
+class HapusAkunBody(BaseModel):
+    """Password dimintakan lagi: menghapus akun tidak bisa dibatalkan."""
+
+    password: str = Field(min_length=1, max_length=200)
 
 
 class GantiPasswordBody(BaseModel):
@@ -243,11 +269,13 @@ def _sesi_akun(username: str) -> tuple[int | None, str]:
         return None, "pengguna"
     sesi = int(baris[0].get("sesi") or 0)
     peran = str(baris[0].get("peran") or "pengguna").strip().lower()
+    _rapikan_cache_sesi()
     _sesi_cache[username] = (sesi, peran, sekarang + SESI_CACHE_DETIK)
     return sesi, peran
 
 
 def _ingat_sesi(username: str, sesi: int, peran: str = "pengguna") -> None:
+    _rapikan_cache_sesi()
     _sesi_cache[username] = (sesi, peran, time.time() + SESI_CACHE_DETIK)
 
 
@@ -529,6 +557,96 @@ def ganti_password(
         "username": username,
         "peran": peran,
     }
+
+
+def buang_semua_milik(username: str) -> dict[str, int]:
+    """Hapus seluruh isi milik satu akun, lalu akunnya sendiri.
+
+    Dipanggil dua jalur: pemilik akun menghapus dirinya sendiri, dan developer
+    menghapus akun orang lain. Urutannya sengaja isi dulu baru akunnya - kalau
+    terputus di tengah, yang tersisa adalah akun tanpa isi (bisa diulang),
+    bukan isi tanpa pemilik (tidak bisa disentuh siapa pun lagi).
+    """
+    username = str(username or "").strip().lower()
+    jumlah = {"template": 0, "job": 0, "akun_sosmed": 0, "postingan": 0}
+
+    import video_edit as ve
+    import video_tasks as vt
+
+    for template in ve.list_templates(owner=username):
+        try:
+            ve.delete_template(str(template.get("id")))
+            jumlah["template"] += 1
+        except Exception:  # noqa: BLE001 - satu gagal tidak menghentikan sisanya
+            logger.exception("Template %s gagal dihapus", template.get("id"))
+    try:
+        for job in vt.daftar_job(1000, owner=username):
+            vt.buang_job(str(job.get("job_id")))
+            jumlah["job"] += 1
+    except Exception:  # noqa: BLE001
+        logger.exception("Job milik %s gagal dibersihkan", username)
+
+    # Akun sosmed dan riwayatnya ada di paket autoupload, yang tidak selalu
+    # terpasang di setiap server.
+    try:
+        from autoupload.db import Post, PostTarget, SessionLocal, SocialAccount
+
+        sesi = SessionLocal()
+        try:
+            jumlah["akun_sosmed"] = (
+                sesi.query(SocialAccount).filter(SocialAccount.owner == username).delete()
+            )
+            milik = [p.id for p in sesi.query(Post).filter(Post.owner == username).all()]
+            if milik:
+                sesi.query(PostTarget).filter(PostTarget.post_id.in_(milik)).delete(
+                    synchronize_session=False
+                )
+                jumlah["postingan"] = (
+                    sesi.query(Post).filter(Post.owner == username).delete(
+                        synchronize_session=False
+                    )
+                )
+            sesi.commit()
+        finally:
+            sesi.close()
+    except Exception:  # noqa: BLE001 - autoupload tidak ada / gagal; sisanya tetap dihapus
+        logger.exception("Data sosmed milik %s gagal dihapus", username)
+
+    if db.enabled():
+        try:
+            db.delete("app_forms", {"username": f"eq.{username}"})
+        except db.DbError:
+            logger.warning("Isian tersimpan milik %s gagal dihapus", username)
+        db.delete(TABEL, {"username": f"eq.{username}"})
+    _sesi_cache.pop(username, None)
+    logger.info("Akun %s dihapus beserta isinya: %s", username, jumlah)
+    return jumlah
+
+
+@router.delete("/me")
+def hapus_akun_sendiri(
+    body: HapusAkunBody, pengguna: dict[str, Any] = Depends(pengguna_wajib)
+) -> dict[str, Any]:
+    """Hapus akun sendiri beserta seluruh isinya. Tidak bisa dibatalkan."""
+    if pengguna["user_id"] == "pemilik":
+        raise HTTPException(
+            status_code=400,
+            detail="Akun pemilik diatur lewat environment server, bukan dari halaman ini.",
+        )
+    if not db.enabled():
+        raise HTTPException(status_code=503, detail="Database belum dikonfigurasi.")
+    try:
+        baris = db.select(
+            TABEL, {"id": f"eq.{pengguna['user_id']}", "select": "password_hash", "limit": "1"}
+        )
+    except db.DbError as error:
+        raise HTTPException(status_code=502, detail=f"Gagal membaca akun: {error}") from error
+    if not baris or not cek_password(body.password, str(baris[0].get("password_hash") or "")):
+        # Password diminta lagi supaya tab yang ditinggalkan terbuka di
+        # perangkat orang lain tidak bisa dipakai menghapus akun.
+        raise HTTPException(status_code=401, detail="Password salah.")
+    jumlah = buang_semua_milik(pengguna["username"])
+    return {"ok": True, "username": pengguna["username"], "dihapus": jumlah}
 
 
 @router.get("/me")

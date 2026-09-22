@@ -102,6 +102,34 @@ def daftar_akun(pengguna: dict[str, Any] = Depends(developer_wajib)) -> dict[str
     }
 
 
+@router.delete("/users/{username}")
+def hapus_akun(
+    username: str, pengguna: dict[str, Any] = Depends(developer_wajib)
+) -> dict[str, Any]:
+    """Hapus akun orang lain beserta isinya. Hanya developer."""
+    username = str(username or "").strip().lower()
+    if username == pengguna["username"]:
+        # Menghapus diri sendiri lewat jalur ini bisa menyisakan sistem tanpa
+        # satu pun developer; untuk itu ada DELETE /api/auth/me.
+        raise HTTPException(
+            status_code=400,
+            detail="Akun sendiri dihapus lewat halaman akun, bukan dari sini.",
+        )
+    if not db.enabled():
+        raise HTTPException(status_code=503, detail="Database belum dikonfigurasi.")
+    try:
+        ada = db.select(TABEL, {"username": f"eq.{username}", "select": "id", "limit": "1"})
+    except db.DbError as error:
+        raise HTTPException(status_code=502, detail=f"Gagal membaca akun: {error}") from error
+    if not ada:
+        raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
+    from auth_api import buang_semua_milik
+
+    jumlah = buang_semua_milik(username)
+    logger.info("Akun %s dihapus oleh %s", username, pengguna["username"])
+    return {"ok": True, "username": username, "dihapus": jumlah}
+
+
 @router.post("/users/{username}/peran")
 def ubah_peran(
     username: str, peran: str, pengguna: dict[str, Any] = Depends(developer_wajib)

@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 # Job lama dibersihkan otomatis supaya disk server tidak penuh.
 JOB_RETENTION_HOURS = float(os.getenv("VIDEO_JOB_RETENTION_HOURS", "24"))
+# Job milik tamu dibuang jauh lebih cepat. Janjinya kepada tamu adalah "tidak
+# ada yang tersimpan setelah keluar", jadi menyimpan hasil rendernya seharian
+# di server bertentangan dengan itu - sekaligus memakan disk yang tidak pernah
+# ada yang mengambilnya lagi.
+JOB_RETENTION_HOURS_TAMU = float(os.getenv("VIDEO_JOB_RETENTION_HOURS_TAMU", "1"))
 
 KUNCI_JOB = "videojob:"
 KUNCI_URUT = "videojob:urut"
@@ -165,6 +170,21 @@ def bersihkan_job_lama() -> int:
     for job_id in lama:
         buang_job(job_id)
         dihapus += 1
+
+    # Job tamu: batas waktunya sendiri, jauh lebih pendek.
+    batas_tamu = time.time() - JOB_RETENTION_HOURS_TAMU * 3600
+    if batas_tamu > batas:
+        for job_id in r.zrangebyscore(KUNCI_URUT, "-inf", batas_tamu):
+            mentah = r.get(KUNCI_JOB + job_id)
+            if not mentah:
+                continue
+            try:
+                pemilik = str(json.loads(mentah).get("owner") or "")
+            except json.JSONDecodeError:
+                continue
+            if not pemilik or pemilik.startswith("guest:"):
+                buang_job(job_id)
+                dihapus += 1
 
     # Folder kerja yang statusnya sudah hangus di Redis tidak punya pemilik
     # lagi; tanpa ini folder-folder itu tertinggal selamanya di disk.
