@@ -27,6 +27,10 @@ sqlalchemy>=2.0.54,<3.0
 # beberapa minggu kemudian. Batas bawah dijaga supaya tidak turun versi.
 yt-dlp>=2026.8.19
 
+# Auto Outro (khusus developer): memanggil Space text-to-video di
+# Hugging Face ZeroGPU lewat API-nya, tanpa peramban.
+gradio_client>=2.7,<3
+
 # Hanya untuk macOS: upload Instagram mengklik lewat CGEvent, dan di
 # Linux paket ini tidak berguna sekaligus menambah beban image.
 pyautogui>=0.9.54; sys_platform == "darwin"

@@ -7,13 +7,12 @@ import LoginButton from "../components/LoginButton";
 import { PERAN_DEVELOPER, apiFetch, usePeran, useSudahHidrasi } from "../components/auth";
 
 /**
- * Auto Outro — khusus akun developer, khusus backend lokal (mode via PC).
+ * Auto Outro — khusus akun developer.
  *
- * Satu klik: AI menulis prompt Google Flow, prompt itu ditempel ke Flow,
- * videonya dibuat, lalu diunduh. Hanya Flow yang butuh akun masuk - jendela
- * peramban dibuka sekali, developer login sendiri, profilnya tersimpan untuk
- * seterusnya. Penulis promptnya lewat API, jadi tidak ada yang perlu
- * di-login untuk langkah pertama.
+ * Satu klik: AI menulis gaya visual, Hugging Face ZeroGPU membuat latar
+ * bergeraknya (gratis, tanpa login), lalu renderer aplikasi menempelkan nama
+ * channel dan enam handle PERSIS di atasnya. Hasilnya muncul di bawah dengan
+ * tombol unduh. Tidak ada sesi peramban yang perlu disiapkan.
  */
 
 type Sosmed = { kunci: string; nama: string; ikon: string; contoh: string };
@@ -29,8 +28,6 @@ const SOSMED: Sosmed[] = [
 ];
 const KOSONG: Record<string, string> = Object.fromEntries(SOSMED.map((s) => [s.kunci, ""]));
 
-type Chrome = { tersambung: boolean; chrome_jalan: boolean; alamat: string };
-
 type Job = {
   job_id: string;
   status: "queued" | "running" | "done" | "error" | "dibatalkan";
@@ -44,8 +41,9 @@ type Job = {
 
 const LANGKAH: Record<string, string> = {
   antre: "Menunggu giliran",
-  ai: "1/2 · AI menulis prompt",
-  flow: "2/2 · Membuat video di Google Flow",
+  ai: "1/3 · AI menulis gaya visual",
+  video: "2/3 · Membuat latar (ZeroGPU)",
+  teks: "3/3 · Menempel nama & akun",
   selesai: "Selesai",
   gagal: "Gagal",
   berhenti: "Dihentikan",
@@ -65,12 +63,6 @@ export default function AutoOutroPage() {
   const siap = useSudahHidrasi();
   const bolehLihat = peran === PERAN_DEVELOPER;
 
-  const [lokal, setLokal] = useState<boolean | null>(null);
-  const [chrome, setChrome] = useState<Chrome | null>(null);
-  const [sibukSesi, setSibukSesi] = useState(false);
-  const [galatSesi, setGalatSesi] = useState("");
-  const [perluTutup, setPerluTutup] = useState(false);
-
   const [channel, setChannel] = useState("");
   const [akun, setAkun] = useState<Record<string, string>>(KOSONG);
   const [job, setJob] = useState<Job | null>(null);
@@ -78,59 +70,6 @@ export default function AutoOutroPage() {
   const [mengirim, setMengirim] = useState(false);
   const [videoUrl, setVideoUrl] = useState("");
   const videoUrlRef = useRef("");
-
-  const muatSesi = useCallback(async () => {
-    try {
-      const r = await apiFetch("/api/outro/sesi");
-      if (!r.ok) {
-        setGalatSesi(await bacaGalat(r, "Tidak bisa membaca status sesi."));
-        return;
-      }
-      const j = await r.json();
-      setLokal(Boolean(j.lokal));
-      setChrome(j.chrome || null);
-      setGalatSesi("");
-    } catch {
-      setGalatSesi("Backend tidak merespons.");
-    }
-  }, []);
-
-  // Status dibaca setelah halaman hidup di browser. Pembacaannya ditaruh di
-  // dalam fungsi async supaya keadaan tidak diubah serentak dengan render -
-  // itu memicu rantai render yang tidak perlu.
-  useEffect(() => {
-    if (!siap || !bolehLihat) return;
-    let batal = false;
-    void (async () => {
-      if (!batal) await muatSesi();
-    })();
-    return () => {
-      batal = true;
-    };
-  }, [siap, bolehLihat, muatSesi]);
-
-  /** Siapkan Chrome berport debug. `tutupDulu` menutup Chrome yang terbuka. */
-  async function siapkanChrome(tutupDulu = false) {
-    setSibukSesi(true);
-    setGalatSesi("");
-    try {
-      const r = await apiFetch(`/api/outro/chrome?tutup_dulu=${tutupDulu ? "true" : "false"}`, {
-        method: "POST",
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        setGalatSesi(j.detail || "Gagal menyiapkan Chrome.");
-      } else {
-        setPerluTutup(Boolean(j.perlu_tutup));
-        if (!j.ok) setGalatSesi(j.pesan || "");
-      }
-    } catch {
-      setGalatSesi("Backend tidak merespons.");
-    } finally {
-      setSibukSesi(false);
-      void muatSesi();
-    }
-  }
 
   // Pantau pekerjaan sampai berhenti; begitu videonya ada, tarik sebagai blob
   // supaya bisa diputar dan diunduh tanpa menempelkan token di alamat.
@@ -163,7 +102,7 @@ export default function AutoOutroPage() {
     };
   }, [job]);
 
-  async function jalankan() {
+  const jalankan = useCallback(async () => {
     if (!channel.trim() || mengirim) return;
     setMengirim(true);
     setGalatJob("");
@@ -194,14 +133,14 @@ export default function AutoOutroPage() {
     } finally {
       setMengirim(false);
     }
-  }
+  }, [channel, akun, mengirim]);
 
   async function hentikan() {
     if (!job) return;
     try {
       await apiFetch(`/api/outro/jobs/${job.job_id}/stop`, { method: "POST" });
     } catch {
-      // status berikutnya akan menunjukkan hasilnya
+      // status berikutnya menunjukkan hasilnya
     }
   }
 
@@ -215,9 +154,8 @@ export default function AutoOutroPage() {
     setVideoUrl("");
   }
 
-  const semuaMasuk = Boolean(chrome?.tersambung);
   const sedangJalan = !!job && ["queued", "running"].includes(job.status);
-  const bisaJalan = channel.trim().length > 0 && semuaMasuk && lokal === true && !sedangJalan;
+  const bisaJalan = channel.trim().length > 0 && !sedangJalan;
 
   return (
     <div className={styles.page}>
@@ -249,84 +187,14 @@ export default function AutoOutroPage() {
           </section>
         ) : (
           <>
-            {/* ---------- Chrome pengguna ---------- */}
-            <section className={`${styles.panel} ${styles.panelLebar}`}>
-              <div className={styles.panelHead}>
-                <h2>Chrome kamu</h2>
-                <span className={styles.badge}>Developer</span>
-              </div>
-              <p className={styles.hint}>
-                Google menolak login dari peramban yang dikendalikan otomasi, jadi alat ini
-                tidak login ke mana pun. Yang dipakai adalah <b>Chrome milikmu sendiri</b> yang
-                sudah masuk akun Google — Flow dibuka di sana lewat port debug.
-              </p>
-              {lokal === false && (
-                <p className={styles.peringatan}>
-                  Auto Outro hanya berjalan di backend lokal (mode via PC). Nyalakan backend di
-                  komputermu dan buka halaman ini dari sana.
-                </p>
-              )}
-              {galatSesi && <p className={styles.galat}>{galatSesi}</p>}
-              <div className={styles.rincianKotak}>
-                <div className={styles.rincianBaris}>
-                  <span className={styles.rincianNama}>
-                    🌐 Chrome{" "}
-                    <span className={chrome?.tersambung ? styles.sasaranOk : styles.sasaranGagal}>
-                      {chrome?.tersambung ? "siap dipakai" : "belum siap"}
-                    </span>
-                  </span>
-                  <span className={styles.rincianNilai}>
-                    {chrome?.tersambung ? (
-                      <button
-                        type="button"
-                        className={styles.btnSekunder}
-                        disabled={sibukSesi}
-                        onClick={() => siapkanChrome(false)}
-                      >
-                        Periksa lagi
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className={styles.btnUtama}
-                        disabled={sibukSesi || lokal === false}
-                        onClick={() => siapkanChrome(false)}
-                      >
-                        {sibukSesi ? "Menyiapkan…" : "Siapkan Chrome"}
-                      </button>
-                    )}
-                  </span>
-                </div>
-              </div>
-              {perluTutup && !chrome?.tersambung && (
-                <>
-                  <p className={styles.peringatan}>
-                    Chrome sedang terbuka tanpa port debug, dan Chrome hanya membaca setelan itu
-                    saat dijalankan. Chrome perlu ditutup lalu dibuka kembali —{" "}
-                    <b>tab-tabmu akan dipulihkan</b>, tapi simpan dulu yang sedang kamu kerjakan.
-                  </p>
-                  <div className={styles.aksi}>
-                    <button
-                      type="button"
-                      className={styles.btnBahaya}
-                      disabled={sibukSesi}
-                      onClick={() => siapkanChrome(true)}
-                    >
-                      Tutup Chrome &amp; buka ulang
-                    </button>
-                  </div>
-                </>
-              )}
-            </section>
-
-            {/* ---------- isian ---------- */}
             <section className={`${styles.panel} ${styles.panelLebar}`}>
               <div className={styles.panelHead}>
                 <h2>Auto Outro</h2>
+                <span className={styles.badge}>Developer</span>
               </div>
               <p className={styles.hint}>
-                Isi nama channel dan nama akun tiap sosmed, lalu tekan sekali. AI menulis
-                promptnya, Google Flow membuat videonya, dan hasilnya muncul di bawah.
+                Isi nama channel dan akun tiap sosmed, lalu tekan sekali. AI membuat latar
+                bergeraknya (gratis), dan nama serta username ditulis persis di atasnya.
               </p>
 
               <div className={styles.form}>
@@ -353,7 +221,7 @@ export default function AutoOutroPage() {
                   <div className={styles.blokHead}>
                     <h3>Nama akun tiap sosmed</h3>
                   </div>
-                  <p className={styles.hint}>Yang dikosongkan ditulis &quot;-&quot; di promptnya.</p>
+                  <p className={styles.hint}>Yang dikosongkan tidak ditampilkan di outronya.</p>
                   {SOSMED.map((s) => (
                     <div key={s.kunci} className={styles.row}>
                       <label>
@@ -380,13 +248,7 @@ export default function AutoOutroPage() {
                     className={styles.btnUtama}
                     onClick={jalankan}
                     disabled={!bisaJalan || mengirim}
-                    title={
-                      !channel.trim()
-                        ? "Isi nama channel dulu"
-                        : !semuaMasuk
-                          ? "Login ChatGPT dan Google Flow dulu"
-                          : "Buat outro"
-                    }
+                    title={bisaJalan ? "Buat outro" : "Isi nama channel dulu"}
                   >
                     {mengirim ? "Memulai…" : "Buat Outro"}
                   </button>
@@ -403,7 +265,6 @@ export default function AutoOutroPage() {
               </div>
             </section>
 
-            {/* ---------- hasil ---------- */}
             <section className={`${styles.panel} ${styles.panelLebar}`}>
               <div className={styles.panelHead}>
                 <h2>Hasil</h2>
@@ -437,8 +298,11 @@ export default function AutoOutroPage() {
                       <video
                         src={videoUrl}
                         controls
+                        autoPlay
+                        loop
+                        muted
                         playsInline
-                        style={{ width: "100%", maxWidth: 360, borderRadius: 12, background: "#000" }}
+                        style={{ width: "100%", maxWidth: 300, borderRadius: 12, background: "#000" }}
                       />
                       <div className={styles.aksi}>
                         <a
@@ -452,18 +316,9 @@ export default function AutoOutroPage() {
                     </div>
                   )}
 
-                  {job.prompt && (
-                    <div className={styles.blok}>
-                      <div className={styles.blokHead}>
-                        <h3>Prompt dari AI</h3>
-                      </div>
-                      <textarea className={styles.naskah} value={job.prompt} readOnly rows={8} />
-                    </div>
-                  )}
-
                   {job.logs.length > 0 && (
                     <div className={styles.rincianKotak}>
-                      {job.logs.slice(-12).map((baris, i) => (
+                      {job.logs.slice(-10).map((baris, i) => (
                         <div key={i} className={styles.rincianBaris}>
                           <span className={styles.rincianNilai}>{baris}</span>
                         </div>

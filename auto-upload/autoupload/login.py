@@ -36,10 +36,6 @@ LOGIN_URLS = {
         "https://www.youtube.com/signin?action_handle_signin=true&app=desktop"
         "&next=https%3A%2F%2Fstudio.youtube.com%2F&feature=redirect_login"
     ),
-    # Google Flow untuk Auto Outro (khusus developer). Bukan tujuan unggah -
-    # profilnya dipakai bot pembuat video outro. Flow menolak login otomatis,
-    # jadi login manual di jendela inilah satu-satunya jalan yang tahan lama.
-    "flow": "https://labs.google/fx/tools/flow",
 }
 
 # Cookie that only exists after a REAL login - used to verify the session
@@ -51,13 +47,10 @@ LOGIN_COOKIE = {
     "tiktok": ("sessionid", "sessionid_ss"),
     "threads": ("sessionid",),
     "youtube": ("SID", "SAPISID"),
-    # Flow masuk lewat akun Google, jadi yang muncul cookie Google-nya.
-    "flow": ("SID", "SAPISID"),
 }
 
-# Yang tampil di halaman Kelola Akun hanya tujuan unggah. chatgpt dan flow
-# tetap bisa dipakai start()/status(), tetapi lewat API Auto Outro sendiri.
-SUPPORTED = [p for p in LOGIN_URLS if p != "flow"]
+# Semua platform di sini adalah tujuan unggah yang tampil di Kelola Akun.
+SUPPORTED = list(LOGIN_URLS)
 
 # platform -> {running, message, saved_at, session_name}
 _state: dict[str, dict] = {}

@@ -1,21 +1,21 @@
-"""API Auto Outro - khusus developer, khusus backend lokal.
+"""API Auto Outro - khusus developer.
 
-Dua kelompok endpoint:
+Alurnya lewat API sepenuhnya (AI penulis prompt + Hugging Face ZeroGPU +
+renderer teks sendiri), jadi tidak ada login peramban dan tidak ada jendela
+yang perlu dibuka. Endpoint-nya:
 
-- /api/outro/sesi/...  : status dan kendali login peramban Google Flow
-  (jendela dibuka, developer login sendiri, lalu "Selesai"). Penulis prompt
-  memakai API, jadi tidak ada sesi yang perlu disiapkan untuknya.
-- /api/outro/jobs/...  : menjalankan pembuatan outro, memantau, menghentikan,
-  dan mengambil videonya.
+- /api/outro/jobs         : mulai, daftar
+- /api/outro/jobs/{id}    : pantau
+- /api/outro/jobs/{id}/stop  : hentikan
+- /api/outro/jobs/{id}/video : unduh hasilnya
 
-Semuanya di balik developer_wajib. Di server (bukan mode lokal) seluruhnya
-ditolak: tidak ada layar untuk jendela login, memorinya tidak cukup, dan
-login Google dari pusat data hampir pasti ditolak.
+Semuanya di balik developer_wajib. ZeroGPU dipanggil dari mana pun backend
+berjalan, jadi tidak lagi dibatasi mode lokal - yang membedakan hanya siapa
+yang boleh membukanya.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -28,108 +28,11 @@ from auth_api import developer_wajib
 
 router = APIRouter(prefix="/api/outro", tags=["outro"])
 
-# Hanya Google Flow yang butuh sesi peramban. Penulis promptnya lewat API,
-# jadi tidak ada yang perlu di-login untuk langkah pertama.
-PLATFORM = ("flow",)
-LOKAL = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
-
-
-def _hanya_lokal() -> None:
-    if not LOKAL:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Auto Outro hanya berjalan di backend lokal (mode via PC): butuh "
-                "jendela peramban di layar dan memori yang tidak dimiliki server."
-            ),
-        )
-
-
-def _platform(nama: str) -> str:
-    if nama not in PLATFORM:
-        raise HTTPException(status_code=404, detail="Platform tidak dikenal.")
-    return nama
-
 
 class OutroBody(BaseModel):
     channel: str = Field(min_length=1, max_length=80)
     akun: dict[str, str] = Field(default_factory=dict)
 
-
-# ---------------------------------------------------------------- sesi login
-
-@router.get("/sesi")
-def status_sesi(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    from autoupload import login
-
-    return {
-        "lokal": LOKAL,
-        "chrome": {
-            "tersambung": outro.cdp_hidup(),
-            "chrome_jalan": outro.chrome_pengguna_jalan(),
-            "alamat": outro.CDP_URL,
-        },
-        "sesi": {p: login.status(p) for p in PLATFORM},
-    }
-
-
-@router.post("/sesi/{platform}/mulai")
-def mulai_login(platform: str, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    _hanya_lokal()
-    from autoupload import login
-
-    hasil = login.start(_platform(platform))
-    if not hasil.get("ok"):
-        raise HTTPException(status_code=400, detail=hasil.get("error", "Gagal membuka peramban."))
-    return login.status(platform)
-
-
-@router.post("/sesi/{platform}/selesai")
-def selesai_login(platform: str, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    _hanya_lokal()
-    from autoupload import login
-
-    hasil = login.finish(_platform(platform))
-    return {**login.status(platform), "ok": hasil.get("ok", False)}
-
-
-@router.post("/sesi/{platform}/batal")
-def batal_login(platform: str, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    _hanya_lokal()
-    from autoupload import login
-
-    login.cancel(_platform(platform))
-    return login.status(platform)
-
-
-@router.delete("/sesi/{platform}")
-def hapus_sesi(platform: str, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    _hanya_lokal()
-    from autoupload import login
-
-    return login.delete_session(_platform(platform), "default")
-
-
-@router.post("/chrome")
-def nyalakan_chrome(
-    tutup_dulu: bool = False, _: dict[str, Any] = Depends(developer_wajib)
-) -> dict[str, Any]:
-    """Jalankan Chrome pengguna dengan port debug supaya Flow bisa dipakai.
-
-    Google menolak login dari peramban yang dikendalikan otomasi, jadi tidak
-    ada yang login lewat alat ini. Yang dilakukan justru sebaliknya: menumpang
-    sesi yang sudah ada di Chrome milik orangnya sendiri.
-
-    ``tutup_dulu`` menutup Chrome yang sedang terbuka. Itu menutup tab-tab
-    orang, jadi tidak pernah dilakukan diam-diam - halaman harus memintanya
-    secara tegas setelah memberi tahu.
-    """
-    _hanya_lokal()
-    hasil = outro.nyalakan_chrome_debug(tutup_dulu=tutup_dulu)
-    return {**hasil, "tersambung": outro.cdp_hidup()}
-
-
-# ---------------------------------------------------------------- pekerjaan
 
 @router.get("/jobs")
 def daftar(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
@@ -138,15 +41,6 @@ def daftar(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
 
 @router.post("/jobs")
 def buat(body: OutroBody, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    _hanya_lokal()
-    if not outro.punya_sesi("flow"):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Google Flow belum siap. Tekan \"Siapkan Chrome\" di atas supaya "
-                "Chrome-mu yang sudah masuk bisa dipakai."
-            ),
-        )
     try:
         job_id = outro.mulai_job(body.channel, body.akun)
     except outro.OutroError as error:
@@ -177,7 +71,9 @@ def video(job_id: str, _: dict[str, Any] = Depends(developer_wajib)) -> FileResp
     berkas = Path(job["video"])
     if not berkas.is_file():
         raise HTTPException(status_code=404, detail="Berkas videonya sudah tidak ada.")
-    nama = "outro-" + "".join(c for c in job.get("channel", "outro") if c.isalnum() or c in "-_ ").strip().replace(" ", "-")
+    nama = "outro-" + "".join(
+        c for c in job.get("channel", "outro") if c.isalnum() or c in "-_ "
+    ).strip().replace(" ", "-")
     return FileResponse(str(berkas), media_type="video/mp4", filename=f"{nama or 'outro'}.mp4")
 
 

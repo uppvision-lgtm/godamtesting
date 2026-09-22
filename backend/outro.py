@@ -1,39 +1,22 @@
 """Auto Outro: dari isian nama channel + akun sosmed sampai video outro.
 
-Dua langkah:
+Tiga langkah, semuanya lewat API - tidak ada peramban, tidak ada login:
 
-1. AI diminta menulis prompt untuk Google Flow, dengan kata-kata perintah
-   yang sudah ditetapkan (PERMINTAAN di bawah).
-2. Prompt itu ditempel ke Google Flow (labs.google/fx/tools/flow), videonya
-   dibuat, lalu berkasnya diunduh ke folder media.
+1. AI (DeepSeek) menulis prompt VISUAL untuk pembuat video: suasana, gerakan,
+   pencahayaan. Sengaja tanpa username - lihat alasannya di bawah.
+2. LTX-Video di Hugging Face ZeroGPU membuat latar bergeraknya dari prompt
+   itu. Gratis, dipanggil lewat gradio_client, hasilnya berkas mp4.
+3. Renderer teks aplikasi ini menempelkan nama channel dan enam handle di
+   atasnya - PERSIS, huruf demi huruf.
 
-Langkah pertama SENGAJA tidak lewat peramban. Rencana awalnya membuka
-chatgpt.com seperti yang dikerjakan tangan, tetapi diuji langsung dan tidak
-bisa: Cloudflare menahan pemuatan halamannya sampai habis waktu, bahkan
-dengan Chrome asli - permintaan polos pun dibalas 403. Yang dipakai sekarang
-DeepSeek lewat API resminya, yang kuncinya memang sudah terpasang di
-aplikasi ini untuk bot komentar. Hasilnya sama - teks perintahnya persis
-sama - tetapi selesai dalam hitungan detik, tanpa login dan tanpa jendela.
+Kenapa teksnya tidak diserahkan ke AI: diuji langsung, dan semua model video
+(termasuk Google Flow) tidak bisa menulis teks dengan tepat - "@tvrakyat"
+keluar jadi "Basahetwi". Untuk outro, yang paling penting justru username
+yang benar. Jadi AI hanya membuat suasananya, dan teksnya ditempel sendiri
+oleh alat yang memang sudah menulis teks pixel-perfect di Auto Edit Video.
 
-Langkah kedua tetap di peramban: Google Flow tidak punya API publik. Ia
-butuh akun Google yang sudah masuk, dan di sinilah masalahnya - Google
-MENOLAK login dari peramban yang dikendalikan otomasi ("browser ini mungkin
-tidak aman"), jadi jendela login bawaan alat ini tidak bisa dipakai. Diuji
-juga menyalin berkas cookie Chrome ke profil lain: gagal, satu pun cookie
-Google tidak terbaca, sebab macOS mengunci isinya di Keychain.
-
-Yang dipakai: menyambung ke Chrome MILIK PENGGUNA SENDIRI lewat port debug
-(CDP). Tidak ada yang login lewat otomasi - sesinya memang sudah ada di
-peramban itu, dan bot hanya menumpang memakainya. Chrome perlu dijalankan
-sekali dengan --remote-debugging-port; outro_api menyediakan tombolnya.
-
-HANYA untuk backend lokal (mode via PC). Server Railway 1 GB tidak sanggup
-memuat aplikasi WebGL seberat Flow, dan login Google dari alamat pusat data
-hampir pasti ditolak. Penjaganya ada di outro_api.
-
-Pekerjaan berjalan di utas biasa (bukan Celery): ini alat developer di mesin
-sendiri, satu pekerjaan pada satu waktu, dan keadaannya cukup disimpan di
-memori proses.
+Berjalan di utas biasa (bukan Celery): alat developer, satu pekerjaan pada
+satu waktu, keadaannya di memori proses.
 """
 
 from __future__ import annotations
@@ -43,91 +26,60 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from video_edit import MEDIA_DIR
+from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR, VideoError, probe
 
 logger = logging.getLogger(__name__)
 
-# Kata-kata perintah untuk AI, persis seperti yang ditetapkan. Yang diganti
-# hanya bagian dalam kurung siku.
-PERMINTAAN = """Buatkan prompt untuk Google Flow untuk menghasilkan video outro branding.
-Nama media: {channel}
-Spesifikasi:
-Durasi 4 detik
-Format portrait 9:16
-Gaya premium, modern, profesional, dan minimalis
-Fokus pada logo dan identitas media sosial
-Gunakan dark background, light sweep, subtle particles, dan smooth motion graphics
-Tampilkan logo {channel}
-Tampilkan 6 akun media sosial dengan jelas
-Jangan membuat manusia, peristiwa nyata, berita aktual, politik, atau footage dunia nyata
-Jangan gunakan istilah "breaking news", "current events", atau "news footage"
-Jadikan sebagai fictional brand identity animation / social media outro
-Pastikan seluruh teks dan username ditulis persis tanpa perubahan
-Hasil harus aman untuk Google Flow dan siap langsung digunakan
-Akun media sosial:
-Instagram: {instagram}
-TikTok: {tiktok}
-X: {x}
-Threads: {threads}
-Facebook: {facebook}
-YouTube: {youtube}
-Buat tanpa penjelasan tambahan."""
+# Kata-kata perintah untuk AI. Yang diminta hanya SUASANA visualnya; username
+# sengaja tidak disebut, sebab AI video tidak bisa mengejanya dan teksnya
+# ditempel sendiri setelah video jadi. Center dimintai lapang supaya ada
+# ruang untuk logo dan teks yang ditempel di atasnya.
+PERMINTAAN = """Write a single English prompt for an AI video generator to create a 4-second premium brand outro background.
+Media brand theme: {channel}
+Requirements for the scene:
+- Portrait 9:16, dark elegant background (deep charcoal to black gradient)
+- Premium, modern, minimalist motion graphics: soft light sweep, subtle floating particles, gentle glow, smooth camera drift
+- Keep the CENTER of the frame calm and mostly empty (a logo and text will be placed there afterward)
+- No humans, no real events, no news, no politics, no real-world footage
+- No on-screen text, no letters, no words, no logos, no watermark
+Output ONLY the prompt text, one paragraph, no explanation."""
 
-# Urutan akun di PERMINTAAN mengikuti teks perintahnya, bukan urutan isian.
+# Kalau AI tak terpakai/gagal, prompt bawaan ini sudah cukup bagus sendiri.
+PROMPT_BAWAAN = (
+    "Premium minimalist brand outro background, portrait 9:16, deep charcoal to "
+    "black gradient, soft horizontal light sweep, subtle floating particles, gentle "
+    "glow, smooth slow camera drift, elegant cinematic motion graphics, calm empty "
+    "center, no text, no letters, no logos, no people"
+)
+
+# Urutan akun mengikuti teks perintah.
 KUNCI_AKUN = ("instagram", "tiktok", "x", "threads", "facebook", "youtube")
+NAMA_TAMPIL = {
+    "instagram": "Instagram", "tiktok": "TikTok", "x": "X",
+    "threads": "Threads", "facebook": "Facebook", "youtube": "YouTube",
+}
 
-# Flow pindah dari labs.google/fx/tools/flow ke alamat ini; yang lama masih
-# dialihkan (308), tapi satu pengalihan di tiap pekerjaan tidak ada gunanya.
-URL_FLOW = "https://flow.google.com/"
-
-# Penulis prompt. Bawaannya DeepSeek, sebab kuncinya sudah ada di aplikasi
-# ini. Cukup ganti tiga setelan ini kalau mau pindah ke penyedia lain yang
-# bicara dengan gaya OpenAI (Kimi, Gemini lewat lapisan sesuai, dan
-# sejenisnya) - kodenya tidak perlu diubah.
+# --- penyedia AI penulis prompt (sama seperti bot komentar) ---
 AI_KUNCI = os.getenv("OUTRO_AI_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")
 AI_ALAMAT = (os.getenv("OUTRO_AI_URL", "") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")).rstrip("/")
-# Model termurah yang ditawarkan DeepSeek: 0,15-0,30 USD per sejuta token
-# masuk dan 0,60-1,20 per sejuta token keluar, sekitar seperempat harga
-# deepseek-v4-pro. DEEPSEEK_MODEL milik bot komentar SENGAJA tidak dipakai
-# di sini: isinya "deepseek-chat", nama lama yang sudah tidak ada di daftar
-# resmi dan suatu saat bisa dihentikan tanpa kabar.
 AI_MODEL = os.getenv("OUTRO_AI_MODEL", "") or "deepseek-flash"
+TUNGGU_AI = float(os.getenv("OUTRO_TUNGGU_AI", "60"))
 
-# Alamat port debug Chrome pengguna. Kalau terbuka, ia yang dipakai - sesi
-# Google-nya sudah ada di sana. Kalau tidak, dicoba profil tersimpan hasil
-# jendela login (masih berguna untuk platform yang tidak menolak otomasi).
-CDP_URL = os.getenv("OUTRO_CDP", "http://127.0.0.1:9222")
-
-# Jendelanya SENGAJA terlihat, bukan headless. Ini berjalan di Mac developer,
-# dan kedua situs jauh lebih jarang mencurigai peramban yang benar-benar
-# tampil. Bisa dimatikan lewat OUTRO_HEADLESS=1 untuk percobaan.
-HEADLESS = os.getenv("OUTRO_HEADLESS", "").lower() in ("1", "true", "yes")
-# Berapa lama menunggu AI menulis prompt, dan Flow selesai membuat video.
-TUNGGU_AI = float(os.getenv("OUTRO_TUNGGU_AI", "120"))
-TUNGGU_FLOW = float(os.getenv("OUTRO_TUNGGU_FLOW", "900"))
-
-# Flag anti-deteksi yang dipakai autoupload, TANPA pembatas memorinya:
-# yang di sana ditujukan untuk kontainer 1 GB, sedangkan Flow adalah aplikasi
-# WebGL berat yang tidak akan hidup dengan tumpukan JS 256 MB.
-ARGS_PERAMBAN = [
-    "--disable-blink-features=AutomationControlled",
-    "--no-sandbox",
-    "--disable-infobars",
-    "--start-maximized",
-    "--disable-extensions",
-    "--disable-sync",
-    "--disable-default-apps",
-    "--disable-translate",
-    "--mute-audio",
-]
-VIEWPORT = {"width": 1280, "height": 860}
+# --- pembuat video: Hugging Face ZeroGPU Space ---
+# Gratis dan tanpa token untuk pemakaian sekali-sekali; token menaikkan jatah
+# harian kalau nanti sering dipakai. Space bisa diganti lewat setelan.
+HF_SPACE = os.getenv("OUTRO_HF_SPACE", "Lightricks/ltx-video-distilled")
+HF_TOKEN = os.getenv("OUTRO_HF_TOKEN", "").strip() or None
+VIDEO_W = int(os.getenv("OUTRO_VIDEO_W", "416"))   # kelipatan 32
+VIDEO_H = int(os.getenv("OUTRO_VIDEO_H", "704"))
+VIDEO_DETIK = float(os.getenv("OUTRO_VIDEO_DETIK", "4"))
+TUNGGU_VIDEO = float(os.getenv("OUTRO_TUNGGU_VIDEO", "300"))
 
 
 class OutroError(Exception):
@@ -142,16 +94,6 @@ def outro_dir() -> Path:
     return MEDIA_DIR / "outro"
 
 
-def susun_permintaan(channel: str, akun: dict[str, str]) -> str:
-    """Isi kata-kata perintah dengan nama channel dan akun-akunnya.
-
-    Akun yang kosong ditulis "-" supaya kalimatnya tetap utuh dan AI tidak
-    mengarang username untuk mengisi kekosongan.
-    """
-    nilai = {k: (str(akun.get(k) or "").strip() or "-") for k in KUNCI_AKUN}
-    return PERMINTAAN.format(channel=channel.strip(), **nilai)
-
-
 # ============================================================
 #  DAFTAR PEKERJAAN (di memori proses)
 # ============================================================
@@ -159,8 +101,6 @@ def susun_permintaan(channel: str, akun: dict[str, str]) -> str:
 _jobs: dict[str, dict[str, Any]] = {}
 _batal: dict[str, threading.Event] = {}
 _kunci = threading.Lock()
-# Satu pekerjaan pada satu waktu: dua peramban berebut profil yang sama
-# hanya berakhir dengan profil terkunci.
 _sedang_jalan = threading.Lock()
 
 
@@ -203,7 +143,6 @@ def mulai_job(channel: str, akun: dict[str, str]) -> str:
     if not channel:
         raise OutroError("Nama channel wajib diisi.")
     job_id = uuid.uuid4().hex[:12]
-    permintaan = susun_permintaan(channel, akun)
     with _kunci:
         _jobs[job_id] = {
             "job_id": job_id,
@@ -212,7 +151,6 @@ def mulai_job(channel: str, akun: dict[str, str]) -> str:
             "progress": 0,
             "channel": channel,
             "akun": {k: str(akun.get(k) or "").strip() for k in KUNCI_AKUN},
-            "permintaan": permintaan,
             "prompt": "",
             "video": "",
             "message": "Menunggu giliran.",
@@ -231,26 +169,34 @@ def _jalankan(job_id: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     with _sedang_jalan:
         try:
+            job = baca_job(job_id) or {}
+            channel = job["channel"]
+            akun = job["akun"]
+
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum mulai.")
-            job = baca_job(job_id) or {}
-            _catat(job_id, "Meminta AI menulis prompt untuk Google Flow ...",
-                   status="running", langkah="ai", progress=5)
-            prompt = minta_prompt_ai(job["permintaan"], lambda m: _catat(job_id, m), ev)
-            (folder / "prompt.txt").write_text(prompt, encoding="utf-8")
-            _catat(job_id, f"Prompt jadi ({len(prompt)} karakter).", prompt=prompt,
-                   langkah="flow", progress=35)
+            _catat(job_id, "Menulis gaya visual lewat AI ...",
+                   status="running", langkah="ai", progress=8)
+            prompt = tulis_prompt_visual(channel, lambda m: _catat(job_id, m))
+            _catat(job_id, "Gaya visual siap.", prompt=prompt, langkah="video", progress=25)
 
             if ev.is_set():
                 raise Dibatalkan("Dihentikan setelah prompt jadi.")
-            video = buat_video_flow(prompt, lambda m: _catat(job_id, m), ev, folder)
-            _catat(job_id, f"Video outro siap ({video.stat().st_size / 1_048_576:.1f} MB).",
-                   status="done", langkah="selesai", progress=100, video=str(video))
+            _catat(job_id, "Membuat latar video (Hugging Face ZeroGPU) ...")
+            latar = buat_video_ai(prompt, folder, ev, lambda m: _catat(job_id, m))
+            _catat(job_id, "Latar video jadi; menempelkan nama channel dan akun ...",
+                   langkah="teks", progress=80)
+
+            if ev.is_set():
+                raise Dibatalkan("Dihentikan sebelum menempel teks.")
+            hasil = tempel_teks(latar, channel, akun, folder)
+            _catat(job_id, f"Video outro siap ({hasil.stat().st_size / 1_048_576:.1f} MB).",
+                   status="done", langkah="selesai", progress=100, video=str(hasil))
         except Dibatalkan as error:
             _catat(job_id, str(error), status="dibatalkan", langkah="berhenti")
         except OutroError as error:
             _catat(job_id, f"Gagal: {error}", status="error", langkah="gagal")
-        except Exception as error:  # noqa: BLE001 - apa pun sebabnya, halaman harus tahu
+        except Exception as error:  # noqa: BLE001
             logger.exception("outro %s gagal", job_id)
             _catat(job_id, f"Gagal: {type(error).__name__}: {error}", status="error", langkah="gagal")
         finally:
@@ -258,454 +204,209 @@ def _jalankan(job_id: str) -> None:
 
 
 # ============================================================
-#  PERAMBAN
+#  LANGKAH 1: PROMPT VISUAL DARI AI
 # ============================================================
 
-def cdp_hidup() -> bool:
-    """True kalau ada Chrome yang mendengarkan di port debug."""
+_PAGAR = re.compile(r"^```[a-zA-Z]*\n?|\n?```$", re.S)
+
+
+def tulis_prompt_visual(channel: str, log: Callable[[str], None]) -> str:
+    """Minta AI menulis prompt visual. Kalau gagal, pakai prompt bawaan."""
+    if not AI_KUNCI.strip():
+        log("Kunci AI kosong; memakai gaya bawaan.")
+        return PROMPT_BAWAAN
     import httpx
 
     try:
-        r = httpx.get(f"{CDP_URL.rstrip('/')}/json/version", timeout=3)
-        return r.status_code == 200
-    except Exception:  # noqa: BLE001 - tidak ada = tidak hidup
-        return False
-
-
-def chrome_pengguna_jalan() -> bool:
-    """True kalau Chrome biasa sedang jalan (tanpa port debug)."""
-    return subprocess.run(
-        ["pgrep", "-f", "Google Chrome.app/Contents/MacOS/Google Chrome"],
-        capture_output=True,
-    ).returncode == 0
-
-
-def profil_chrome_pengguna() -> Path:
-    """Folder profil Chrome pengguna di mesin ini."""
-    if sys.platform == "darwin":
-        return Path.home() / "Library/Application Support/Google/Chrome"
-    return Path.home() / ".config/google-chrome"
-
-
-def nyalakan_chrome_debug(tutup_dulu: bool = False) -> dict[str, Any]:
-    """Jalankan Chrome pengguna dengan port debug terbuka.
-
-    Chrome mengabaikan --remote-debugging-port kalau sudah ada instance yang
-    memakai profil yang sama: ia hanya membuka tab baru di jendela lama. Jadi
-    Chrome yang sedang jalan harus ditutup lebih dulu - dan itu menutup
-    tab-tab yang sedang dibuka orang, sehingga tidak pernah dilakukan
-    diam-diam. Pemanggil harus meminta secara tegas lewat tutup_dulu.
-    """
-    if cdp_hidup():
-        return {"ok": True, "pesan": "Chrome dengan port debug sudah jalan."}
-    if chrome_pengguna_jalan():
-        if not tutup_dulu:
-            return {
-                "ok": False,
-                "perlu_tutup": True,
-                "pesan": (
-                    "Chrome sedang terbuka tanpa port debug. Tutup Chrome dulu "
-                    "(tab-tabnya akan dibuka kembali), lalu tekan tombol ini lagi."
-                ),
-            }
-        subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to quit'],
-                       capture_output=True)
-        for _ in range(20):
-            if not chrome_pengguna_jalan():
-                break
-            time.sleep(0.5)
-
-    biner = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    if not Path(biner).is_file():
-        return {"ok": False, "pesan": "Google Chrome tidak ditemukan di /Applications."}
-    port = CDP_URL.rsplit(":", 1)[-1].strip("/")
-    try:
-        subprocess.Popen(
-            [biner, f"--remote-debugging-port={port}",
-             f"--user-data-dir={profil_chrome_pengguna()}",
-             "--restore-last-session"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except OSError as error:
-        return {"ok": False, "pesan": f"Gagal menjalankan Chrome: {error}"}
-    for _ in range(30):
-        time.sleep(0.5)
-        if cdp_hidup():
-            return {"ok": True, "pesan": "Chrome dibuka dengan port debug; sesi Google-mu siap dipakai."}
-    return {"ok": False, "pesan": "Chrome dijalankan tetapi port debugnya tidak terbuka."}
-
-
-def _profil(platform: str) -> Path:
-    from autoupload.browser import profile_dir
-
-    return profile_dir(platform, "default")
-
-
-def punya_sesi(platform: str) -> bool:
-    """Siap dipakai: lewat Chrome pengguna (CDP) atau profil tersimpan."""
-    if platform == "flow" and cdp_hidup():
-        return True
-    folder = _profil(platform)
-    return folder.is_dir() and any(folder.iterdir())
-
-
-def _buka_profil(pw: Any, platform: str) -> Any:
-    """Konteks peramban dari profil login tersimpan. Chrome asli diutamakan."""
-    from autoupload.browser import STEALTH_INIT_SCRIPT, _clear_stale_profile_locks
-
-    folder = _profil(platform)
-    if not (folder.is_dir() and any(folder.iterdir())):
-        raise OutroError(
-            f"Belum ada sesi login {platform}. Buka jendela login di halaman Auto Outro dulu."
-        )
-    _clear_stale_profile_locks(folder)
-    luncur = dict(
-        user_data_dir=str(folder), headless=HEADLESS, args=ARGS_PERAMBAN, viewport=VIEWPORT
-    )
-    try:
-        konteks = pw.chromium.launch_persistent_context(channel="chrome", **luncur)
-    except Exception:  # noqa: BLE001 - Chrome asli tidak terpasang
-        konteks = pw.chromium.launch_persistent_context(**luncur)
-    konteks.add_init_script(STEALTH_INIT_SCRIPT)
-    return konteks
-
-
-def _ke_depan() -> None:
-    """macOS: bawa jendela Chrome ke depan supaya kelihatan apa yang terjadi."""
-    if sys.platform != "darwin" or HEADLESS:
-        return
-    for app in ("Google Chrome", "Chromium"):
-        if subprocess.run(["osascript", "-e", f'tell application "{app}" to activate'],
-                          capture_output=True).returncode == 0:
-            return
-
-
-def _tunggu(page: Any, detik: float, ev: threading.Event) -> None:
-    """Jeda yang tetap peka pada permintaan berhenti."""
-    akhir = time.monotonic() + detik
-    while time.monotonic() < akhir:
-        if ev.is_set():
-            raise Dibatalkan("Pekerjaan dihentikan.")
-        page.wait_for_timeout(min(500, max(0, (akhir - time.monotonic()) * 1000)))
-
-
-def _simpan_jejak(page: Any, folder: Path, nama: str) -> str:
-    """Tangkapan layar + daftar tombol di halaman, untuk membaca kegagalan."""
-    try:
-        page.screenshot(path=str(folder / f"{nama}.png"), full_page=False)
-        tombol = page.evaluate(
-            """() => [...document.querySelectorAll('button,[role="button"],textarea,[contenteditable="true"],a')]
-                .slice(0, 200)
-                .map(e => [e.tagName, e.getAttribute('aria-label')||'', e.getAttribute('placeholder')||'',
-                           (e.innerText||'').trim().slice(0,60), e.getAttribute('data-testid')||''].join(' | '))
-                .join('\\n')"""
-        )
-        (folder / f"{nama}.txt").write_text(f"{page.url}\n\n{tombol}", encoding="utf-8")
-        return f" [jejak: {nama}.png]"
-    except Exception:  # noqa: BLE001 - jejak hanya pelengkap
-        return ""
-
-
-# ============================================================
-#  LANGKAH 1: PROMPT DARI AI
-# ============================================================
-
-# Kalimat perintah yang ikut terbawa ke jawaban. Sebagian model menyalin
-# baris terakhir permintaan ("Buat tanpa penjelasan tambahan") ke dalam
-# hasilnya; kalau ikut tertempel ke Flow, ia terbaca sebagai bagian dari
-# adegan yang diminta.
-_BARIS_PERINTAH = re.compile(
-    r"^\s*(output only|only output|buat tanpa penjelasan|tanpa penjelasan tambahan|"
-    r"no additional explanation|do not add any explanation)\b.*$",
-    re.I,
-)
-_PAGAR_KODE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$", re.S)
-
-
-def _rapikan(teks: str) -> str:
-    """Buang pagar blok kode dan kalimat perintah yang ikut tersalin."""
-    teks = _PAGAR_KODE.sub("", teks.strip()).strip()
-    baris = [b for b in teks.splitlines() if not _BARIS_PERINTAH.match(b)]
-    return "\n".join(baris).strip()
-
-
-def _panggil_ai(httpx: Any, permintaan: str, model: str) -> Any:
-    """Satu permintaan ke penyedia AI, gaya OpenAI."""
-    return httpx.post(
-        f"{AI_ALAMAT}/chat/completions",
-        timeout=TUNGGU_AI,
-        headers={"Authorization": f"Bearer {AI_KUNCI.strip()}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    # Tanpa ini sebagian model membalas dengan basa-basi
-                    # ("Tentu, ini promptnya:") yang ikut tertempel ke Flow.
-                    "content": (
-                        "Kamu penulis prompt untuk pembuat video AI. Balas HANYA "
-                        "dengan teks prompt akhirnya, tanpa pembuka, tanpa penutup, "
-                        "tanpa tanda kutip, dan tanpa blok kode."
-                    ),
-                },
-                {"role": "user", "content": permintaan},
-            ],
-            "temperature": 0.7,
-        },
-    )
-
-
-def _model_tersedia(httpx: Any) -> str:
-    """Nama model pertama yang benar-benar ditawarkan penyedianya sekarang."""
-    try:
-        r = httpx.get(
-            f"{AI_ALAMAT}/models",
-            timeout=30,
-            headers={"Authorization": f"Bearer {AI_KUNCI.strip()}"},
+        r = httpx.post(
+            f"{AI_ALAMAT}/chat/completions",
+            timeout=TUNGGU_AI,
+            headers={"Authorization": f"Bearer {AI_KUNCI.strip()}", "Content-Type": "application/json"},
+            json={
+                "model": AI_MODEL,
+                "messages": [
+                    {"role": "system", "content": "Reply with only the prompt text, no preamble, no quotes, no code block."},
+                    {"role": "user", "content": PERMINTAAN.format(channel=channel)},
+                ],
+                "temperature": 0.8,
+            },
         )
         if r.status_code != 200:
-            return ""
-        daftar = [str(m.get("id") or "") for m in r.json().get("data", [])]
-        return next((m for m in daftar if m), "")
-    except Exception:  # noqa: BLE001 - ini jalan cadangan, bukan jalan utama
-        return ""
-
-
-def minta_prompt_ai(
-    permintaan: str, log: Callable[[str], None], ev: threading.Event
-) -> str:
-    """Minta AI menulis prompt Google Flow. Kembalikan teksnya, sudah rapi.
-
-    Dipanggil dengan gaya OpenAI (POST /chat/completions), jadi penyedia mana
-    pun yang bicara dengan gaya itu bisa dipakai hanya dengan mengganti tiga
-    setelan di atas - tidak ada yang khusus DeepSeek di sini selain bawaannya.
-    """
-    import httpx
-
-    if not AI_KUNCI.strip():
-        raise OutroError(
-            "Kunci AI belum diisi. Isi DEEPSEEK_API_KEY (atau OUTRO_AI_KEY) di "
-            "berkas .env backend."
-        )
-    if ev.is_set():
-        raise Dibatalkan("Dihentikan sebelum meminta prompt.")
-
-    log(f"Mengirim permintaan ke {AI_MODEL} ...")
-    try:
-        balasan = _panggil_ai(httpx, permintaan, AI_MODEL)
-        if balasan.status_code in (400, 404) and "model" in balasan.text.lower():
-            # Nama model yang dipakai sudah tidak dikenal penyedianya. Ini
-            # bukan hal jauh: saat perbaikan ini dibuat, daftar resmi DeepSeek
-            # sudah tidak memuat "deepseek-chat" walau namanya masih diterima.
-            # Daripada gagal dengan pesan yang tidak bisa ditindaklanjuti,
-            # diambil model pertama yang memang tersedia sekarang.
-            pengganti = _model_tersedia(httpx)
-            if pengganti and pengganti != AI_MODEL:
-                log(f"Model {AI_MODEL} sudah tidak ada; memakai {pengganti}.")
-                logger.warning("model AI %s ditolak, beralih ke %s", AI_MODEL, pengganti)
-                balasan = _panggil_ai(httpx, permintaan, pengganti)
-    except httpx.HTTPError as error:
-        raise OutroError(f"Tidak bisa menghubungi AI: {type(error).__name__}") from error
-
-    if balasan.status_code == 401:
-        raise OutroError("Kunci AI ditolak (401). Periksa DEEPSEEK_API_KEY di .env backend.")
-    if balasan.status_code == 402:
-        raise OutroError("Saldo AI habis (402). Isi ulang atau pakai kunci lain.")
-    if balasan.status_code != 200:
-        raise OutroError(
-            f"AI menolak permintaan ({balasan.status_code}): {balasan.text[:160]}"
-        )
-    try:
-        isi = balasan.json()["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, ValueError) as error:
-        raise OutroError("Balasan AI tidak bisa dibaca.") from error
-
-    hasil = _rapikan(str(isi or ""))
-    if len(hasil) < 40:
-        raise OutroError(f"Jawaban AI terlalu pendek untuk dipakai: {hasil[:80]!r}")
-    return hasil
+            log(f"AI menolak ({r.status_code}); memakai gaya bawaan.")
+            return PROMPT_BAWAAN
+        isi = _PAGAR.sub("", str(r.json()["choices"][0]["message"]["content"]).strip()).strip()
+        return isi if len(isi) >= 40 else PROMPT_BAWAAN
+    except Exception as error:  # noqa: BLE001 - AI hanya penyempurna, bukan penentu
+        log(f"AI tak terjangkau ({type(error).__name__}); memakai gaya bawaan.")
+        return PROMPT_BAWAAN
 
 
 # ============================================================
-#  LANGKAH 2: GOOGLE FLOW
+#  LANGKAH 2: VIDEO DARI HUGGING FACE ZEROGPU
 # ============================================================
 
-# Label tombol Flow dalam dua bahasa; antarmukanya ikut bahasa akun Google.
-_PROYEK_BARU = ("New project", "Proyek baru", "Create new project", "Buat proyek baru")
-_UNDUH = ("Download", "Unduh")
-_POTRET = ("9:16", "Portrait", "Potret", "Vertical", "Vertikal")
+_NEG = ("text, letters, words, captions, subtitles, watermark, logo, blurry, "
+        "low quality, distorted, people, human, face, jittery")
 
 
-def _klik_teks(page: Any, kandidat: tuple[str, ...], peran: str = "button", timeout: int = 8_000) -> bool:
-    for label in kandidat:
-        loc = page.get_by_role(peran, name=re.compile(re.escape(label), re.I))
-        if loc.count():
-            try:
-                loc.first.click(timeout=timeout)
-                return True
-            except Exception:  # noqa: BLE001 - coba label berikutnya
-                continue
-        loc = page.get_by_text(label, exact=False)
-        if loc.count():
-            try:
-                loc.first.click(timeout=timeout)
-                return True
-            except Exception:  # noqa: BLE001
-                continue
-    return False
-
-
-def buat_video_flow(
-    prompt: str, log: Callable[[str], None], ev: threading.Event, folder: Path
+def buat_video_ai(
+    prompt: str, folder: Path, ev: threading.Event, log: Callable[[str], None]
 ) -> Path:
-    """Tempel prompt ke Google Flow, tunggu videonya jadi, unduh ke folder."""
-    from playwright.sync_api import sync_playwright
+    """Buat latar video dari prompt lewat Space text-to-video di ZeroGPU.
 
-    tujuan = folder / "outro.mp4"
-    with sync_playwright() as pw:
-        # Peramban pengguna sendiri kalau port debugnya terbuka: di sanalah
-        # sesi Google yang sah berada, dan tidak ada yang perlu login lewat
-        # otomasi. Peramban itu MILIK ORANG, jadi tidak ditutup di akhir -
-        # hanya tabnya yang dirapikan.
-        lewat_cdp = cdp_hidup()
-        peramban = None
-        if lewat_cdp:
-            log("Memakai Chrome-mu yang sudah masuk (port debug).")
-            peramban = pw.chromium.connect_over_cdp(CDP_URL)
-            konteks = peramban.contexts[0] if peramban.contexts else peramban.new_context()
-            page = konteks.new_page()
-        else:
-            konteks = _buka_profil(pw, "flow")
-            page = konteks.pages[0] if konteks.pages else konteks.new_page()
-        konteks.set_default_timeout(20_000)
-        try:
-            log("Membuka Google Flow ...")
-            page.goto(URL_FLOW, wait_until="domcontentloaded", timeout=90_000)
-            _ke_depan()
-            _tunggu(page, 4.0, ev)
-            if "accounts.google.com" in page.url or page.get_by_role(
-                "button", name=re.compile(r"sign in|masuk", re.I)
-            ).count():
-                jejak = _simpan_jejak(page, folder, "flow-login")
-                raise OutroError(
-                    f"Google Flow meminta masuk. Login ulang lewat halaman Auto Outro.{jejak}"
-                )
-
-            # Proyek baru, supaya videonya tidak bercampur dengan proyek lain
-            # dan hasil yang diambil pasti yang barusan dibuat.
-            if not _klik_teks(page, _PROYEK_BARU):
-                jejak = _simpan_jejak(page, folder, "flow-proyek")
-                raise OutroError(f"Tombol proyek baru di Flow tidak ditemukan.{jejak}")
-            _tunggu(page, 4.0, ev)
-
-            # Kotak prompt: textarea atau kotak contenteditable di bilah bawah.
-            kotak = page.locator("textarea, [contenteditable='true']").last
-            try:
-                kotak.wait_for(state="visible", timeout=30_000)
-            except Exception as exc:  # noqa: BLE001
-                jejak = _simpan_jejak(page, folder, "flow-kotak")
-                raise OutroError(f"Kotak prompt Flow tidak muncul.{jejak}") from exc
-
-            # Rasio potret 9:16 lewat menu pengaturan (ikon roda gigi/tune).
-            _atur_potret(page, ev, log)
-
-            log("Menempel prompt ke Flow ...")
-            kotak.click()
-            kotak.fill(prompt)
-            _tunggu(page, 1.0, ev)
-            jumlah_video_awal = page.locator("video").count()
-            # Tombol kirimnya ikon panah tanpa teks; Enter di kotak juga jalan.
-            if not _klik_teks(page, ("Generate", "Buat", "Create"), timeout=4_000):
-                page.keyboard.press("Enter")
-
-            log("Flow sedang membuat video (biasanya 1-3 menit) ...")
-            batas = time.monotonic() + TUNGGU_FLOW
-            while time.monotonic() < batas:
-                _tunggu(page, 5.0, ev)
-                if page.locator("video").count() > jumlah_video_awal:
-                    break
-                galat = page.get_by_text(re.compile(r"(failed|gagal|couldn.t|tidak dapat|error)", re.I))
-                if galat.count():
-                    jejak = _simpan_jejak(page, folder, "flow-gagal")
-                    raise OutroError(f"Flow menolak: {galat.first.inner_text()[:160]}.{jejak}")
-            else:
-                jejak = _simpan_jejak(page, folder, "flow-lama")
-                raise OutroError(f"Flow tidak selesai dalam {TUNGGU_FLOW / 60:.0f} menit.{jejak}")
-            _tunggu(page, 3.0, ev)
-
-            log("Video jadi, mengunduh ...")
-            with page.expect_download(timeout=120_000) as unduhan:
-                if not _unduh_terbaru(page, ev):
-                    jejak = _simpan_jejak(page, folder, "flow-unduh")
-                    raise OutroError(f"Tombol unduh di Flow tidak ditemukan.{jejak}")
-            unduhan.value.save_as(str(tujuan))
-            if not tujuan.is_file() or tujuan.stat().st_size < 10_000:
-                raise OutroError("Berkas unduhan Flow kosong.")
-            return tujuan
-        finally:
-            try:
-                if lewat_cdp:
-                    # Tab kita saja yang ditutup; jendela orangnya dibiarkan.
-                    page.close()
-                    if peramban is not None:
-                        peramban.close()  # memutus sambungan, bukan menutup Chrome
-                else:
-                    konteks.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-
-def _atur_potret(page: Any, ev: threading.Event, log: Callable[[str], None]) -> None:
-    """Pilih rasio 9:16 kalau menunya ketemu; kalau tidak, promptnya sudah menyebut."""
+    gradio_client memanggil Space seperti orang menekan tombolnya, dan
+    hasilnya berkas mp4 sementara yang lalu disalin ke folder pekerjaan.
+    ZeroGPU gratis tanpa token untuk pemakaian sekali-sekali; kalau jatah
+    hariannya habis, pesannya diteruskan apa adanya supaya jelas sebabnya.
+    """
     try:
-        pengaturan = page.get_by_role(
-            "button", name=re.compile(r"settings|pengaturan|tune|options|opsi", re.I)
+        from gradio_client import Client
+    except Exception as error:  # noqa: BLE001
+        raise OutroError("Paket gradio_client belum terpasang di backend.") from error
+
+    if ev.is_set():
+        raise Dibatalkan("Dihentikan sebelum membuat video.")
+    log(f"Menghubungi {HF_SPACE} ...")
+    try:
+        klien = Client(HF_SPACE, token=HF_TOKEN, verbose=False)
+    except Exception as error:  # noqa: BLE001
+        raise OutroError(
+            f"Tidak bisa membuka Space {HF_SPACE} ({type(error).__name__}). "
+            "Space-nya mungkin sedang tidur atau diperbaiki; coba lagi nanti."
+        ) from error
+
+    log("Antre di GPU gratis lalu membuat video (biasanya 15-60 detik) ...")
+    try:
+        hasil = klien.predict(
+            prompt=prompt,
+            negative_prompt=_NEG,
+            input_image_filepath=None,
+            input_video_filepath=None,
+            height_ui=VIDEO_H,
+            width_ui=VIDEO_W,
+            mode="text-to-video",
+            duration_ui=VIDEO_DETIK,
+            ui_frames_to_use=9,
+            seed_ui=42,
+            randomize_seed=True,
+            ui_guidance_scale=1,
+            improve_texture_flag=True,
+            api_name="/text_to_video",
         )
-        if not pengaturan.count():
-            return
-        pengaturan.first.click()
-        _tunggu(page, 1.0, ev)
-        if _klik_teks(page, _POTRET, peran="option", timeout=3_000) or _klik_teks(
-            page, _POTRET, timeout=3_000
-        ):
-            log("Rasio 9:16 dipilih.")
-        page.keyboard.press("Escape")
-    except Exception as error:  # noqa: BLE001 - rasio hanya penyempurna
-        log(f"Rasio tidak sempat diatur ({type(error).__name__}); lanjut dengan bawaan.")
+    except Exception as error:  # noqa: BLE001
+        pesan = str(error)
+        if "quota" in pesan.lower() or "gpu" in pesan.lower():
+            raise OutroError(
+                "Jatah GPU gratis Hugging Face sedang habis. Tunggu beberapa menit, "
+                "atau isi OUTRO_HF_TOKEN dengan token HF untuk jatah lebih besar."
+            ) from error
+        raise OutroError(f"Space gagal membuat video: {pesan[:200]}") from error
+
+    # Kembaliannya (video, seed); video berupa dict {"video": path} atau path.
+    berkas = hasil[0] if isinstance(hasil, (list, tuple)) else hasil
+    if isinstance(berkas, dict):
+        berkas = berkas.get("video") or berkas.get("path") or ""
+    if not berkas or not Path(berkas).is_file():
+        raise OutroError("Space selesai tetapi berkas videonya tidak ditemukan.")
+    tujuan = folder / "latar.mp4"
+    shutil.copy2(berkas, tujuan)
+    return tujuan
 
 
-def _unduh_terbaru(page: Any, ev: threading.Event) -> bool:
-    """Buka menu klip terbaru lalu tekan Unduh."""
-    video = page.locator("video").last
+# ============================================================
+#  LANGKAH 3: TEMPEL NAMA CHANNEL + HANDLE (PERSIS)
+# ============================================================
+
+def _lebar_teks(draw: Any, teks: str, font: Any) -> int:
+    kotak = draw.textbbox((0, 0), teks, font=font)
+    return kotak[2] - kotak[0]
+
+
+def _muat_font(ukuran: int) -> Any:
+    from PIL import ImageFont
+
     try:
-        video.hover(timeout=5_000)
+        return ImageFont.truetype(FONT_BUNDLED, ukuran)
     except Exception:  # noqa: BLE001
-        pass
-    _tunggu(page, 0.8, ev)
-    if _klik_teks(page, _UNDUH, timeout=4_000):
-        _tunggu(page, 1.0, ev)
-        # Sebagian versi menawarkan ukuran; ambil yang pertama tersedia.
-        _klik_teks(page, ("1080p", "Original", "Asli", "720p"), peran="menuitem", timeout=3_000)
-        return True
-    # Menu titik tiga di kartu klip.
-    menu = page.get_by_role("button", name=re.compile(r"more|lainnya|menu|options", re.I))
-    if menu.count():
-        try:
-            menu.last.click(timeout=4_000)
-            _tunggu(page, 0.8, ev)
-            if _klik_teks(page, _UNDUH, peran="menuitem", timeout=4_000) or _klik_teks(
-                page, _UNDUH, timeout=4_000
-            ):
-                _tunggu(page, 1.0, ev)
-                _klik_teks(page, ("1080p", "Original", "Asli", "720p"), peran="menuitem", timeout=3_000)
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-    return False
+        return ImageFont.load_default()
+
+
+def buat_lapisan_teks(w: int, h: int, channel: str, akun: dict[str, str], tujuan: Path) -> Path:
+    """Gambar PNG transparan seukuran video: nama channel + handle, di tengah.
+
+    Semua teks digambar sendiri di sini, jadi username muncul PERSIS - tidak
+    ada yang diserahkan ke model video. Bayangan lembut ditaruh di belakang
+    supaya terbaca di atas latar yang bergerak dan berubah terang-gelap.
+    """
+    from PIL import Image, ImageDraw
+
+    kanvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(kanvas)
+
+    def tulis_tengah(teks: str, font: Any, y: int, warna: tuple) -> int:
+        lebar = _lebar_teks(d, teks, font)
+        x = (w - lebar) // 2
+        # bayangan: beberapa lapis offset supaya lembut dan tetap terbaca
+        for dx, dy in ((0, 2), (2, 0), (0, -2), (-2, 0), (2, 2), (-2, 2)):
+            d.text((x + dx, y + dy), teks, font=font, fill=(0, 0, 0, 180))
+        d.text((x, y), teks, font=font, fill=warna)
+        kotak = d.textbbox((x, y), teks, font=font)
+        return kotak[3] - kotak[1]
+
+    # Nama channel: besar, sekitar 34% tinggi.
+    f_channel = _muat_font(max(28, int(w * 0.11)))
+    y = int(h * 0.34)
+    tinggi = tulis_tengah(channel.upper(), f_channel, y, (255, 255, 255, 255))
+    y += tinggi + int(h * 0.05)
+
+    # Garis pemisah tipis.
+    d.line([(int(w * 0.30), y), (int(w * 0.70), y)], fill=(255, 255, 255, 120), width=2)
+    y += int(h * 0.035)
+
+    # Handle: hanya yang terisi, satu baris masing-masing.
+    f_akun = _muat_font(max(16, int(w * 0.052)))
+    for k in KUNCI_AKUN:
+        nilai = str(akun.get(k) or "").strip()
+        if not nilai:
+            continue
+        baris = f"{NAMA_TAMPIL[k]}   {nilai}"
+        tinggi = tulis_tengah(baris, f_akun, y, (235, 235, 235, 255))
+        y += tinggi + int(h * 0.028)
+
+    kanvas.save(tujuan)
+    return tujuan
+
+
+def tempel_teks(latar: Path, channel: str, akun: dict[str, str], folder: Path) -> Path:
+    """Tempel lapisan teks di atas latar video. Muncul perlahan (fade in)."""
+    info = probe(latar)
+    w, h = int(info.get("width") or VIDEO_W), int(info.get("height") or VIDEO_H)
+    png = buat_lapisan_teks(w, h, channel, akun, folder / "teks.png")
+    keluaran = folder / "outro.mp4"
+
+    # PNG di-LOOP jadi aliran sepanjang video. Tanpa "-loop 1" ia hanya satu
+    # frame di detik 0, dan fade yang mulai 0,6 detik membuatnya tidak pernah
+    # terlihat sama sekali - teksnya hilang walau lapisannya benar. overlay
+    # dengan shortest=1 memotong keluaran sepanjang latar video.
+    # Teks muncul dari 0,6 detik, penuh pada 1,4 detik, lalu tetap.
+    perintah = [
+        FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(latar), "-loop", "1", "-i", str(png),
+        "-filter_complex",
+        "[1:v]fade=t=in:st=0.6:d=0.8:alpha=1,format=rgba[t];"
+        "[0:v][t]overlay=0:0:shortest=1,format=yuv420p[v]",
+        "-map", "[v]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(keluaran),
+    ]
+    hasil = subprocess.run(perintah, capture_output=True, text=True, timeout=180)
+    if hasil.returncode != 0 or not keluaran.is_file():
+        detail = (hasil.stderr or "").strip().splitlines()[-1:] or ["tanpa pesan"]
+        raise OutroError(f"Gagal menempel teks: {detail[0][:200]}")
+    return keluaran
 
 
 def bersihkan_lama(jam: float = 24.0) -> int:
-    """Buang folder outro yang lebih tua dari batas."""
     akar = outro_dir()
     if not akar.is_dir():
         return 0
