@@ -16,9 +16,16 @@ aplikasi ini untuk bot komentar. Hasilnya sama - teks perintahnya persis
 sama - tetapi selesai dalam hitungan detik, tanpa login dan tanpa jendela.
 
 Langkah kedua tetap di peramban: Google Flow tidak punya API publik. Ia
-butuh akun Google yang sudah masuk, dan login otomatis ditolak, jadi
-loginnya dilakukan sekali oleh developer di jendela peramban (lihat
-autoupload.login), profilnya tersimpan, dan bot memakai profil itu.
+butuh akun Google yang sudah masuk, dan di sinilah masalahnya - Google
+MENOLAK login dari peramban yang dikendalikan otomasi ("browser ini mungkin
+tidak aman"), jadi jendela login bawaan alat ini tidak bisa dipakai. Diuji
+juga menyalin berkas cookie Chrome ke profil lain: gagal, satu pun cookie
+Google tidak terbaca, sebab macOS mengunci isinya di Keychain.
+
+Yang dipakai: menyambung ke Chrome MILIK PENGGUNA SENDIRI lewat port debug
+(CDP). Tidak ada yang login lewat otomasi - sesinya memang sudah ada di
+peramban itu, dan bot hanya menumpang memakainya. Chrome perlu dijalankan
+sekali dengan --remote-debugging-port; outro_api menyediakan tombolnya.
 
 HANYA untuk backend lokal (mode via PC). Server Railway 1 GB tidak sanggup
 memuat aplikasi WebGL seberat Flow, dan login Google dari alamat pusat data
@@ -76,7 +83,9 @@ Buat tanpa penjelasan tambahan."""
 # Urutan akun di PERMINTAAN mengikuti teks perintahnya, bukan urutan isian.
 KUNCI_AKUN = ("instagram", "tiktok", "x", "threads", "facebook", "youtube")
 
-URL_FLOW = "https://labs.google/fx/tools/flow"
+# Flow pindah dari labs.google/fx/tools/flow ke alamat ini; yang lama masih
+# dialihkan (308), tapi satu pengalihan di tiap pekerjaan tidak ada gunanya.
+URL_FLOW = "https://flow.google.com/"
 
 # Penulis prompt. Bawaannya DeepSeek, sebab kuncinya sudah ada di aplikasi
 # ini. Cukup ganti tiga setelan ini kalau mau pindah ke penyedia lain yang
@@ -90,6 +99,11 @@ AI_ALAMAT = (os.getenv("OUTRO_AI_URL", "") or os.getenv("DEEPSEEK_BASE_URL", "ht
 # di sini: isinya "deepseek-chat", nama lama yang sudah tidak ada di daftar
 # resmi dan suatu saat bisa dihentikan tanpa kabar.
 AI_MODEL = os.getenv("OUTRO_AI_MODEL", "") or "deepseek-flash"
+
+# Alamat port debug Chrome pengguna. Kalau terbuka, ia yang dipakai - sesi
+# Google-nya sudah ada di sana. Kalau tidak, dicoba profil tersimpan hasil
+# jendela login (masih berguna untuk platform yang tidak menolak otomasi).
+CDP_URL = os.getenv("OUTRO_CDP", "http://127.0.0.1:9222")
 
 # Jendelanya SENGAJA terlihat, bukan headless. Ini berjalan di Mac developer,
 # dan kedua situs jauh lebih jarang mencurigai peramban yang benar-benar
@@ -247,6 +261,80 @@ def _jalankan(job_id: str) -> None:
 #  PERAMBAN
 # ============================================================
 
+def cdp_hidup() -> bool:
+    """True kalau ada Chrome yang mendengarkan di port debug."""
+    import httpx
+
+    try:
+        r = httpx.get(f"{CDP_URL.rstrip('/')}/json/version", timeout=3)
+        return r.status_code == 200
+    except Exception:  # noqa: BLE001 - tidak ada = tidak hidup
+        return False
+
+
+def chrome_pengguna_jalan() -> bool:
+    """True kalau Chrome biasa sedang jalan (tanpa port debug)."""
+    return subprocess.run(
+        ["pgrep", "-f", "Google Chrome.app/Contents/MacOS/Google Chrome"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def profil_chrome_pengguna() -> Path:
+    """Folder profil Chrome pengguna di mesin ini."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/Google/Chrome"
+    return Path.home() / ".config/google-chrome"
+
+
+def nyalakan_chrome_debug(tutup_dulu: bool = False) -> dict[str, Any]:
+    """Jalankan Chrome pengguna dengan port debug terbuka.
+
+    Chrome mengabaikan --remote-debugging-port kalau sudah ada instance yang
+    memakai profil yang sama: ia hanya membuka tab baru di jendela lama. Jadi
+    Chrome yang sedang jalan harus ditutup lebih dulu - dan itu menutup
+    tab-tab yang sedang dibuka orang, sehingga tidak pernah dilakukan
+    diam-diam. Pemanggil harus meminta secara tegas lewat tutup_dulu.
+    """
+    if cdp_hidup():
+        return {"ok": True, "pesan": "Chrome dengan port debug sudah jalan."}
+    if chrome_pengguna_jalan():
+        if not tutup_dulu:
+            return {
+                "ok": False,
+                "perlu_tutup": True,
+                "pesan": (
+                    "Chrome sedang terbuka tanpa port debug. Tutup Chrome dulu "
+                    "(tab-tabnya akan dibuka kembali), lalu tekan tombol ini lagi."
+                ),
+            }
+        subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to quit'],
+                       capture_output=True)
+        for _ in range(20):
+            if not chrome_pengguna_jalan():
+                break
+            time.sleep(0.5)
+
+    biner = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if not Path(biner).is_file():
+        return {"ok": False, "pesan": "Google Chrome tidak ditemukan di /Applications."}
+    port = CDP_URL.rsplit(":", 1)[-1].strip("/")
+    try:
+        subprocess.Popen(
+            [biner, f"--remote-debugging-port={port}",
+             f"--user-data-dir={profil_chrome_pengguna()}",
+             "--restore-last-session"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        return {"ok": False, "pesan": f"Gagal menjalankan Chrome: {error}"}
+    for _ in range(30):
+        time.sleep(0.5)
+        if cdp_hidup():
+            return {"ok": True, "pesan": "Chrome dibuka dengan port debug; sesi Google-mu siap dipakai."}
+    return {"ok": False, "pesan": "Chrome dijalankan tetapi port debugnya tidak terbuka."}
+
+
 def _profil(platform: str) -> Path:
     from autoupload.browser import profile_dir
 
@@ -254,6 +342,9 @@ def _profil(platform: str) -> Path:
 
 
 def punya_sesi(platform: str) -> bool:
+    """Siap dipakai: lewat Chrome pengguna (CDP) atau profil tersimpan."""
+    if platform == "flow" and cdp_hidup():
+        return True
     folder = _profil(platform)
     return folder.is_dir() and any(folder.iterdir())
 
@@ -472,9 +563,21 @@ def buat_video_flow(
 
     tujuan = folder / "outro.mp4"
     with sync_playwright() as pw:
-        konteks = _buka_profil(pw, "flow")
+        # Peramban pengguna sendiri kalau port debugnya terbuka: di sanalah
+        # sesi Google yang sah berada, dan tidak ada yang perlu login lewat
+        # otomasi. Peramban itu MILIK ORANG, jadi tidak ditutup di akhir -
+        # hanya tabnya yang dirapikan.
+        lewat_cdp = cdp_hidup()
+        peramban = None
+        if lewat_cdp:
+            log("Memakai Chrome-mu yang sudah masuk (port debug).")
+            peramban = pw.chromium.connect_over_cdp(CDP_URL)
+            konteks = peramban.contexts[0] if peramban.contexts else peramban.new_context()
+            page = konteks.new_page()
+        else:
+            konteks = _buka_profil(pw, "flow")
+            page = konteks.pages[0] if konteks.pages else konteks.new_page()
         konteks.set_default_timeout(20_000)
-        page = konteks.pages[0] if konteks.pages else konteks.new_page()
         try:
             log("Membuka Google Flow ...")
             page.goto(URL_FLOW, wait_until="domcontentloaded", timeout=90_000)
@@ -541,7 +644,13 @@ def buat_video_flow(
             return tujuan
         finally:
             try:
-                konteks.close()
+                if lewat_cdp:
+                    # Tab kita saja yang ditutup; jendela orangnya dibiarkan.
+                    page.close()
+                    if peramban is not None:
+                        peramban.close()  # memutus sambungan, bukan menutup Chrome
+                else:
+                    konteks.close()
             except Exception:  # noqa: BLE001
                 pass
 

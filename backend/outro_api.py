@@ -64,6 +64,11 @@ def status_sesi(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
 
     return {
         "lokal": LOKAL,
+        "chrome": {
+            "tersambung": outro.cdp_hidup(),
+            "chrome_jalan": outro.chrome_pengguna_jalan(),
+            "alamat": outro.CDP_URL,
+        },
         "sesi": {p: login.status(p) for p in PLATFORM},
     }
 
@@ -105,6 +110,25 @@ def hapus_sesi(platform: str, _: dict[str, Any] = Depends(developer_wajib)) -> d
     return login.delete_session(_platform(platform), "default")
 
 
+@router.post("/chrome")
+def nyalakan_chrome(
+    tutup_dulu: bool = False, _: dict[str, Any] = Depends(developer_wajib)
+) -> dict[str, Any]:
+    """Jalankan Chrome pengguna dengan port debug supaya Flow bisa dipakai.
+
+    Google menolak login dari peramban yang dikendalikan otomasi, jadi tidak
+    ada yang login lewat alat ini. Yang dilakukan justru sebaliknya: menumpang
+    sesi yang sudah ada di Chrome milik orangnya sendiri.
+
+    ``tutup_dulu`` menutup Chrome yang sedang terbuka. Itu menutup tab-tab
+    orang, jadi tidak pernah dilakukan diam-diam - halaman harus memintanya
+    secara tegas setelah memberi tahu.
+    """
+    _hanya_lokal()
+    hasil = outro.nyalakan_chrome_debug(tutup_dulu=tutup_dulu)
+    return {**hasil, "tersambung": outro.cdp_hidup()}
+
+
 # ---------------------------------------------------------------- pekerjaan
 
 @router.get("/jobs")
@@ -115,12 +139,14 @@ def daftar(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
 @router.post("/jobs")
 def buat(body: OutroBody, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
     _hanya_lokal()
-    for p in PLATFORM:
-        if not outro.punya_sesi(p):
-            raise HTTPException(
-                status_code=400,
-                detail="Belum ada sesi login Google Flow. Login dulu lewat tombol di atas.",
-            )
+    if not outro.punya_sesi("flow"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google Flow belum siap. Tekan \"Siapkan Chrome\" di atas supaya "
+                "Chrome-mu yang sudah masuk bisa dipakai."
+            ),
+        )
     try:
         job_id = outro.mulai_job(body.channel, body.akun)
     except outro.OutroError as error:

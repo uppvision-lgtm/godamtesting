@@ -29,11 +29,7 @@ const SOSMED: Sosmed[] = [
 ];
 const KOSONG: Record<string, string> = Object.fromEntries(SOSMED.map((s) => [s.kunci, ""]));
 
-type Sesi = { running: boolean; message: string; has_session: boolean };
-type PetaSesi = Record<string, Sesi>;
-const PLATFORM: { kunci: string; nama: string; ikon: string }[] = [
-  { kunci: "flow", nama: "Google Flow", ikon: "🎞️" },
-];
+type Chrome = { tersambung: boolean; chrome_jalan: boolean; alamat: string };
 
 type Job = {
   job_id: string;
@@ -70,9 +66,10 @@ export default function AutoOutroPage() {
   const bolehLihat = peran === PERAN_DEVELOPER;
 
   const [lokal, setLokal] = useState<boolean | null>(null);
-  const [sesi, setSesi] = useState<PetaSesi>({});
-  const [sibukSesi, setSibukSesi] = useState<string>("");
+  const [chrome, setChrome] = useState<Chrome | null>(null);
+  const [sibukSesi, setSibukSesi] = useState(false);
   const [galatSesi, setGalatSesi] = useState("");
+  const [perluTutup, setPerluTutup] = useState(false);
 
   const [channel, setChannel] = useState("");
   const [akun, setAkun] = useState<Record<string, string>>(KOSONG);
@@ -91,41 +88,46 @@ export default function AutoOutroPage() {
       }
       const j = await r.json();
       setLokal(Boolean(j.lokal));
-      setSesi(j.sesi || {});
+      setChrome(j.chrome || null);
       setGalatSesi("");
     } catch {
       setGalatSesi("Backend tidak merespons.");
     }
   }, []);
 
-  // Status sesi dimuat saat halaman dibuka, lalu dipantau selama ada jendela
-  // login yang terbuka supaya pesannya ("silakan login...") ikut berubah.
+  // Status dibaca setelah halaman hidup di browser. Pembacaannya ditaruh di
+  // dalam fungsi async supaya keadaan tidak diubah serentak dengan render -
+  // itu memicu rantai render yang tidak perlu.
   useEffect(() => {
     if (!siap || !bolehLihat) return;
     let batal = false;
-    const ambil = async () => {
+    void (async () => {
       if (!batal) await muatSesi();
-    };
-    void ambil();
-    const timer = setInterval(() => {
-      if (Object.values(sesi).some((s) => s.running)) void ambil();
-    }, 3000);
+    })();
     return () => {
       batal = true;
-      clearInterval(timer);
     };
-  }, [siap, bolehLihat, muatSesi, sesi]);
+  }, [siap, bolehLihat, muatSesi]);
 
-  async function aksiSesi(platform: string, aksi: "mulai" | "selesai" | "batal") {
-    setSibukSesi(`${platform}:${aksi}`);
+  /** Siapkan Chrome berport debug. `tutupDulu` menutup Chrome yang terbuka. */
+  async function siapkanChrome(tutupDulu = false) {
+    setSibukSesi(true);
     setGalatSesi("");
     try {
-      const r = await apiFetch(`/api/outro/sesi/${platform}/${aksi}`, { method: "POST" });
-      if (!r.ok) setGalatSesi(await bacaGalat(r, "Gagal."));
+      const r = await apiFetch(`/api/outro/chrome?tutup_dulu=${tutupDulu ? "true" : "false"}`, {
+        method: "POST",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setGalatSesi(j.detail || "Gagal menyiapkan Chrome.");
+      } else {
+        setPerluTutup(Boolean(j.perlu_tutup));
+        if (!j.ok) setGalatSesi(j.pesan || "");
+      }
     } catch {
       setGalatSesi("Backend tidak merespons.");
     } finally {
-      setSibukSesi("");
+      setSibukSesi(false);
       void muatSesi();
     }
   }
@@ -213,7 +215,7 @@ export default function AutoOutroPage() {
     setVideoUrl("");
   }
 
-  const semuaMasuk = PLATFORM.every((p) => sesi[p.kunci]?.has_session);
+  const semuaMasuk = Boolean(chrome?.tersambung);
   const sedangJalan = !!job && ["queued", "running"].includes(job.status);
   const bisaJalan = channel.trim().length > 0 && semuaMasuk && lokal === true && !sedangJalan;
 
@@ -247,17 +249,16 @@ export default function AutoOutroPage() {
           </section>
         ) : (
           <>
-            {/* ---------- sesi login ---------- */}
+            {/* ---------- Chrome pengguna ---------- */}
             <section className={`${styles.panel} ${styles.panelLebar}`}>
               <div className={styles.panelHead}>
-                <h2>Sesi peramban</h2>
+                <h2>Chrome kamu</h2>
                 <span className={styles.badge}>Developer</span>
               </div>
               <p className={styles.hint}>
-                Google Flow harus sudah masuk. Tekan <b>Buka jendela login</b>, login dengan
-                akun Google di jendela Chrome yang muncul, lalu tekan <b>Selesai</b>. Cukup
-                sekali — sesinya tersimpan. Promptnya ditulis AI lewat API, jadi tidak perlu
-                login ke mana pun untuk langkah itu.
+                Google menolak login dari peramban yang dikendalikan otomasi, jadi alat ini
+                tidak login ke mana pun. Yang dipakai adalah <b>Chrome milikmu sendiri</b> yang
+                sudah masuk akun Google — Flow dibuka di sana lewat port debug.
               </p>
               {lokal === false && (
                 <p className={styles.peringatan}>
@@ -267,58 +268,55 @@ export default function AutoOutroPage() {
               )}
               {galatSesi && <p className={styles.galat}>{galatSesi}</p>}
               <div className={styles.rincianKotak}>
-                {PLATFORM.map((p) => {
-                  const s = sesi[p.kunci];
-                  const sibuk = sibukSesi.startsWith(p.kunci + ":");
-                  return (
-                    <div key={p.kunci} className={styles.rincianBaris}>
-                      <span className={styles.rincianNama}>
-                        {p.ikon} {p.nama}{" "}
-                        <span className={s?.has_session ? styles.sasaranOk : styles.sasaranGagal}>
-                          {s?.has_session ? "masuk" : "belum masuk"}
-                        </span>
-                      </span>
-                      <span className={styles.rincianNilai}>
-                        {s?.running ? (
-                          <>
-                            <span className={styles.hint}>{s.message}</span>{" "}
-                            <button
-                              type="button"
-                              className={styles.btnUtama}
-                              disabled={sibuk}
-                              onClick={() => aksiSesi(p.kunci, "selesai")}
-                            >
-                              Selesai
-                            </button>{" "}
-                            <button
-                              type="button"
-                              className={styles.btnSekunder}
-                              disabled={sibuk}
-                              onClick={() => aksiSesi(p.kunci, "batal")}
-                            >
-                              Batal
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            {s?.message && !s.has_session && (
-                              <span className={styles.hint}>{s.message} </span>
-                            )}
-                            <button
-                              type="button"
-                              className={s?.has_session ? styles.btnSekunder : styles.btnUtama}
-                              disabled={sibuk || lokal === false}
-                              onClick={() => aksiSesi(p.kunci, "mulai")}
-                            >
-                              {s?.has_session ? "Login ulang" : "Buka jendela login"}
-                            </button>
-                          </>
-                        )}
-                      </span>
-                    </div>
-                  );
-                })}
+                <div className={styles.rincianBaris}>
+                  <span className={styles.rincianNama}>
+                    🌐 Chrome{" "}
+                    <span className={chrome?.tersambung ? styles.sasaranOk : styles.sasaranGagal}>
+                      {chrome?.tersambung ? "siap dipakai" : "belum siap"}
+                    </span>
+                  </span>
+                  <span className={styles.rincianNilai}>
+                    {chrome?.tersambung ? (
+                      <button
+                        type="button"
+                        className={styles.btnSekunder}
+                        disabled={sibukSesi}
+                        onClick={() => siapkanChrome(false)}
+                      >
+                        Periksa lagi
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className={styles.btnUtama}
+                        disabled={sibukSesi || lokal === false}
+                        onClick={() => siapkanChrome(false)}
+                      >
+                        {sibukSesi ? "Menyiapkan…" : "Siapkan Chrome"}
+                      </button>
+                    )}
+                  </span>
+                </div>
               </div>
+              {perluTutup && !chrome?.tersambung && (
+                <>
+                  <p className={styles.peringatan}>
+                    Chrome sedang terbuka tanpa port debug, dan Chrome hanya membaca setelan itu
+                    saat dijalankan. Chrome perlu ditutup lalu dibuka kembali —{" "}
+                    <b>tab-tabmu akan dipulihkan</b>, tapi simpan dulu yang sedang kamu kerjakan.
+                  </p>
+                  <div className={styles.aksi}>
+                    <button
+                      type="button"
+                      className={styles.btnBahaya}
+                      disabled={sibukSesi}
+                      onClick={() => siapkanChrome(true)}
+                    >
+                      Tutup Chrome &amp; buka ulang
+                    </button>
+                  </div>
+                </>
+              )}
             </section>
 
             {/* ---------- isian ---------- */}
