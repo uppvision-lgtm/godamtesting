@@ -32,6 +32,10 @@ router = APIRouter(prefix="/api/outro", tags=["outro"])
 class OutroBody(BaseModel):
     channel: str = Field(min_length=1, max_length=80)
     akun: dict[str, str] = Field(default_factory=dict)
+    # Tagline di bawah logo (mis. "TV Rakyat, Medianya Rakyat"); kosong = tanpa.
+    tagline: str = Field(default="", max_length=80)
+    # Teks pil ajakan; kosong = "Follow untuk Update Terkini".
+    ajakan: str = Field(default="", max_length=60)
 
 
 @router.get("/jobs")
@@ -42,7 +46,7 @@ def daftar(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
 @router.post("/jobs")
 def buat(body: OutroBody, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
     try:
-        job_id = outro.mulai_job(body.channel, body.akun)
+        job_id = outro.mulai_job(body.channel, body.akun, body.tagline, body.ajakan)
     except outro.OutroError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"job_id": job_id, "status": "queued"}
@@ -85,6 +89,8 @@ def _ringkas(job: dict[str, Any]) -> dict[str, Any]:
         "langkah": job.get("langkah"),
         "progress": job.get("progress", 0),
         "channel": job.get("channel"),
+        "tagline": job.get("tagline", ""),
+        "ajakan": job.get("ajakan", ""),
         "akun": job.get("akun", {}),
         "punya_video": bool(job.get("video")),
         "message": job.get("message", ""),
