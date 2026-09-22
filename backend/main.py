@@ -63,6 +63,7 @@ if AUTOUPLOAD_DIR.is_dir():
     if str(AUTOUPLOAD_DIR) not in sys.path:
         sys.path.insert(0, str(AUTOUPLOAD_DIR))
     try:
+        from autoupload.api import pemilik_saat_ini as sosmed_pemilik
         from autoupload import router as sosmed_router
         from autoupload import init_db as sosmed_init_db
         from autoupload import bereskan_job_nyangkut as sosmed_bereskan
@@ -118,6 +119,16 @@ if sosmed_router is not None:
     # Penjaganya dipasang DI SINI, bukan di dalam paket autoupload, supaya
     # paket itu tetap bisa dipakai berdiri sendiri tanpa sistem akun website.
     app.include_router(sosmed_router, dependencies=[Depends(pengguna_wajib)])
+
+    # Paket autoupload tidak kenal sistem akun website ini, jadi ia memakai
+    # dependensi kosong sebagai pemilik. Di sini dependensi itu DITIMPA dengan
+    # username yang sedang masuk. Itulah yang memisahkan akun sosmed satu
+    # pengguna dari pengguna lain: tanpa ini, tabelnya global dan siapa pun
+    # yang berhasil mendaftar bisa memakai Session ID orang lain.
+    def _pemilik_sosmed(pengguna: dict = Depends(pengguna_wajib)) -> str:
+        return str(pengguna["username"]).strip().lower()
+
+    app.dependency_overrides[sosmed_pemilik] = _pemilik_sosmed
     try:
         sosmed_init_db()
         # Job yang tertinggal karena backend mati di tengah upload dibereskan
@@ -172,7 +183,17 @@ def health_check() -> dict[str, str]:
 
 
 @app.post("/api/start-job")
-def start_job(request: Request, job: JobRequest) -> dict[str, str]:
+def start_job(
+    request: Request,
+    job: JobRequest,
+    pengguna: dict = Depends(pengguna_wajib),
+) -> dict[str, str]:
+    """Jalankan bot komentar lewat antrean Celery.
+
+    WAJIB login. Endpoint ini menerima Session ID mentah dan menjalankan bot
+    atas nama akun itu; dibiarkan terbuka, siapa pun yang tahu alamatnya bisa
+    memakainya - dan batas per-IP tidak menolong karena IP mudah berganti.
+    """
     enforce_rate_limit(request)
     encrypted_session_id = encrypt_secret(job.session_id)
     task = run_instagram_bot.delay(
@@ -186,7 +207,8 @@ def start_job(request: Request, job: JobRequest) -> dict[str, str]:
 
 
 @app.get("/api/job-status/{task_id}")
-def get_job_status(task_id: str) -> dict:
+def get_job_status(task_id: str, pengguna: dict = Depends(pengguna_wajib)) -> dict:
+    """Status satu job. Ikut ditutup: isinya memuat hasil dan pesan galat."""
     result = AsyncResult(task_id, app=celery_app)
     return {
         "task_id": task_id,

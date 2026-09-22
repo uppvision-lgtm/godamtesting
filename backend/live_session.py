@@ -225,7 +225,14 @@ def _akun_tertaut(
     try:
         akun = (
             db.query(SocialAccount)
-            .filter(SocialAccount.id == account_id, SocialAccount.is_active.is_(True))
+            .filter(
+                SocialAccount.id == account_id,
+                SocialAccount.is_active.is_(True),
+                # Hanya akun milik pengguna ini. Tanpa saringan ini, siapa pun
+                # yang punya akun website bisa menjalankan bot memakai Session
+                # ID orang lain hanya dengan menebak nomor akunnya.
+                SocialAccount.owner == str(pengguna.get("username") or ""),
+            )
             .first()
         )
         if akun is None or akun.platform != platform:

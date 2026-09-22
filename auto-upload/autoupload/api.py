@@ -59,6 +59,44 @@ VIDEO_LANGSUNG = {".mp4", ".mov"}
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+# ---------------------------------------------------------------- pemilik
+
+
+def pemilik_saat_ini() -> str:
+    """Username pemilik isi yang sedang diakses.
+
+    Bawaannya kosong: paket ini bisa dijalankan berdiri sendiri, tanpa sistem
+    akun, dan di situ semua isi memang milik satu orang. Saat dipasang ke
+    website, main.py MENIMPA dependensi ini lewat `dependency_overrides`
+    dengan username yang sedang masuk - itulah yang memisahkan akun sosmed
+    milik satu pengguna dari pengguna lain.
+    """
+    return ""
+
+
+def _milik(kueri, model, pemilik: str):
+    """Batasi kueri ke baris milik `pemilik` saja."""
+    return kueri.filter(model.owner == pemilik)
+
+
+def _jalur_aman(jalur: str) -> Path:
+    """Pastikan berkas yang diminta benar-benar ada DI DALAM folder unggahan.
+
+    `media_path` datang dari klien. Tanpa pemeriksaan ini, siapa pun yang
+    sudah masuk bisa menyebut jalur apa pun di server - termasuk basis data
+    berisi Session ID semua akun - dan menyuruh server mengunggahnya ke akun
+    sosmed miliknya sendiri. Jalurnya diselesaikan dulu (symlink ikut
+    ditelusuri) supaya "uploads/../../rahasia.db" tidak lolos.
+    """
+    try:
+        nyata = Path(jalur).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(400, f"File tidak ditemukan: {jalur}") from None
+    if not nyata.is_relative_to(UPLOAD_DIR.resolve()):
+        raise HTTPException(400, "File harus berada di folder unggahan server.")
+    return nyata
+
+
 # ---------------------------------------------------------------- skema
 
 class ItemUpload(BaseModel):
@@ -214,23 +252,28 @@ def _jadikan_mp4(asal: Path) -> Path:
 # ---------------------------------------------------------------- upload
 
 @router.post("/upload")
-async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
+async def upload(
+    req: UploadRequest,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
     """Upload sekarang (tunggu selesai) atau simpan sebagai jadwal."""
     daftar: list[dict] = []
     if req.items:
         akun_map = {
             a.id: a
             for a in db.query(SocialAccount)
-            .filter(SocialAccount.id.in_([i.account_id for i in req.items]))
+            .filter(
+                SocialAccount.id.in_([i.account_id for i in req.items]),
+                SocialAccount.owner == pemilik,
+            )
             .all()
         }
         for it in req.items:
             akun = akun_map.get(it.account_id)
             if akun is None or not akun.is_active:
                 raise HTTPException(400, f"Akun #{it.account_id} tidak ada atau tidak aktif")
-            jalur = it.media_path or req.media_path
-            if not jalur or not Path(jalur).exists():
-                raise HTTPException(400, f"File untuk akun #{it.account_id} tidak ditemukan")
+            jalur = str(_jalur_aman(it.media_path or req.media_path))
             teks = (it.caption or req.caption).strip()
             if not teks:
                 raise HTTPException(400, f"Caption untuk akun #{it.account_id} kosong")
@@ -248,8 +291,7 @@ async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
             raise HTTPException(400, f"Platform tidak valid: {unknown or 'kosong'}")
         if not req.caption.strip():
             raise HTTPException(400, "Caption wajib diisi")
-        if not Path(req.media_path).exists():
-            raise HTTPException(400, f"File tidak ditemukan: {req.media_path}")
+        _jalur_aman(req.media_path)
 
     run_at = None
     if req.scheduled_at:
@@ -269,6 +311,7 @@ async def upload(req: UploadRequest, db: Session = Depends(get_db)) -> dict:
 
     post = create_post(
         db,
+        owner=pemilik,
         media_path=req.media_path,
         caption=req.caption.strip(),
         platforms=req.platforms,
@@ -319,9 +362,18 @@ async def _jalankan_di_latar(post_id: int) -> None:
 
 
 @router.get("/posts")
-def list_posts(limit: int = 20, db: Session = Depends(get_db)) -> list[dict]:
-    """Riwayat + jadwal postingan terbaru."""
-    posts = db.query(Post).order_by(Post.id.desc()).limit(min(limit, 100)).all()
+def list_posts(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> list[dict]:
+    """Riwayat + jadwal postingan terbaru milik pengguna ini."""
+    posts = (
+        _milik(db.query(Post), Post, pemilik)
+        .order_by(Post.id.desc())
+        .limit(min(limit, 100))
+        .all()
+    )
     return [_post_dict(p) for p in posts]
 
 
@@ -395,18 +447,26 @@ def _pratinjau_cookie(platform: str, session_id: str) -> list[dict]:
 
 
 @router.get("/posts/{post_id}")
-def get_post(post_id: int, db: Session = Depends(get_db)) -> dict:
+def get_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
     """Status satu postingan. Dipakai halaman untuk menanyakan kemajuan."""
-    post = db.query(Post).filter(Post.id == post_id).first()
+    post = _milik(db.query(Post).filter(Post.id == post_id), Post, pemilik).first()
     if post is None:
         raise HTTPException(404, "Postingan tidak ditemukan")
     return _post_dict(post)
 
 
 @router.delete("/posts/{post_id}")
-def delete_post(post_id: int, db: Session = Depends(get_db)) -> dict:
+def delete_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
     """Hapus satu riwayat berikut berkas medianya."""
-    post = db.query(Post).filter(Post.id == post_id).first()
+    post = _milik(db.query(Post).filter(Post.id == post_id), Post, pemilik).first()
     if post is None:
         raise HTTPException(404, "Postingan tidak ditemukan")
     if post.status == "processing":
@@ -421,11 +481,15 @@ def delete_post(post_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @router.delete("/posts")
-def clear_posts(db: Session = Depends(get_db)) -> dict:
-    """Kosongkan riwayat, kecuali yang sedang berjalan."""
+def clear_posts(
+    db: Session = Depends(get_db), pemilik: str = Depends(pemilik_saat_ini)
+) -> dict:
+    """Kosongkan riwayat milik pengguna ini, kecuali yang sedang berjalan."""
     n = 0
     jalur: list[str] = []
-    for post in db.query(Post).filter(Post.status != "processing").all():
+    for post in _milik(
+        db.query(Post).filter(Post.status != "processing"), Post, pemilik
+    ).all():
         jalur.append(post.media_path)
         jalur.extend(r.media_path for r in post.targets if r.media_path)
         db.query(PostTarget).filter(PostTarget.post_id == post.id).delete()
@@ -438,12 +502,14 @@ def clear_posts(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/accounts")
-def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
+def list_accounts(
+    db: Session = Depends(get_db), pemilik: str = Depends(pemilik_saat_ini)
+) -> list[dict]:
     # Diurutkan tegas menurut id. Tanpa ini urutannya tidak dijamin, dan
     # halaman yang mengambil "yang terakhir" bisa menampilkan akun lama.
     accounts = (
         db.query(SocialAccount)
-        .filter(SocialAccount.is_active.is_(True))
+        .filter(SocialAccount.is_active.is_(True), SocialAccount.owner == pemilik)
         .order_by(SocialAccount.id)
         .all()
     )
@@ -470,7 +536,11 @@ def list_accounts(db: Session = Depends(get_db)) -> list[dict]:
 
 
 @router.post("/accounts")
-def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
+def add_account(
+    req: AccountRequest,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
     if req.platform not in PLATFORMS:
         raise HTTPException(400, f"Platform harus salah satu dari {PLATFORMS}")
     # Satu platform boleh punya BANYAK akun aktif sekaligus. Yang dinonaktifkan
@@ -482,11 +552,16 @@ def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
         SocialAccount.platform == req.platform,
         SocialAccount.session_name == sesi,
         SocialAccount.is_active.is_(True),
+        SocialAccount.owner == pemilik,
     ).update({"is_active": False}, synchronize_session=False)
 
     terpakai = (
         db.query(SocialAccount)
-        .filter(SocialAccount.platform == req.platform, SocialAccount.is_active.is_(True))
+        .filter(
+            SocialAccount.platform == req.platform,
+            SocialAccount.is_active.is_(True),
+            SocialAccount.owner == pemilik,
+        )
         .count()
     )
     if terpakai >= MAKS_AKUN_PER_PLATFORM:
@@ -497,6 +572,7 @@ def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
         )
 
     account = SocialAccount(
+        owner=pemilik,
         platform=req.platform,
         display_name=req.display_name,
         session_name=sesi,
@@ -510,14 +586,20 @@ def add_account(req: AccountRequest, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/accounts/{account_id}/verify")
-async def verify_account(account_id: int, db: Session = Depends(get_db)) -> dict:
+async def verify_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
     """Buka beranda platform memakai Session ID akun ini.
 
     Terbuka sebagai akun yang sudah masuk berarti sesinya sah; dilempar ke
     halaman login berarti sudah mati. Hasilnya disimpan supaya halaman bisa
     menandainya tanpa memeriksa ulang setiap kali dibuka.
     """
-    account = db.query(SocialAccount).filter(SocialAccount.id == account_id).first()
+    account = _milik(
+        db.query(SocialAccount).filter(SocialAccount.id == account_id), SocialAccount, pemilik
+    ).first()
     if not account:
         raise HTTPException(404, "Akun tidak ditemukan")
     if not account.session_id:
@@ -544,11 +626,20 @@ async def verify_account(account_id: int, db: Session = Depends(get_db)) -> dict
 
 
 @router.delete("/accounts/{account_id}")
-def delete_account(account_id: int, db: Session = Depends(get_db)) -> dict:
-    account = db.query(SocialAccount).filter(SocialAccount.id == account_id).first()
+def delete_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
+    account = _milik(
+        db.query(SocialAccount).filter(SocialAccount.id == account_id), SocialAccount, pemilik
+    ).first()
     if not account:
         raise HTTPException(404, "Akun tidak ditemukan")
     account.is_active = False
+    # Session ID ikut dibuang. Akun yang sudah diputuskan tidak punya alasan
+    # menyimpan kredensial, dan menyimpannya hanya menambah yang bisa bocor.
+    account.session_id = ""
     db.commit()
     return {"ok": True}
 

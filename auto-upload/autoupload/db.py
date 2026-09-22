@@ -59,6 +59,12 @@ class SocialAccount(Base):
     __tablename__ = "social_accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Username pemilik akun ini. WAJIB dipakai sebagai saringan di setiap
+    # query: Session ID setara password, jadi akun milik satu orang tidak
+    # boleh terlihat - apalagi terpakai - oleh orang lain yang kebetulan
+    # punya akun di website ini. Kosong berarti milik pemakaian berdiri
+    # sendiri (paket ini dijalankan tanpa sistem akun website).
+    owner: Mapped[str] = mapped_column(String(64), default="", index=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)
     display_name: Mapped[str] = mapped_column(String(255), default="")
     session_name: Mapped[str] = mapped_column(String(64), default="default")  # nama profil browser
@@ -74,6 +80,9 @@ class Post(Base):
     __tablename__ = "posts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Pemiliknya, dengan alasan yang sama seperti di SocialAccount: riwayat
+    # memuat caption dan tautan postingan, dan itu bukan milik umum.
+    owner: Mapped[str] = mapped_column(String(64), default="", index=True)
     media_path: Mapped[str] = mapped_column(Text)
     media_kind: Mapped[str] = mapped_column(String(16))  # video / photo
     caption: Mapped[str] = mapped_column(Text, default="")
@@ -138,6 +147,8 @@ def _tambah_kolom_yang_kurang() -> None:
             "progress": "INTEGER DEFAULT 0",
             "tahap": "VARCHAR(80) DEFAULT ''",
         },
+        "social_accounts": {"owner": "VARCHAR(64) DEFAULT ''"},
+        "posts": {"owner": "VARCHAR(64) DEFAULT ''"},
     }
     pemeriksa = inspect(engine)
     with engine.begin() as sambungan:
@@ -150,6 +161,43 @@ def _tambah_kolom_yang_kurang() -> None:
                     continue
                 sambungan.execute(text(f"ALTER TABLE {tabel} ADD COLUMN {nama} {tipe}"))
                 log.info("Kolom %s.%s ditambahkan", tabel, nama)
+        # Penyerahan dijalankan SETIAP kali start, bukan hanya saat kolomnya
+        # baru dibuat: kalau kolom sudah terlanjur ada sebelum variabelnya
+        # diisi, barisnya akan tertinggal tanpa pemilik selamanya. Idempoten -
+        # yang sudah bermilik tidak disentuh.
+        for tabel in ("social_accounts", "posts"):
+            if pemeriksa.has_table(tabel):
+                _serahkan_ke_pemilik_awal(sambungan, tabel)
+
+
+def _serahkan_ke_pemilik_awal(sambungan, tabel: str) -> None:
+    """Baris lama belum punya pemilik; serahkan ke pemilik yang ditunjuk.
+
+    Tanpa ini, semua akun dan riwayat yang sudah ada mendadak tidak bermilik.
+    Karena saringan pemilik menolak yang tidak cocok, akun-akun itu akan
+    hilang dari halaman - bukan bocor, tapi tetap saja rusak. Nama pemiliknya
+    diambil dari AUTOUPLOAD_PEMILIK_AWAL; kalau tidak diisi, barisnya sengaja
+    DIBIARKAN tanpa pemilik (aman, tapi tidak terlihat) dan dicatat di log.
+    """
+    import os
+
+    from sqlalchemy import text
+
+    pemilik = os.getenv("AUTOUPLOAD_PEMILIK_AWAL", "").strip().lower()
+    if not pemilik:
+        log.debug(
+            "%s: kolom owner baru dibuat tetapi AUTOUPLOAD_PEMILIK_AWAL kosong, "
+            "jadi baris lama tidak diserahkan ke siapa pun dan tidak akan "
+            "tampil di halaman. Isi variabel itu lalu jalankan ulang.",
+            tabel,
+        )
+        return
+    hasil = sambungan.execute(
+        text(f"UPDATE {tabel} SET owner = :pemilik WHERE owner IS NULL OR owner = ''"),
+        {"pemilik": pemilik},
+    )
+    if hasil.rowcount:
+        log.info("%s: %s baris lama diserahkan ke %s", tabel, hasil.rowcount, pemilik)
 
 
 def get_db():

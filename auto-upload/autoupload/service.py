@@ -34,6 +34,10 @@ def _targets_payload(db, post: Post) -> list[dict]:
             .filter(
                 SocialAccount.platform == t.platform,
                 SocialAccount.is_active.is_(True),
+                # Cadangan "akun terbaru platform ini" tetap harus milik
+                # pemilik postingannya, bukan milik siapa pun yang kebetulan
+                # paling baru menautkan akun.
+                SocialAccount.owner == post.owner,
             )
             .order_by(SocialAccount.id.desc())
             .first()
@@ -73,6 +77,7 @@ def create_post(
     scheduled_at: datetime | None = None,
     account_ids: dict[str, int] | None = None,
     items: list[dict] | None = None,
+    owner: str = "",
 ) -> Post:
     """Simpan post + targetnya. Belum meng-upload apa pun.
 
@@ -83,6 +88,7 @@ def create_post(
       caption sendiri. Dipakai saat menyebar ke banyak akun sekaligus.
     """
     post = Post(
+        owner=owner,
         media_path=media_path,
         media_kind=media_kind,
         caption=caption,

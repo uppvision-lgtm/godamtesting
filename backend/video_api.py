@@ -300,7 +300,11 @@ def _sesi_dari_akun(account_id: int | None, pengguna: dict[str, Any] | None) -> 
     try:
         akun = (
             db.query(SocialAccount)
-            .filter(SocialAccount.id == account_id, SocialAccount.is_active.is_(True))
+            .filter(
+                SocialAccount.id == account_id,
+                SocialAccount.is_active.is_(True),
+                SocialAccount.owner == str(pengguna.get("username") or ""),
+            )
             .first()
         )
         if akun is None or akun.platform != "instagram":
