@@ -84,7 +84,12 @@ URL_FLOW = "https://labs.google/fx/tools/flow"
 # sejenisnya) - kodenya tidak perlu diubah.
 AI_KUNCI = os.getenv("OUTRO_AI_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")
 AI_ALAMAT = (os.getenv("OUTRO_AI_URL", "") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")).rstrip("/")
-AI_MODEL = os.getenv("OUTRO_AI_MODEL", "") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+# Model termurah yang ditawarkan DeepSeek: 0,15-0,30 USD per sejuta token
+# masuk dan 0,60-1,20 per sejuta token keluar, sekitar seperempat harga
+# deepseek-v4-pro. DEEPSEEK_MODEL milik bot komentar SENGAJA tidak dipakai
+# di sini: isinya "deepseek-chat", nama lama yang sudah tidak ada di daftar
+# resmi dan suatu saat bisa dihentikan tanpa kabar.
+AI_MODEL = os.getenv("OUTRO_AI_MODEL", "") or "deepseek-flash"
 
 # Jendelanya SENGAJA terlihat, bukan headless. Ini berjalan di Mac developer,
 # dan kedua situs jauh lebih jarang mencurigai peramban yang benar-benar
