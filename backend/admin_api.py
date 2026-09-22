@@ -130,6 +130,20 @@ def hapus_akun(
     return {"ok": True, "username": username, "dihapus": jumlah}
 
 
+@router.post("/perbaiki-storage")
+def perbaiki_storage(pengguna: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
+    """Dorong set layer & aset yang belum ada di Supabase, lalu laporkan.
+
+    Worker berjalan di container tanpa volume backend, jadi berkas yang tidak
+    sampai ke Supabase membuat set layer itu tampak normal di halaman tapi
+    selalu gagal saat dirender. Ini menjalankan perbaikannya kapan saja,
+    tanpa perlu menunggu backend dijalankan ulang.
+    """
+    import video_edit as ve
+
+    return ve.perbaiki_storage()
+
+
 @router.post("/users/{username}/peran")
 def ubah_peran(
     username: str, peran: str, pengguna: dict[str, Any] = Depends(developer_wajib)

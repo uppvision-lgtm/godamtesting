@@ -357,6 +357,85 @@ def sinkron_di_latar(paksa: bool = False) -> None:
     ).start()
 
 
+def perbaiki_storage(template_id: str | None = None) -> dict[str, int]:
+    """Dorong template & aset yang ada di disk ini tapi belum ada di Supabase.
+
+    Backend menulis ke volume miliknya sendiri, sedangkan worker berjalan di
+    container lain tanpa volume itu - Railway tidak bisa memasang satu volume
+    ke dua layanan. Jadi satu-satunya jalan berkas sampai ke worker adalah
+    Supabase. Kalau ada yang tidak terkirim ke sana, template itu tampak utuh
+    di halaman (backend membacanya dari disk) tetapi setiap rendernya gagal
+    dengan "template tidak ditemukan" atau "aset tidak ditemukan" - persis
+    yang terjadi pada 10 dari 36 set layer yang ada.
+
+    Yang belum ada saja yang dikirim, jadi aman dijalankan berkali-kali.
+    Template tamu dilewati: memang tidak untuk disimpan.
+    """
+    hasil = {"template": 0, "aset": 0, "gagal": 0}
+    if not storage.enabled():
+        return hasil
+    akar = templates_dir()
+    if not akar.is_dir():
+        return hasil
+    if template_id:
+        folder_template = [akar / _aman(template_id)]
+    else:
+        folder_template = sorted(p for p in akar.iterdir() if p.is_dir())
+    for folder in folder_template:
+        berkas_json = folder / "template.json"
+        if not berkas_json.is_file():
+            continue
+        tid = folder.name
+        try:
+            isi = json.loads(berkas_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if is_tamu(str(isi.get("owner") or "")):
+            continue
+        try:
+            punya = {i.get("name") for i in storage.list_prefix(f"templates/{tid}", limit=100)}
+            punya_aset = {
+                i.get("name")
+                for i in storage.list_prefix(f"templates/{tid}/assets", limit=500)
+            }
+        except storage.StorageError as error:
+            logger.warning("Tidak bisa membaca isi Supabase untuk %s: %s", tid, error)
+            hasil["gagal"] += 1
+            continue
+        if "template.json" not in punya:
+            try:
+                storage.upload(
+                    f"templates/{tid}/template.json", berkas_json, "application/json"
+                )
+                hasil["template"] += 1
+                logger.info("Template %s didorong ke Supabase", tid)
+            except storage.StorageError as error:
+                logger.warning("Template %s gagal didorong: %s", tid, error)
+                hasil["gagal"] += 1
+        for aset in sorted((folder / "assets").glob("*")):
+            if not aset.is_file() or aset.name in punya_aset:
+                continue
+            try:
+                storage.upload(f"templates/{tid}/assets/{aset.name}", aset)
+                hasil["aset"] += 1
+                logger.info("Aset %s/%s didorong ke Supabase", tid, aset.name)
+            except storage.StorageError as error:
+                logger.warning("Aset %s/%s gagal didorong: %s", tid, aset.name, error)
+                hasil["gagal"] += 1
+    return hasil
+
+
+def perbaiki_storage_di_latar() -> None:
+    """Jalankan perbaikan tanpa menahan permintaan yang sedang dilayani."""
+    if not storage.enabled():
+        return
+    threading.Thread(
+        target=lambda: logger.info("Perbaikan storage selesai: %s", perbaiki_storage()),
+        name="perbaiki-storage",
+        daemon=True,
+    ).start()
+
+
 def load_template(template_id: str) -> dict[str, Any]:
     berkas = template_path(template_id) / "template.json"
     if not berkas.is_file():

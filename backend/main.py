@@ -23,6 +23,7 @@ from comment_ai import normalize_tone
 from tasks import run_instagram_bot
 from live_session import router as live_login_router
 from presence import router as presence_router
+import video_edit
 from video_api import router as video_router
 from auth_api import pengguna_wajib, router as auth_router
 from forms_api import router as forms_router
@@ -141,6 +142,29 @@ if sosmed_router is not None:
         logging.getLogger(__name__).exception("Auto Upload sosmed gagal disiapkan")
 else:
     logging.getLogger(__name__).warning("Auto Upload sosmed tidak aktif: %s", sosmed_alasan)
+
+
+# Set layer hidup di volume milik backend, sedangkan worker berjalan di
+# container lain tanpa volume itu - satu volume Railway tidak bisa dipasang ke
+# dua layanan. Supabase-lah satu-satunya jalan berkas sampai ke worker, jadi
+# apa pun yang belum sempat naik ke sana dikirim sekarang. Di latar belakang,
+# supaya backend tetap langsung melayani permintaan.
+# TIDAK dijalankan dalam mode lokal (DEBUG). Laptop memakai berkas .env yang
+# menunjuk bucket Supabase yang sama dengan server, jadi kalau perbaikan ini
+# jalan di sana, set layer percobaan di laptop ikut terdorong ke bucket
+# bersama - dan karena server menarik semua set layer dari bucket itu,
+# percobaan lokal akan muncul di situs. Akun developer tetap bisa
+# menjalankannya kapan saja lewat POST /api/admin/perbaiki-storage.
+if not local_debug:
+    try:
+        video_edit.perbaiki_storage_di_latar()
+    except Exception:  # noqa: BLE001 - perbaikan tidak boleh menghalangi server hidup
+        logging.getLogger(__name__).exception("Perbaikan storage gagal dimulai")
+else:
+    logging.getLogger(__name__).info(
+        "Mode lokal: perbaikan storage dilewati supaya set layer percobaan "
+        "tidak terdorong ke bucket bersama."
+    )
 
 
 class JobRequest(BaseModel):
