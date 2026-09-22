@@ -19,6 +19,7 @@ import os
 import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -201,9 +202,125 @@ def bersihkan_job_lama() -> int:
                 continue
             shutil.rmtree(folder, ignore_errors=True)
             dihapus += 1
+    # Sisa di Supabase yang folder lokalnya sudah lenyap lebih dulu.
+    try:
+        bersihkan_storage_yatim()
+    except Exception as error:  # noqa: BLE001 - penyapuan tidak boleh menggagalkan render
+        logger.warning("Penyapuan sisa Supabase gagal: %s", error)
+
     if dihapus:
         logger.info("%d job kedaluwarsa dibuang", dihapus)
     return dihapus
+
+
+# Penyapuan sisa di Supabase mahal (banyak permintaan daftar), jadi dijalankan
+# paling sering sekali per jam walau render terjadi berkali-kali.
+KUNCI_SAPU = "videojob:sapu-yatim"
+SAPU_JEDA_DETIK = int(os.getenv("VIDEO_SAPU_JEDA", "3600"))
+
+
+def _umur_jam(item: dict[str, Any]) -> float:
+    """Umur sebuah berkas Supabase dalam jam; -1 kalau tanggalnya tak terbaca."""
+    teks = str(item.get("created_at") or item.get("updated_at") or "").strip()
+    if not teks:
+        return -1.0
+    try:
+        waktu = datetime.fromisoformat(teks.replace("Z", "+00:00"))
+    except ValueError:
+        return -1.0
+    if waktu.tzinfo is None:
+        waktu = waktu.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - waktu).total_seconds() / 3600.0
+
+
+def bersihkan_storage_yatim(paksa: bool = False) -> dict[str, int]:
+    """Buang berkas di Supabase yang job atau unggahannya sudah tidak ada.
+
+    Pembersih yang lama berangkat dari DISK: ia menghapus folder job yang
+    kedaluwarsa, dan sekalian salinannya di Supabase. Masalahnya folder itu
+    sering hilang lebih dulu - worker memakai /tmp, yang disapu bersih setiap
+    kali container dijalankan ulang - dan begitu folder lokalnya lenyap, tidak
+    ada lagi yang tahu salinan Supabase-nya harus dibuang. Sisa itu menumpuk
+    selamanya: saat perbaikan ini dibuat ada 85 berkas berumur lebih dari
+    sehari, 1,58 GB, yang menurut aturan simpan 24 jam seharusnya sudah lama
+    tidak ada.
+
+    Jadi penyapuan ini berangkat dari SUPABASE, bukan dari disk. Yang dibuang
+    hanya yang sudah lewat batas simpan DAN catatannya tidak ada lagi di
+    Redis - job yang masih tercatat tidak disentuh, berapa pun umurnya.
+    """
+    hasil = {"job": 0, "unggahan": 0, "gagal": 0}
+    if not storage.enabled():
+        return hasil
+    r = _r()
+    if not paksa:
+        try:
+            if not r.set(KUNCI_SAPU, "1", ex=SAPU_JEDA_DETIK, nx=True):
+                return hasil
+        except redis.RedisError:
+            return hasil
+
+    def buang_isi(awalan: str) -> int:
+        """Hapus semua berkas di bawah satu folder Supabase."""
+        jumlah = 0
+        for berkas in storage.list_prefix(awalan, limit=1000):
+            nama = str(berkas.get("name") or "")
+            if not nama:
+                continue
+            storage.delete(f"{awalan}/{nama}")
+            jumlah += 1
+        return jumlah
+
+    # 1. Hasil render yang job-nya sudah tidak tercatat lagi.
+    try:
+        for folder in storage.list_prefix("jobs", limit=1000):
+            job_id = str(folder.get("name") or "")
+            if not job_id:
+                continue
+            try:
+                if r.exists(KUNCI_JOB + _aman_id(job_id)):
+                    continue
+            except (redis.RedisError, VideoError):
+                continue
+            isi = storage.list_prefix(f"jobs/{job_id}", limit=1000)
+            if not isi:
+                continue
+            # Job yang baru saja dibuat tetapi catatannya belum sempat
+            # ditulis tidak boleh ikut terbuang, jadi umurnya ikut diperiksa.
+            if max((_umur_jam(b) for b in isi), default=-1.0) < JOB_RETENTION_HOURS:
+                continue
+            for berkas in isi:
+                nama = str(berkas.get("name") or "")
+                if nama:
+                    storage.delete(f"jobs/{job_id}/{nama}")
+                    hasil["job"] += 1
+    except storage.StorageError as error:
+        logger.warning("Penyapuan hasil render di Supabase gagal: %s", error)
+        hasil["gagal"] += 1
+
+    # 2. Video sumber unggahan. Tidak pernah tercatat di Redis, jadi umurnya
+    #    saja yang menentukan - batasnya sama dengan job yang memakainya.
+    try:
+        for folder in storage.list_prefix("uploads", limit=1000):
+            id_unggahan = str(folder.get("name") or "")
+            if not id_unggahan:
+                continue
+            isi = storage.list_prefix(f"uploads/{id_unggahan}", limit=1000)
+            if not isi:
+                continue
+            if max((_umur_jam(b) for b in isi), default=-1.0) < JOB_RETENTION_HOURS:
+                continue
+            hasil["unggahan"] += buang_isi(f"uploads/{id_unggahan}")
+    except storage.StorageError as error:
+        logger.warning("Penyapuan unggahan di Supabase gagal: %s", error)
+        hasil["gagal"] += 1
+
+    if hasil["job"] or hasil["unggahan"]:
+        logger.info(
+            "Sisa di Supabase dibuang: %d berkas hasil render, %d berkas unggahan",
+            hasil["job"], hasil["unggahan"],
+        )
+    return hasil
 
 
 def buang_job(job_id: str) -> None:
