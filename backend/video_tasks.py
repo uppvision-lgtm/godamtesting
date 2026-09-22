@@ -336,6 +336,7 @@ def render_video(
         # Simpan permanen ke Supabase supaya tidak ikut hilang saat container
         # di-deploy ulang, sekaligus memberi URL yang bisa di-seek di browser.
         url = ""
+        jalur = ""
         di_supabase = False
         if storage.enabled():
             try:
@@ -354,6 +355,10 @@ def render_video(
             progress=100,
             output=hasil.name,
             url=url,
+            # Jalur di dalam bucket ikut disimpan. URL bisa kedaluwarsa
+            # (signed URL berumur pendek), jalurnya tidak - dan server punya
+            # kunci untuk mengambilnya kapan pun.
+            storage_path=jalur if di_supabase else "",
             size=ukuran,
             log="Video siap diunggah.",
         )

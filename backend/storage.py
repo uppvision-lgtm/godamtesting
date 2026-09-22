@@ -25,9 +25,11 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "media").strip() or "media"
-# Bucket publik: URL bisa dibuka siapa saja yang punya tautannya. Kalau
-# dimatikan, dipakai signed URL berumur pendek.
-SUPABASE_PUBLIC = os.getenv("SUPABASE_PUBLIC_BUCKET", "true").lower() in ("1", "true", "yes")
+# Bucket publik berarti SIAPA PUN yang punya tautannya bisa mengunduh isinya
+# tanpa login - termasuk video yang belum diterbitkan. Bawaannya kini TERTUTUP;
+# yang dipakai signed URL berumur pendek. Hidupkan kembali hanya kalau memang
+# ada yang harus bisa dibuka tanpa kredensial.
+SUPABASE_PUBLIC = os.getenv("SUPABASE_PUBLIC_BUCKET", "false").lower() in ("1", "true", "yes")
 SIGNED_URL_TTL = int(os.getenv("SUPABASE_SIGNED_URL_TTL", "86400"))
 TIMEOUT = httpx.Timeout(120.0, connect=15.0)
 
@@ -65,6 +67,11 @@ def ensure_bucket() -> bool:
     with httpx.Client(timeout=TIMEOUT) as client:
         ada = client.get(_api(f"/bucket/{SUPABASE_BUCKET}"), headers=_headers())
         if ada.status_code == 200:
+            # Bucket yang sudah ada TIDAK ikut berubah saat setelannya diubah.
+            # Tanpa penyelarasan ini, bucket yang terlanjur dibuat publik akan
+            # tetap publik selamanya walau SUPABASE_PUBLIC_BUCKET sudah
+            # dimatikan - dan itu tidak terlihat dari mana pun.
+            _selaraskan_visibilitas(client, ada)
             return True
         buat = client.post(
             _api("/bucket"),
@@ -82,6 +89,34 @@ def ensure_bucket() -> bool:
         _periksa(buat, "Membuat bucket")
         logger.info("Bucket Supabase '%s' dibuat", SUPABASE_BUCKET)
         return True
+
+
+def _selaraskan_visibilitas(client: httpx.Client, ada: httpx.Response) -> None:
+    """Samakan visibilitas bucket yang sudah ada dengan setelan sekarang."""
+    try:
+        sekarang = bool(ada.json().get("public"))
+    except ValueError:
+        return
+    if sekarang == SUPABASE_PUBLIC:
+        return
+    ubah = client.put(
+        _api(f"/bucket/{SUPABASE_BUCKET}"),
+        headers=_headers({"Content-Type": "application/json"}),
+        json={"public": SUPABASE_PUBLIC},
+    )
+    if ubah.status_code >= 400:
+        logger.warning(
+            "Visibilitas bucket '%s' gagal diubah jadi %s: %s",
+            SUPABASE_BUCKET,
+            "publik" if SUPABASE_PUBLIC else "tertutup",
+            ubah.text[:160],
+        )
+        return
+    logger.info(
+        "Bucket '%s' diubah jadi %s",
+        SUPABASE_BUCKET,
+        "publik" if SUPABASE_PUBLIC else "tertutup",
+    )
 
 
 # Sudahkah bucket diperiksa di proses ini. Pemeriksaan cukup sekali supaya

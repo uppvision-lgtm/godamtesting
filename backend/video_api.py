@@ -772,6 +772,19 @@ def salin_ke_sosmed(
     sumber = vt.job_path(job_id) / str(status["output"])
     if sumber.is_file():
         shutil.copyfile(sumber, tujuan)
+    elif status.get("storage_path"):
+        # Diambil memakai kunci server, bukan lewat URL. Tautan bertanda
+        # tangan punya umur, sedangkan jalur di bucket tidak - jadi cara ini
+        # tetap jalan untuk job yang sudah agak lama.
+        import storage as st
+
+        try:
+            st.download(str(status["storage_path"]), tujuan)
+        except Exception as error:  # noqa: BLE001
+            tujuan.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=502, detail=f"Hasil render tidak bisa diambil: {error}"
+            ) from error
     elif status.get("url"):
         import httpx
 
