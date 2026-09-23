@@ -6,6 +6,7 @@ minggu seperti browser biasa. Beberapa akun per platform = folder profil beda.
 """
 
 import asyncio
+import logging
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -15,6 +16,8 @@ from enum import Enum
 from pathlib import Path
 
 from autoupload.config import DEBUG_SHOTS_DIR, MAKS_DEBUG_SHOT, PROFILES_DIR
+
+log = logging.getLogger("autoupload")
 
 
 class MediaKind(str, Enum):
@@ -458,8 +461,20 @@ class PlaywrightPlatform(ABC):
                     ctx_kwargs["has_touch"] = True
                 context = await peramban.new_context(**ctx_kwargs)
                 await context.add_init_script(STEALTH_INIT_SCRIPT)
-                await context.add_cookies(self.session_cookies(session_id))
+                kuki = self.session_cookies(session_id)
+                await context.add_cookies(kuki)
+                # Dicatat sebagai peringatan (server memakai LOG_LEVEL=WARNING)
+                # supaya kalau unggahan mendarat di halaman login, bisa langsung
+                # dibedakan: cookie tidak terpasang, atau terpasang tapi ditolak.
+                log.warning(
+                    "[%s] konteks unggah: %d cookie dipasang (session_id %d huruf)",
+                    self.platform_key, len(kuki), len(session_id),
+                )
             else:
+                log.warning(
+                    "[%s] unggah TANPA Session ID - memakai profil tersimpan (%s)",
+                    self.platform_key, self.profile,
+                )
                 # Tanpa Session ID, satu-satunya sesi yang ada justru di profil
                 # tersimpan hasil login browser - jadi profilnya tetap dipakai.
                 try:
