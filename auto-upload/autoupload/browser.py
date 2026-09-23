@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -289,6 +290,33 @@ class PlaywrightPlatform(ABC):
     wilayah_cookie: str = ""
     wilayah_kandidat: tuple[str, ...] = ()
 
+    # Jenis permintaan yang dibatalkan demi hemat memori (resource_type
+    # Playwright: "image", "media", "font", ...). Kosong = muat semuanya.
+    # Diumumkan di sini, bukan di dalam adapter, supaya pemeriksaan sesi di
+    # verify.py memakai penawar yang sama dengan upload: dulu hanya upload
+    # yang hemat, dan pemeriksaannyalah yang mati kehabisan memori.
+    jenis_diblokir: tuple[str, ...] = ()
+
+    async def blokir_berat(self, page) -> None:
+        """Batalkan gambar, video, dan font kalau platform ini memintanya."""
+        if not self.jenis_diblokir:
+            return
+        berat = set(self.jenis_diblokir)
+
+        async def penangan(route) -> None:
+            try:
+                if route.request.resource_type in berat:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:  # noqa: BLE001 - permintaan sudah selesai duluan
+                pass
+
+        try:
+            await page.route("**/*", penangan)
+        except Exception:  # noqa: BLE001 - hemat memori tidak boleh menggagalkan
+            pass
+
     def cookie_wilayah(self, nilai: str) -> list[dict]:
         """Cookie penunjuk wilayah data, untuk semua domain cookie sesi."""
         domains: list[str] = []
@@ -319,19 +347,48 @@ class PlaywrightPlatform(ABC):
         ("" = tidak perlu cookie wilayah), atau None kalau semua ditolak.
         """
         await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-        await page.wait_for_timeout(tunggu_ms)
-        if not await ditolak(page):
+        if not await self._tunggu_putusan(page, ditolak, tunggu_ms):
             return ""
         if not (self.wilayah_cookie and self.wilayah_kandidat):
             return None
         for wilayah in self.wilayah_kandidat:
             await page.context.add_cookies(self.cookie_wilayah(wilayah))
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            await page.wait_for_timeout(tunggu_ms)
-            if not await ditolak(page):
+            if not await self._tunggu_putusan(page, ditolak, tunggu_ms):
                 print(f"[{self.platform_key}] wilayah data: {wilayah}", flush=True)
                 return wilayah
         return None
+
+    @staticmethod
+    async def _tunggu_putusan(page, ditolak, tunggu_ms: int) -> bool:
+        """True kalau halamannya PERNAH tampak login selama jendela tunggu.
+
+        Dulu `ditolak()` dipanggil sekali saja, di ujung jeda tetap. Itu
+        lomba, dan lombanya bisa kalah: X memuat berandanya dulu lalu baru
+        mengalihkan ke halaman masuk, jadi sesi yang sudah mati bisa terbaca
+        sah hanya karena pengalihannya datang sedetik setelah jeda habis.
+        Diuji dengan cookie palsu: 2 dari 3 kali divonis sah.
+
+        Mengintip berkali-kali sepanjang jendela yang sama hanya bisa
+        menemukan LEBIH banyak penolakan, tidak pernah lebih sedikit -
+        jendelanya tetap ditunggu penuh sebelum halaman dinyatakan diterima,
+        supaya isinya sempat termuat untuk dibaca.
+        """
+        habis = time.monotonic() + max(tunggu_ms, 0) / 1000
+        while True:
+            await page.wait_for_timeout(500)
+            if await ditolak(page):
+                # Sekali lagi sesudah jeda. Sebagian platform MELINTASI
+                # halaman masuk walau sesinya sah (YouTube Studio sesekali
+                # singgah di accounts.google.com sebelum mendarat). Tanpa
+                # konfirmasi ini, mengintip berkali-kali justru menukar
+                # kesalahan lama dengan kesalahan baru: sesi sah divonis
+                # mati. Halaman masuk yang sungguhan tidak pergi ke mana-mana.
+                await page.wait_for_timeout(1_500)
+                if await ditolak(page):
+                    return True
+            if time.monotonic() >= habis:
+                return False
 
     def __init__(self, session_name: str = "default", headless: bool = True, **_: object) -> None:
         self.session_name = session_name

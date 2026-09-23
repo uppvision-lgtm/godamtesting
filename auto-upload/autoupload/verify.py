@@ -36,6 +36,13 @@ URL_CEK: dict[str, str] = {
     # bisa dipakai menguji. Halaman pengaturan hanya bertahan kalau sesinya
     # sah; kalau tidak, ia dilempar balik ke beranda.
     "threads": "https://www.threads.com/settings/account",
+    # Tetap linimasa, walau ini halaman terberat di X. Halaman pengaturan
+    # sempat dicoba karena jauh lebih ringan, tapi DIBATALKAN: diuji dengan
+    # cookie palsu, X menahan alamatnya di /settings/account beberapa detik
+    # sebelum mengalihkan ke login - cukup lama untuk dibaca sebagai sesi
+    # sah. Sesi mati yang divonis hijau jauh lebih berbahaya daripada
+    # pemeriksaan yang berat, dan beratnya sudah ditangani dengan
+    # memblokir gambar/video (jenis_diblokir) serta "--headless=old".
     "twitter": "https://x.com/home",
 }
 
@@ -47,6 +54,12 @@ PENANDA_LOGIN = (
     "signin",
     "sign_in",
     "/i/flow/login",
+    # Alur masuk X yang baru. Diamati langsung (September 2026): keluar dari
+    # /settings/account melempar ke "/i/jf/onboarding/web?redirect_after_
+    # login=...&mode=login". Tidak ada satu pun penanda lama yang cocok, jadi
+    # sesi mati di X hanya ketahuan lewat kotak sandinya - itu pun kebetulan.
+    "/i/jf/",
+    "mode=login",
     "accounts.google.com",
     "/auth/",
     "checkpoint",
@@ -110,6 +123,9 @@ NAMA_JS: dict[str, str] = {
 
 TIMEOUT_MS = 25_000
 
+# Lama halaman diintip sesudah terbuka, sebelum putusannya diambil.
+JENDELA_PUTUSAN_MS = int(os.getenv("VERIFY_JENDELA_MS", "9000"))
+
 # Batas keras satu pemeriksaan. Proxy Railway memutus permintaan pada 300
 # detik dan membalas 502 "upstream error" - halaman lalu hanya bisa berputar
 # lalu gagal tanpa sebab. Lebih baik berhenti sendiri lebih awal dengan alasan
@@ -119,6 +135,12 @@ BATAS_DETIK = float(os.getenv("VERIFY_TIMEOUT_DETIK", "240"))
 
 # Di atas ini pemeriksaan dianggap lambat dan dicatat sebagai peringatan.
 LAPOR_LAMBAT_DETIK = float(os.getenv("VERIFY_LAMBAT_DETIK", "20"))
+
+# Satu pemeriksaan pada satu waktu. Tiap pemeriksaan menyalakan Chromium
+# sendiri, dan dua sekaligus tidak muat di kontainer ~1 GB: keduanya lalu
+# dibunuh kernel di tengah jalan dan gagal dengan "TargetClosedError".
+# Mengantre membuat yang kedua lambat, bukan gagal.
+_ANTRE = asyncio.Semaphore(int(os.getenv("VERIFY_SERENTAK", "1")))
 
 PLATFORM_NAMA = {
     "instagram": "Instagram",
@@ -146,6 +168,12 @@ async def _tampak_login(halaman, platform: str) -> bool:
     return any(j in judul for j in JUDUL_LOGIN)
 
 
+async def _antre_lalu_periksa(platform: str, session_id: str) -> dict:
+    """Tunggu giliran, baru periksa."""
+    async with _ANTRE:
+        return await _periksa_inti(platform, session_id)
+
+
 async def periksa_sesi(platform: str, session_id: str) -> dict:
     """Periksa sesi, tapi jangan pernah melebihi batas waktu proxy.
 
@@ -155,7 +183,11 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
     """
     mulai = time.monotonic()
     try:
-        hasil = await asyncio.wait_for(_periksa_inti(platform, session_id), BATAS_DETIK)
+        # Batas waktunya menghitung antrean SEKALIGUS pemeriksaannya. Kalau
+        # hanya pemeriksaannya yang dibatasi, yang mengantre lama tetap bisa
+        # menembus batas 300 detik proxy Railway dan berakhir sebagai 502
+        # tanpa penjelasan - persis yang hendak dihindari di sini.
+        hasil = await asyncio.wait_for(_antre_lalu_periksa(platform, session_id), BATAS_DETIK)
     except asyncio.TimeoutError:
         log.warning("Pemeriksaan sesi %s melewati %.0f detik", platform, BATAS_DETIK)
         return {
@@ -206,7 +238,14 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
             # Konteks sekali pakai, BUKAN profil tersimpan: yang diuji adalah
             # cookie yang baru ditempel, bukan sesi lama yang kebetulan ada.
             t0 = time.monotonic()
-            peramban = await pw.chromium.launch(headless=True, args=STEALTH_ARGS)
+            # extra_args milik adapter IKUT dipakai. Tanpa ini X diperiksa
+            # dengan headless baru, yang menjalankan tumpukan peramban penuh
+            # dan kehabisan memori di server - padahal jalur upload sudah
+            # lama memakai "--headless=old" persis untuk menghindarinya.
+            peramban = await pw.chromium.launch(
+                headless=True,
+                args=STEALTH_ARGS + list(getattr(adapter, "extra_args", [])),
+            )
             lama_luncur = time.monotonic() - t0
             (log.warning if lama_luncur > LAPOR_LAMBAT_DETIK else log.info)(
                 "[%s] chromium hidup dalam %.1f detik", platform, lama_luncur
@@ -215,6 +254,10 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
             await konteks.add_init_script(STEALTH_INIT_SCRIPT)
             await konteks.add_cookies(cookies)
             halaman = await konteks.new_page()
+            # Penawar memori yang sama dengan jalur upload. Yang dibaca di
+            # bawah cuma alamat, judul, kotak sandi, dan nama akun - tidak
+            # ada satu pun yang butuh gambar atau video termuat.
+            await adapter.blokir_berat(halaman)
             try:
                 # Beri waktu pengalihan sisi-klien selesai; banyak platform
                 # baru melempar ke halaman login setelah JavaScript berjalan.
@@ -225,8 +268,13 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
                     return await _tampak_login(p, platform)
 
                 t1 = time.monotonic()
+                # 3500 ms dulu terlalu pendek: pengalihan X ke halaman
+                # masuk kadang baru datang sesudahnya. Jendela ini sekarang
+                # dipakai untuk mengintip berulang, bukan tidur, jadi
+                # memperpanjangnya menambah ketelitian - bukan kelambatan:
+                # halaman yang sudah jelas ditolak berhenti lebih awal.
                 wilayah = await adapter.buka_masuk(
-                    halaman, url_awal, ditolak, 3500, timeout_ms=TIMEOUT_MS
+                    halaman, url_awal, ditolak, JENDELA_PUTUSAN_MS, timeout_ms=TIMEOUT_MS
                 )
                 lama_buka = time.monotonic() - t1
                 (log.warning if lama_buka > LAPOR_LAMBAT_DETIK else log.info)(

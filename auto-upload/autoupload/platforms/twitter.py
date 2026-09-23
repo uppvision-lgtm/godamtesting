@@ -29,7 +29,6 @@ from autoupload.browser import (
 # membutuhkan satu pun: caption diketik, berkas dilampirkan lewat input file,
 # dan kesiapan dibaca dari toast - semuanya teks. Memblokirnya memangkas
 # memori yang jadi biang kegagalan di server.
-_JENIS_DIBLOKIR = {"image", "media", "font"}
 
 # Toast yang berarti postingan sudah benar-benar terkirim, EN + ID.
 _TERKIRIM = re.compile(
@@ -57,6 +56,9 @@ class Twitter(PlaywrightPlatform):
     # Hanya X yang memakainya: Instagram bergantung pada event sentuh yang
     # belum tentu berperilaku sama di mode lama, dan Instagram sudah jalan.
     extra_args = ("--headless=old",)
+    # Halaman X penuh gambar dan video autoplay; tidak satu pun dibutuhkan
+    # bot ini. Lihat catatan di atas berkas.
+    jenis_diblokir = ("image", "media", "font")
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options
@@ -68,7 +70,7 @@ class Twitter(PlaywrightPlatform):
         nama = str(options.get("nama_akun") or "").lstrip("@")
         url_profil = f"https://x.com/{nama}" if nama else ""
 
-        await self._blokir_berat(page)
+        await self.blokir_berat(page)
 
         # Halaman profil SENGAJA tidak dimuat lagi di sini. Dulu ia dibuka
         # sekali sebelum upload (untuk mendaftar postingan lama) dan sampai
@@ -193,22 +195,6 @@ class Twitter(PlaywrightPlatform):
         await page.click('[data-testid="scheduledConfirmationPrimaryAction"]')
         await page.wait_for_timeout(2_000)
         print(f"[x] jadwal dipasang: {diminta}", flush=True)
-
-    async def _blokir_berat(self, page) -> None:
-        """Batalkan gambar, video, dan font: hemat memori, tidak mengubah alur."""
-        async def penangan(route) -> None:
-            try:
-                if route.request.resource_type in _JENIS_DIBLOKIR:
-                    await route.abort()
-                else:
-                    await route.continue_()
-            except Exception:  # noqa: BLE001 - permintaan sudah selesai duluan
-                pass
-
-        try:
-            await page.route("**/*", penangan)
-        except Exception:  # noqa: BLE001 - hemat memori tidak boleh menggagalkan upload
-            pass
 
     @staticmethod
     async def _toast(page) -> str:
