@@ -168,12 +168,14 @@ export default function AutoEditUploadPage() {
       if (res.ok) {
         const daftar = (await res.json()) as Akun[];
         setAkun(daftar);
-        // Bawaan: semua akun yang siap tercentang, supaya satu klik memang
-        // cukup. Yang sudah terbukti mati tidak ikut.
+        // Bawaan: TIDAK ada yang tercentang. Dulu semua akun siap langsung
+        // tercentang supaya satu klik cukup - tetapi dengan belasan akun
+        // tertaut, satu klik tak sengaja mengirim video ke semuanya sekaligus,
+        // dan unggahan ke sosmed tidak bisa ditarik kembali. Tombol "Pilih
+        // semua" tetap ada untuk yang memang menginginkannya.
+        // Yang tersisa di sini hanya membuang centang akun yang sudah hilang.
         setAkunDipilih((lama) =>
-          lama.length
-            ? lama
-            : daftar.filter((a) => a.has_session_id && a.verified !== false).map((a) => a.id)
+          lama.filter((id) => daftar.some((a) => a.id === id))
         );
       }
     } catch {

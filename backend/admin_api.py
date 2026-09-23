@@ -10,10 +10,14 @@ Instagram. Memantau berarti melihat pemakaian, bukan membuka isi akun orang.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 import db
 import video_edit as ve
@@ -165,6 +169,59 @@ def bersihkan_volume(
     mau menunggu. ``umur_jam`` memperpendek umur simpan untuk sapuan ini saja.
     """
     return ve.bersihkan_volume(umur_jam)
+
+
+def _folder_tangkapan() -> Path:
+    """Tempat screenshot kegagalan upload disimpan.
+
+    Diambil dari setelan paket autoupload, bukan ditebak, supaya tetap benar
+    kalau AUTOUPLOAD_DATA_DIR diubah.
+    """
+    from autoupload import config as cfg  # paket dimuat saat server hidup
+
+    return Path(cfg.DEBUG_SHOTS_DIR)
+
+
+@router.get("/debug-shots")
+def daftar_tangkapan(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
+    """Daftar screenshot kegagalan upload, terbaru dulu.
+
+    Saat unggahan ke sosmed gagal, uploader menyimpan tangkapan layar halaman
+    apa adanya - itulah bukti paling menentukan tentang APA yang sebenarnya
+    muncul (sesi mati, tantangan keamanan, atau markup platform yang berubah).
+    Sampai sekarang berkas itu tersimpan tapi tidak bisa dilihat siapa pun.
+    """
+    folder = _folder_tangkapan()
+    if not folder.is_dir():
+        return {"folder": str(folder), "berkas": []}
+    berkas = []
+    for p in folder.glob("*.png"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        berkas.append(
+            {
+                "nama": p.name,
+                "ukuran_kb": round(st.st_size / 1024, 1),
+                "waktu": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+            }
+        )
+    berkas.sort(key=lambda b: b["waktu"], reverse=True)
+    return {"folder": str(folder), "berkas": berkas}
+
+
+@router.get("/debug-shots/{nama}")
+def ambil_tangkapan(nama: str, _: dict[str, Any] = Depends(developer_wajib)) -> FileResponse:
+    """Unduh satu screenshot kegagalan."""
+    # Nama dibersihkan dan hasilnya WAJIB tetap berada di dalam foldernya:
+    # tanpa ini "../../etc/passwd" akan dilayani dengan senang hati.
+    aman = re.sub(r"[^A-Za-z0-9_.-]", "_", nama).lstrip(".")
+    folder = _folder_tangkapan().resolve()
+    berkas = (folder / aman).resolve()
+    if folder not in berkas.parents or berkas.suffix.lower() != ".png" or not berkas.is_file():
+        raise HTTPException(status_code=404, detail="Tangkapan layar tidak ditemukan.")
+    return FileResponse(berkas, media_type="image/png", filename=berkas.name)
 
 
 @router.get("/users/{username}/jobs")
