@@ -169,7 +169,10 @@ def _pastikan_kuota_media(sidik: str, pemilik: str) -> None:
     Berkas di sini bertahan sampai riwayatnya dihapus, jadi tanpa batas satu
     orang bisa menghabiskan volume server untuk semua orang.
     """
-    batas = int(os.getenv("KUOTA_MEDIA_MB", "3072")) * 1_048_576
+    # 3072 MB dulu: enam kali lipat seluruh volume Railway (500 MB), jadi
+    # jatah itu tidak pernah bisa ditepati. Folder ini juga TIDAK ikut disapu
+    # penjaga volume karena isinya sengaja disimpan sampai riwayatnya dihapus.
+    batas = int(os.getenv("KUOTA_MEDIA_MB", "250")) * 1_048_576
     dipakai = 0
     for berkas in UPLOAD_DIR.glob(f"{sidik}_*"):
         try:

@@ -23,8 +23,15 @@ logger = logging.getLogger(__name__)
 
 # Jatah bawaan. Tamu sengaja jauh lebih kecil: ia tidak menitipkan apa pun
 # untuk jangka panjang, jadi yang dipakai hanya ruang kerja sesaat.
-KUOTA_AKUN_MB = int(os.getenv("KUOTA_AKUN_MB", "2048"))
-KUOTA_TAMU_MB = int(os.getenv("KUOTA_TAMU_MB", "300"))
+#
+# Angkanya diturunkan drastis pada 23 Sep 2026 (akun 2048 -> 400, tamu 300 ->
+# 100). Yang lama adalah janji yang tidak mungkin ditepati: volume Railway
+# hanya 500 MB SELURUHNYA, jadi satu akun saja sudah "berhak" atas empat kali
+# lipat seluruh disk - dan ketika disk benar-benar penuh, yang rusak bukan
+# akun itu saja melainkan unggahan semua orang. Akun terbesar saat ini
+# memakai 220 MB, jadi tidak ada yang telanjur melewati batas baru.
+KUOTA_AKUN_MB = int(os.getenv("KUOTA_AKUN_MB", "400"))
+KUOTA_TAMU_MB = int(os.getenv("KUOTA_TAMU_MB", "100"))
 
 # Menjumlah ukuran folder berarti membaca disk, dan halaman menanyakan status
 # tiap dua detik. Hasilnya diingat sebentar supaya tidak jadi beban sendiri.
