@@ -117,6 +117,9 @@ TIMEOUT_MS = 25_000
 # 6 x (TIMEOUT_MS + jeda) kira-kira 3 menit.
 BATAS_DETIK = float(os.getenv("VERIFY_TIMEOUT_DETIK", "240"))
 
+# Di atas ini pemeriksaan dianggap lambat dan dicatat sebagai peringatan.
+LAPOR_LAMBAT_DETIK = float(os.getenv("VERIFY_LAMBAT_DETIK", "20"))
+
 PLATFORM_NAMA = {
     "instagram": "Instagram",
     "tiktok": "TikTok",
@@ -166,7 +169,15 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
             "url": "",
             "nama": "",
         }
-    log.info("Pemeriksaan sesi %s selesai dalam %.1f detik", platform, time.monotonic() - mulai)
+    lama = time.monotonic() - mulai
+    # Server ini berjalan dengan LOG_LEVEL=WARNING, jadi catatan INFO tidak
+    # pernah sampai ke log Railway. Yang cepat cukup dicatat INFO (berguna saat
+    # menyelidiki di lokal); yang lambat dinaikkan ke WARNING supaya kalau
+    # pemeriksaan melambat lagi, buktinya ada tanpa perlu mengubah setelan.
+    if lama > LAPOR_LAMBAT_DETIK:
+        log.warning("Pemeriksaan sesi %s LAMBAT: %.1f detik", platform, lama)
+    else:
+        log.info("Pemeriksaan sesi %s selesai dalam %.1f detik", platform, lama)
     return hasil
 
 
@@ -196,7 +207,10 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
             # cookie yang baru ditempel, bukan sesi lama yang kebetulan ada.
             t0 = time.monotonic()
             peramban = await pw.chromium.launch(headless=True, args=STEALTH_ARGS)
-            log.info("[%s] chromium hidup dalam %.1f detik", platform, time.monotonic() - t0)
+            lama_luncur = time.monotonic() - t0
+            (log.warning if lama_luncur > LAPOR_LAMBAT_DETIK else log.info)(
+                "[%s] chromium hidup dalam %.1f detik", platform, lama_luncur
+            )
             konteks = await peramban.new_context(user_agent=CHROME_UA, viewport=VIEWPORT)
             await konteks.add_init_script(STEALTH_INIT_SCRIPT)
             await konteks.add_cookies(cookies)
@@ -214,7 +228,10 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
                 wilayah = await adapter.buka_masuk(
                     halaman, url_awal, ditolak, 3500, timeout_ms=TIMEOUT_MS
                 )
-                log.info("[%s] halaman terbuka dalam %.1f detik", platform, time.monotonic() - t1)
+                lama_buka = time.monotonic() - t1
+                (log.warning if lama_buka > LAPOR_LAMBAT_DETIK else log.info)(
+                    "[%s] halaman terbuka dalam %.1f detik", platform, lama_buka
+                )
                 akhir = (halaman.url or "").lower()
                 # Alamat saja tidak cukup. Instagram dan X menampilkan formulir
                 # login di alamat yang sama persis, tanpa mengalihkan ke mana
