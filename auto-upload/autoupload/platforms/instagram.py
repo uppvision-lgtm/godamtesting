@@ -62,6 +62,14 @@ class Instagram(PlaywrightPlatform):
     # mouse sintetis dan hanya menanggapi event sentuh. Tanpa ini Playwright
     # juga menolak memanggil tap() sama sekali.
     has_touch = True
+    # ... tetapi layar sentuh pada jendela selebar 1000 px membuat Instagram
+    # menyangka ini TABLET, dan yang disajikan bukan aplikasi webnya melainkan
+    # dinding "Get the full experience with the tablet app" - tanpa tombol
+    # Buat, tanpa avatar, dan tanpa formulir login. Pemeriksa di bawah dulu
+    # membaca halaman itu sebagai "sesi mati", sehingga pengguna disuruh
+    # menempel ulang Session ID yang sebenarnya baik-baik saja. Jendela lebar
+    # membuat Instagram kembali menyajikan aplikasi web biasa.
+    viewport_override = {"width": 1440, "height": 900}
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
@@ -102,6 +110,18 @@ class Instagram(PlaywrightPlatform):
             # Double check with the profile/avatar heuristics before failing.
             avatar = await page.locator('img[alt*="profile" i], img[alt*="foto" i]').count()
             if avatar == 0:
+                # Bedakan dulu: halaman yang bukan aplikasi web bukan berarti
+                # sesinya mati. Menuduh sesi tanpa memeriksa ini membuat
+                # pengguna membuang waktu menempel ulang Session ID yang sah.
+                dinding = await page.locator(
+                    'text=/Get the full experience|Open Instagram|Dapatkan pengalaman/i'
+                ).count()
+                if dinding:
+                    raise PlatformError(
+                        "Instagram menyajikan halaman ajakan pasang aplikasi, bukan "
+                        "aplikasi webnya, jadi komposernya tidak ada. Sesimu sendiri "
+                        "kemungkinan besar masih sah. Coba lagi beberapa saat lagi."
+                    )
                 raise PlatformError(
                     "Sesi Instagram sudah tidak valid (ter-logout). "
                     "Login ulang lewat Account Manager → Login Browser."
