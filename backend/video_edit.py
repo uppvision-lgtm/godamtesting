@@ -234,12 +234,18 @@ def _tarik_unggahan_dari_storage(id_unggahan: str, folder: Path) -> list[Path]:
     return []
 
 
-def bersihkan_unggahan_lama(batas_detik: float) -> int:
-    """Hapus video sumber unggahan yang lebih tua dari batas."""
+def bersihkan_unggahan_lama(batas_detik: float, sentuh_storage: bool = True) -> int:
+    """Hapus video sumber unggahan yang lebih tua dari batas.
+
+    ``sentuh_storage`` dimatikan saat backend berjalan di laptop: bucketnya
+    dipakai bersama server, dan laptop tidak berhak membuang unggahan milik
+    pengguna situs. Yang lokal tetap dibersihkan.
+    """
     dihapus = 0
     for folder in uploads_dir().iterdir():
         if folder.is_dir() and time.time() - folder.stat().st_mtime > batas_detik:
-            _hapus_unggahan_di_storage(folder.name)
+            if sentuh_storage:
+                _hapus_unggahan_di_storage(folder.name)
             shutil.rmtree(folder, ignore_errors=True)
             dihapus += 1
     return dihapus
@@ -257,6 +263,184 @@ def _hapus_unggahan_di_storage(id_unggahan: str) -> None:
                 storage.delete(f"{awalan}/{nama}")
     except storage.StorageError as error:
         logger.warning("Unggahan %s gagal dibuang dari Supabase: %s", id_unggahan, error)
+
+
+# Sisa ruang yang sengaja tidak dipakai unggahan, supaya render dan berkas
+# sementara masih punya tempat walau volumenya hampir habis.
+RUANG_CADANGAN_MB = float(os.getenv("VIDEO_RUANG_CADANGAN_MB", "80"))
+
+# Umur simpan berkas di volume. Sama dengan milik worker, tapi dibaca di sini
+# supaya video_edit tidak perlu mengimpor video_tasks (yang mengimpor modul ini).
+UMUR_SIMPAN_JAM = float(os.getenv("VIDEO_JOB_RETENTION_HOURS", "24"))
+
+
+def ruang_media() -> dict[str, float]:
+    """Ruang disk tempat MEDIA_DIR berada, dalam MB."""
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    total, dipakai, sisa = shutil.disk_usage(MEDIA_DIR)
+    return {
+        "total_mb": round(total / 1_048_576, 1),
+        "dipakai_mb": round(dipakai / 1_048_576, 1),
+        "sisa_mb": round(sisa / 1_048_576, 1),
+    }
+
+
+def isi_media() -> dict[str, float]:
+    """Pemakaian tiap folder di bawah MEDIA_DIR, dalam MB, untuk diagnosa."""
+    hasil: dict[str, float] = {}
+    if not MEDIA_DIR.is_dir():
+        return hasil
+    for anak in sorted(MEDIA_DIR.iterdir()):
+        if not anak.is_dir():
+            continue
+        jumlah = 0
+        for isi in anak.rglob("*"):
+            try:
+                if isi.is_file():
+                    jumlah += isi.stat().st_size
+            except OSError:
+                continue
+        hasil[anak.name] = round(jumlah / 1_048_576, 1)
+    return hasil
+
+
+# Berapa lama salinan lokal video unggahan ditahan setelah sampai di Supabase.
+UNGGAHAN_LOKAL_MENIT = float(os.getenv("VIDEO_UNGGAHAN_LOKAL_MENIT", "45"))
+
+
+def rampingkan_unggahan(umur_menit: float | None = None) -> int:
+    """Buang salinan LOKAL unggahan yang sudah aman tersimpan di Supabase.
+
+    Video sumber unggahan hanya perlu ada di disk backend sampai salinannya
+    sampai di Supabase: yang merender adalah worker, container lain dengan
+    disk lain, yang memang selalu mengambilnya dari sana. Menahan salinan itu
+    24 jam di volume 500 MB berarti lima unggahan saja sudah memenuhinya -
+    dan sejak penuh, SEMUA unggahan berikutnya gagal.
+
+    Yang dibuang hanya yang benar-benar sudah ada di Supabase; kalau
+    pengecekannya gagal, salinan lokalnya dibiarkan.
+    """
+    if not storage.enabled():
+        return 0
+    batas = time.time() - float(
+        UNGGAHAN_LOKAL_MENIT if umur_menit is None else umur_menit
+    ) * 60
+    dibuang = 0
+    try:
+        daftar = list(uploads_dir().iterdir())
+    except OSError:
+        return 0
+    for folder in daftar:
+        if not folder.is_dir():
+            continue
+        berkas = [b for b in folder.glob("source.*") if b.is_file()]
+        if not berkas or max(b.stat().st_mtime for b in berkas) > batas:
+            continue
+        try:
+            di_storage = {
+                str(item.get("name") or "")
+                for item in storage.list_prefix(f"{AWALAN_UNGGAHAN_STORAGE}{folder.name}")
+            }
+        except storage.StorageError as error:
+            logger.warning("Unggahan %s tak bisa dicek di Supabase: %s", folder.name, error)
+            continue
+        for b in berkas:
+            if b.name in di_storage:
+                b.unlink(missing_ok=True)
+                dibuang += 1
+    if dibuang:
+        logger.info("%d salinan lokal unggahan dibuang (sudah ada di Supabase)", dibuang)
+    return dibuang
+
+
+def bersihkan_volume(
+    umur_jam: float | None = None, sentuh_storage: bool = True
+) -> dict[str, Any]:
+    """Buang berkas kedaluwarsa di volume PROSES INI, lalu laporkan.
+
+    Selama ini satu-satunya pembersihan hidup di dalam task Celery, jadi yang
+    tersapu selalu disk WORKER - /tmp, yang lagipula kosong lagi tiap deploy.
+    Volume backend, tempat video unggahan pengguna sebenarnya mendarat, tidak
+    pernah disentuh siapa pun: seratus MB per unggahan menumpuk sampai
+    "No space left on device", dan sejak itu tiap unggahan gagal dengan 500.
+    Ini bagian backendnya, dipanggil saat start, berkala, dan sebelum menerima
+    unggahan baru.
+    """
+    umur = float(UMUR_SIMPAN_JAM if umur_jam is None else umur_jam)
+    sebelum = ruang_media()
+    laporan: dict[str, Any] = {"sebelum": sebelum, "umur_jam": umur}
+    try:
+        laporan["unggahan"] = bersihkan_unggahan_lama(umur * 3600, sentuh_storage)
+    except OSError as error:
+        logger.warning("Pembersihan unggahan gagal: %s", error)
+        laporan["unggahan"] = 0
+    try:
+        laporan["ramping"] = rampingkan_unggahan()
+    except OSError as error:
+        logger.warning("Perampingan unggahan gagal: %s", error)
+        laporan["ramping"] = 0
+    try:
+        laporan["cache"] = bersihkan_cache_unduhan()
+    except OSError as error:
+        logger.warning("Pembersihan cache unduhan gagal: %s", error)
+        laporan["cache"] = 0
+    # Sisa folder job: di backend biasanya kosong, tapi kalau backend pernah
+    # ikut merender (mode lokal) folder-folder itu tidak ada yang membuang.
+    dibuang_job = 0
+    try:
+        batas = time.time() - umur * 3600
+        for folder in jobs_dir().iterdir():
+            if folder.is_dir() and folder.stat().st_mtime < batas:
+                shutil.rmtree(folder, ignore_errors=True)
+                dibuang_job += 1
+    except OSError as error:
+        logger.warning("Pembersihan folder job gagal: %s", error)
+    laporan["job"] = dibuang_job
+    # Video outro dirender oleh proses backend ini, jadi hasilnya mendarat di
+    # volume yang sama. Pembersihnya sudah lama ada di outro.py tapi tidak
+    # pernah ada yang memanggilnya - dengan 100 outro sehari, itu volume
+    # penuh dalam hitungan hari.
+    try:
+        import outro  # lokal: outro.py mengimpor modul ini
+
+        laporan["outro"] = outro.bersihkan_lama(umur)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Pembersihan outro gagal: %s", error)
+        laporan["outro"] = 0
+    laporan["sesudah"] = ruang_media()
+    laporan["dibebaskan_mb"] = round(
+        laporan["sesudah"]["sisa_mb"] - sebelum["sisa_mb"], 1
+    )
+    if laporan["dibebaskan_mb"] >= 1:
+        logger.info(
+            "Volume dibersihkan: %s MB dibebaskan, sisa %s MB",
+            laporan["dibebaskan_mb"], laporan["sesudah"]["sisa_mb"],
+        )
+    return laporan
+
+
+def sediakan_ruang(butuh_mb: float) -> float:
+    """Usahakan ada ruang untuk berkas sebesar ini; kembalikan sisa ruang MB.
+
+    Dicoba bertahap: kalau sisa disk sudah cukup tidak ada yang dihapus sama
+    sekali; kalau kurang, berkas kedaluwarsa dibuang; kalau masih kurang juga,
+    umur simpannya diperpendek sampai satu jam. Pemanggilnya yang memutuskan
+    mau menolak atau jalan terus.
+    """
+    perlu = float(butuh_mb) + RUANG_CADANGAN_MB
+    sisa = ruang_media()["sisa_mb"]
+    if sisa >= perlu:
+        return sisa
+    sisa = bersihkan_volume(sentuh_storage=SENTUH_STORAGE)["sesudah"]["sisa_mb"]
+    if sisa >= perlu:
+        return sisa
+    for umur in (6.0, 1.0):
+        if umur >= UMUR_SIMPAN_JAM:
+            continue
+        sisa = bersihkan_volume(umur, SENTUH_STORAGE)["sesudah"]["sisa_mb"]
+        if sisa >= perlu:
+            break
+    return sisa
 
 
 def _aman(nama: str) -> str:
@@ -502,6 +686,36 @@ def perbaiki_storage_di_latar() -> None:
         name="perbaiki-storage",
         daemon=True,
     ).start()
+
+
+# Selang antar-sapuan penjaga volume, dalam menit.
+SELANG_SAPUAN_MENIT = float(os.getenv("VIDEO_SAPUAN_MENIT", "30"))
+
+# Apakah proses ini berhak membuang berkas dari bucket bersama. Dimatikan
+# oleh main.py saat mode lokal; lihat bersihkan_unggahan_lama.
+SENTUH_STORAGE = True
+
+
+def jaga_volume_di_latar(sentuh_storage: bool = True) -> None:
+    """Sapu volume proses ini saat start, lalu ulangi setiap setengah jam.
+
+    Tanpa ini tidak ada satu pun yang membersihkan volume backend: satu-satunya
+    pembersihan yang ada berjalan di dalam task Celery, di container worker,
+    di disk yang berbeda.
+    """
+
+    global SENTUH_STORAGE
+    SENTUH_STORAGE = bool(sentuh_storage)
+
+    def putaran() -> None:
+        while True:
+            try:
+                bersihkan_volume(sentuh_storage=SENTUH_STORAGE)
+            except Exception:  # noqa: BLE001
+                logger.exception("Sapuan volume gagal")
+            time.sleep(max(60.0, SELANG_SAPUAN_MENIT * 60))
+
+    threading.Thread(target=putaran, name="jaga-volume", daemon=True).start()
 
 
 def load_template(template_id: str) -> dict[str, Any]:

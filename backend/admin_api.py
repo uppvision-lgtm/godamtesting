@@ -144,6 +144,29 @@ def perbaiki_storage(pengguna: dict[str, Any] = Depends(developer_wajib)) -> dic
     return ve.perbaiki_storage()
 
 
+@router.get("/disk")
+def lihat_disk(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
+    """Sisa ruang volume backend dan apa saja yang memakainya.
+
+    Volume backend yang penuh membuat SEMUA unggahan video gagal, jadi ini
+    yang pertama dilihat kalau ada laporan "tidak bisa mengunggah".
+    """
+    return {"ruang": ve.ruang_media(), "isi_mb": ve.isi_media()}
+
+
+@router.post("/bersihkan-volume")
+def bersihkan_volume(
+    umur_jam: float | None = None, _: dict[str, Any] = Depends(developer_wajib)
+) -> dict[str, Any]:
+    """Sapu berkas kedaluwarsa di volume backend sekarang juga.
+
+    Biasanya tidak perlu dipanggil tangan - penjaga volume sudah berjalan tiap
+    setengah jam - tapi berguna kalau disknya sudah telanjur penuh dan tidak
+    mau menunggu. ``umur_jam`` memperpendek umur simpan untuk sapuan ini saja.
+    """
+    return ve.bersihkan_volume(umur_jam)
+
+
 @router.get("/users/{username}/jobs")
 def job_pengguna(
     username: str, batas: int = 50, _: dict[str, Any] = Depends(developer_wajib)

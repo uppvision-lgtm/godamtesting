@@ -190,6 +190,16 @@ export function apiUnggah(
             "supaya berkas dikirim langsung ke server, lalu coba lagi.",
         };
       }
+      // Galat server yang tidak membawa "detail" (mis. 500 bertubuh teks
+      // polos) dulu muncul di halaman sebagai "Gagal mengunggah video" saja,
+      // tanpa petunjuk apa pun bahwa masalahnya di server.
+      if (xhr.status >= 500 && !data.detail) {
+        data = {
+          detail:
+            `Server tidak bisa menyimpan berkasnya (kode ${xhr.status}). ` +
+            "Coba lagi beberapa saat lagi.",
+        };
+      }
       resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
     };
     xhr.onerror = () => reject(new Error("Sambungan terputus saat mengunggah."));

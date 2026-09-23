@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import time
@@ -737,6 +738,7 @@ def hapus_template(
 @router.post("/templates/{template_id}/assets")
 async def unggah_aset(
     template_id: str,
+    request: Request,
     latar: BackgroundTasks,
     file: UploadFile = File(...),
     pengguna: dict[str, Any] | None = Depends(identitas),
@@ -751,10 +753,11 @@ async def unggah_aset(
             status_code=415,
             detail=f"Jenis berkas tidak didukung. Pakai: {', '.join(sorted(JENIS_ASET))}",
         )
+    batas = int(MAX_ASSET_MB * 1_048_576)
+    _sediakan_ruang(request, batas)
     folder = ve.template_path(template_id) / "assets"
     folder.mkdir(parents=True, exist_ok=True)
     tujuan = folder / nama
-    batas = int(MAX_ASSET_MB * 1_048_576)
     ukuran = 0
     try:
         with tujuan.open("wb") as keluar:
@@ -765,7 +768,12 @@ async def unggah_aset(
                         status_code=413, detail=f"Berkas melebihi {MAX_ASSET_MB:.0f} MB"
                     )
                 keluar.write(potongan)
-    except HTTPException:
+    except OSError as error:
+        tujuan.unlink(missing_ok=True)
+        raise _galat_tulis(error) from error
+    except BaseException:
+        # Aset separuh tertulis lebih berbahaya daripada tidak ada sama
+        # sekali: ffmpeg tetap menerimanya lalu render gagal di tengah.
         tujuan.unlink(missing_ok=True)
         raise
     finally:
@@ -848,6 +856,57 @@ def _pastikan_antrean_muat(tambahan: int) -> None:
         )
 
 
+def _galat_tulis(error: OSError) -> HTTPException:
+    """Ubah kegagalan tulis ke disk jadi jawaban yang bisa dimengerti.
+
+    Yang paling sering terjadi adalah volume penuh. Sebelumnya ini lolos jadi
+    500 "Internal Server Error" tanpa penjelasan, dan di halaman hanya muncul
+    "Gagal mengunggah video" - tidak ada petunjuk sama sekali bahwa yang habis
+    adalah ruang disk server.
+    """
+    if error.errno == errno.ENOSPC:
+        logger.error("Volume media penuh saat menerima unggahan: %s", ve.ruang_media())
+        return HTTPException(
+            status_code=507,
+            detail=(
+                "Ruang penyimpanan server sedang penuh, jadi videonya tidak bisa "
+                "disimpan. Berkas lama sedang dibersihkan otomatis - coba lagi "
+                "beberapa saat lagi."
+            ),
+        )
+    logger.exception("Gagal menulis unggahan ke disk")
+    return HTTPException(status_code=500, detail=f"Gagal menyimpan berkas: {error}")
+
+
+def _sediakan_ruang(request: Request, batas_byte: int) -> None:
+    """Pastikan volume masih muat menampung unggahan ini.
+
+    Ukurannya diambil dari Content-Length kalau ada, jadi berkas kecil tidak
+    ikut ditolak hanya karena batas maksimalnya besar. Berkas kedaluwarsa
+    dibuang dulu; kalau setelah itu tetap tidak muat, lebih baik menolak
+    sekarang dengan alasan yang jelas daripada mati di tengah penyalinan.
+    """
+    try:
+        perlu = int(request.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        perlu = 0
+    perlu = min(perlu, batas_byte) if perlu > 0 else batas_byte
+    perlu_mb = perlu / 1_048_576
+    sisa_mb = ve.sediakan_ruang(perlu_mb)
+    if sisa_mb < perlu_mb:
+        logger.error(
+            "Unggahan %.0f MB ditolak: sisa volume %.0f MB", perlu_mb, sisa_mb
+        )
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                f"Ruang penyimpanan server tinggal {sisa_mb:.0f} MB, tidak cukup "
+                f"untuk video {perlu_mb:.0f} MB. Berkas lama sudah dibersihkan "
+                "otomatis; coba video yang lebih kecil atau ulangi nanti."
+            ),
+        )
+
+
 @router.post("/sources")
 async def unggah_sumber(
     request: Request,
@@ -867,12 +926,17 @@ async def unggah_sumber(
             detail=f"Jenis berkas tidak didukung. Pakai: {', '.join(sorted(JENIS_VIDEO))}",
         )
     jatah_tamu.pakai("unggah-sumber", pengguna, request)
+    batas = int(ve.MAX_SOURCE_UPLOAD_MB * 1_048_576)
+    _sediakan_ruang(request, batas)
     id_unggahan = uuid.uuid4().hex[:12]
     folder = ve.uploads_dir() / id_unggahan
     folder.mkdir(parents=True, exist_ok=True)
     tujuan = folder / f"source{Path(nama).suffix.lower()}"
-    batas = int(ve.MAX_SOURCE_UPLOAD_MB * 1_048_576)
     ukuran = 0
+    # Apa pun yang terjadi di tengah jalan, potongan yang sudah telanjur
+    # ditulis ikut dibuang. Dulu hanya HTTPException yang dibersihkan,
+    # sehingga unggahan yang gagal karena disk penuh justru MENAMBAH isi disk
+    # - tiap percobaan ulang membuat keadaannya makin parah.
     try:
         with tujuan.open("wb") as keluar:
             while potongan := await file.read(1_048_576):
@@ -883,7 +947,10 @@ async def unggah_sumber(
                         detail=f"Video sumber melebihi {ve.MAX_SOURCE_UPLOAD_MB:.0f} MB.",
                     )
                 keluar.write(potongan)
-    except HTTPException:
+    except OSError as error:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise _galat_tulis(error) from error
+    except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
     try:

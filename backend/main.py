@@ -168,6 +168,14 @@ else:
         "tidak terdorong ke bucket bersama."
     )
 
+# Penjaga volume selalu jalan, juga di lokal: ia hanya membuang berkas
+# kedaluwarsa di disk sendiri, tidak menyentuh bucket bersama selain ikut
+# menghapus salinan unggahan yang memang sudah kedaluwarsa.
+try:
+    video_edit.jaga_volume_di_latar(sentuh_storage=not local_debug)
+except Exception:  # noqa: BLE001 - penjaga tidak boleh menghalangi server hidup
+    logging.getLogger(__name__).exception("Penjaga volume gagal dimulai")
+
 
 class JobRequest(BaseModel):
     username: str = Field(min_length=1, max_length=100)
