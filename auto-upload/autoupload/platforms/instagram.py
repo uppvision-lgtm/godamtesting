@@ -16,8 +16,12 @@ Setelah komposer terbuka, semua langkah berikutnya (file chooser, Pangkas,
 caption, Bagikan) dikendalikan lewat Playwright biasa.
 """
 
+import logging
+import os
 import re
 from pathlib import Path
+
+log = logging.getLogger("autoupload")
 
 from autoupload import tahap
 from autoupload.browser import (
@@ -62,6 +66,10 @@ class Instagram(PlaywrightPlatform):
     # mouse sintetis dan hanya menanggapi event sentuh. Tanpa ini Playwright
     # juga menolak memanggil tap() sama sekali.
     has_touch = True
+    # Berapa kali halaman dibuka ulang saat datang tanpa sesi, dan jeda antar
+    # percobaan. Angkanya kecil: yang dilawan gangguan sesaat, bukan sesi mati.
+    PERCOBAAN_MASUK = int(os.getenv("IG_PERCOBAAN_MASUK", "3"))
+    JEDA_ULANG_MS = int(os.getenv("IG_JEDA_ULANG_MS", "6000"))
     # ... tetapi layar sentuh pada jendela selebar 1000 px membuat Instagram
     # menyangka ini TABLET, dan yang disajikan bukan aplikasi webnya melainkan
     # dinding "Get the full experience with the tablet app" - tanpa tombol
@@ -70,6 +78,19 @@ class Instagram(PlaywrightPlatform):
     # menempel ulang Session ID yang sebenarnya baik-baik saja. Jendela lebar
     # membuat Instagram kembali menyajikan aplikasi web biasa.
     viewport_override = {"width": 1440, "height": 900}
+
+    async def _tampak_keluar(self, page) -> bool:
+        """True kalau halaman yang datang bukan aplikasi web milik akun ini."""
+        alamat = (page.url or "").lower()
+        if "/login" in alamat or "/accounts/login" in alamat:
+            return True
+        if await page.locator('input[name="password"], form:has(input[name="username"])').count():
+            return True
+        if await page.locator('svg[aria-label*="post" i], svg[aria-label*="Postingan"]').count():
+            return False
+        if await page.locator('img[alt*="profile" i], img[alt*="foto" i]').count():
+            return False
+        return True
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
@@ -91,8 +112,23 @@ class Instagram(PlaywrightPlatform):
         if url_profil:
             sebelum = await tautan_profil(page, url_profil, _PEMILIH_POST)
 
-        await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
-        await page.wait_for_timeout(4_000)
+        # Instagram kadang menyajikan kerangka halaman TANPA sesi walau
+        # cookienya terpasang - IP server dicurigai, lalu permintaan berikutnya
+        # dilayani normal lagi. Riwayat nyata: satu unggahan gagal "ter-logout"
+        # pukul 05:00 dan yang berikutnya berhasil pukul 05:03 dengan akun yang
+        # sama. Karena itu halamannya dibuka ulang beberapa kali sebelum
+        # menyerah, bukan divonis mati pada percobaan pertama.
+        for percobaan in range(1, self.PERCOBAAN_MASUK + 1):
+            await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
+            await page.wait_for_timeout(4_000)
+            if not await self._tampak_keluar(page):
+                break
+            if percobaan < self.PERCOBAAN_MASUK:
+                log.warning(
+                    "[instagram] halaman datang tanpa sesi (percobaan %d/%d), diulang",
+                    percobaan, self.PERCOBAAN_MASUK,
+                )
+                await page.wait_for_timeout(self.JEDA_ULANG_MS)
         lapor(*tahap.HALAMAN)
 
         # 0. Make sure we are actually logged in (otherwise the flow below is
@@ -102,8 +138,11 @@ class Instagram(PlaywrightPlatform):
         ).count()
         if login_form or "/login" in page.url or "/accounts/login" in page.url:
             raise PlatformError(
-                "Sesi Instagram sudah tidak valid (ter-logout). "
-                "Perbarui Session ID di Account Manager."
+                "Instagram menyajikan halaman login walau cookie sesinya terpasang, "
+                f"bahkan setelah {self.PERCOBAAN_MASUK} kali dicoba. Kalau tombol "
+                "Periksa di Kelola Akun menyatakan sesimu masih hidup, ini gangguan "
+                "sesaat dari sisi Instagram - coba lagi beberapa menit lagi. Kalau "
+                "Periksa juga merah, barulah Session ID-nya perlu diperbarui."
             )
         logged_in = await page.locator('svg[aria-label*="post" i], svg[aria-label*="Postingan"]').count()
         if logged_in == 0:
