@@ -1,0 +1,5 @@
+ikon/*.png  : glyph merek dari Simple Icons (https://simpleicons.org), lisensi CC0 1.0,
+              dirasterisasi ke PNG 512 px putih-transparan. Merek dagang milik pemiliknya.
+font/*.ttf  : Montserrat, Oswald, Bebas Neue, Anton, Righteous, Archivo Black -
+              SIL Open Font License 1.1, dari repo google/fonts.
+denting.m4a : efek suara dari outro TV Rakyat milik pengguna.

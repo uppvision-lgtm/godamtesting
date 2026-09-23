@@ -2,28 +2,32 @@
 kali dibuat, tampilannya berbeda jauh.
 
 Kebutuhannya 100 outro sehari yang tidak boleh terasa sama, dengan tiga hal
-yang selalu ada: logo (badge), nama TV, dan enam sosmed. Yang dibangun bukan
-tumpukan ratusan berkas aset, melainkan SISTEM GAYA BERSUMBU: tiap outro
-memilih satu nilai di tiap sumbu, seedd dari job-nya -
+yang selalu ada: logo (badge), nama TV, dan enam sosmed dengan logo merek
+yang asli. Yang dibangun bukan tumpukan berkas aset, melainkan SISTEM GAYA
+BERSUMBU - tiap outro memilih satu nilai di tiap sumbu, seedd dari job:
 
-  palet warna (14) x gaya latar (6) x dekorasi (7) x bentuk badge (5)
-  x tata letak (5) x gaya ikon (2) x animasi badge (4) x animasi handle (4)
-  x tipografi x durasi
+  palet (44, dari roda warna) x latar (14) x dekorasi (14) x bentuk badge (9)
+  x tata letak (10) x gaya ikon (4) x font badge (7) x font teks (7)
+  x animasi badge (6) x animasi handle (6) x glow badge x gerak latar
+  x huruf besar x miring x durasi
 
-- puluhan ribu kombinasi, dan tiap sumbu mengubah tampilan secara nyata
-(bentuk, susunan, gerakan), bukan sekadar menggeser warna.
+Tiap sumbu mengubah bentuk, susunan, gerakan, atau tipografi - bukan sekadar
+menggeser warna - jadi dua outro yang berbeda seed nyaris mustahil terasa
+sama.
+
+Ikon platform memakai glyph merek resmi (Simple Icons, CC0) yang sudah
+dirasterisasi ke PNG di assets/outro/ikon, jadi Instagram, YouTube,
+Facebook, TikTok, X, dan Threads tampak seperti logo aslinya - bukan
+perkiraan gambar tangan. Font dari Google Fonts (OFL) di assets/outro/font.
 
 Semuanya dirender sendiri dengan numpy + Pillow + ffmpeg: tanpa AI, tanpa
-API, tanpa jatah, ~3-5 detik per video di 1080x1920. Teks digambar sendiri,
-jadi username muncul PERSIS. Satu dentingan (assets/outro/denting.m4a)
-berbunyi saat handle-handle muncul.
-
-Berjalan di utas biasa: alat developer, satu pekerjaan pada satu waktu.
-Setiap perintah ffmpeg membawa -threads (kontainer server 1 GB).
+API, tanpa jatah. Teks digambar sendiri, jadi username muncul PERSIS. Setiap
+perintah ffmpeg membawa -threads (kontainer server 1 GB).
 """
 
 from __future__ import annotations
 
+import colorsys
 import logging
 import math
 import os
@@ -45,11 +49,25 @@ NAMA_TAMPIL = {
     "instagram": "Instagram", "tiktok": "TikTok", "x": "X",
     "threads": "Threads", "facebook": "Facebook", "youtube": "YouTube",
 }
+WARNA_MEREK = {
+    "instagram": (225, 48, 108), "youtube": (255, 0, 0), "facebook": (24, 119, 242),
+    "tiktok": (0, 0, 0), "x": (0, 0, 0), "threads": (0, 0, 0),
+}
 
 VIDEO_W = int(os.getenv("OUTRO_VIDEO_W", "1080"))
 VIDEO_H = int(os.getenv("OUTRO_VIDEO_H", "1920"))
 FPS = int(os.getenv("OUTRO_FPS", "30"))
-DENTING = Path(__file__).resolve().parent / "assets" / "outro" / "denting.m4a"
+ASET = Path(__file__).resolve().parent / "assets" / "outro"
+DENTING = ASET / "denting.m4a"
+FONT = {
+    "poppins": Path(FONT_BUNDLED),
+    "montserrat": ASET / "font" / "Montserrat.ttf",
+    "oswald": ASET / "font" / "Oswald.ttf",
+    "bebas": ASET / "font" / "BebasNeue.ttf",
+    "anton": ASET / "font" / "Anton.ttf",
+    "righteous": ASET / "font" / "Righteous.ttf",
+    "archivo": ASET / "font" / "ArchivoBlack.ttf",
+}
 
 
 class OutroError(Exception):
@@ -116,9 +134,9 @@ def mulai_job(
         raise OutroError("Nama channel wajib diisi.")
     job_id = uuid.uuid4().hex[:12]
     if seed is None:
-        # Dari 12 digit heksa job_id langsung. Dulu di-pad kanan dengan nol
-        # menjadi UUID lalu diambil 31 bit terendahnya - yang semuanya nol,
-        # sehingga setiap outro "acak" memakai seed 0 dan gaya yang sama.
+        # Dari 12 digit heksa job_id langsung. Dulu di-pad kanan menjadi UUID
+        # lalu diambil 31 bit terendahnya - yang semuanya nol - sehingga tiap
+        # outro "acak" memakai seed 0 dan gaya yang sama.
         seed = int(job_id, 16) % (2**31)
     gaya = pilih_gaya(int(seed))
     with _kunci:
@@ -180,73 +198,112 @@ def _jalankan(job_id: str) -> None:
 #  SUMBU GAYA
 # ============================================================
 
-# Palet: (nama, atas, bawah, aksen, aksen2/bingkai, dekor1, dekor2, glow)
-PALET = [
-    ("merah",   (14, 8, 8),    (36, 10, 10),  (200, 26, 26),  (236, 236, 240), (150, 12, 20), (214, 22, 30),  (56, 13, 6)),
-    ("biru",    (6, 10, 22),   (10, 20, 46),  (30, 90, 220),  (230, 236, 250), (16, 50, 140), (40, 110, 230), (8, 30, 70)),
-    ("teal",    (6, 18, 18),   (8, 34, 34),   (0, 150, 140),  (230, 250, 246), (0, 90, 84),   (0, 180, 165),  (0, 50, 46)),
-    ("emas",    (16, 12, 6),   (34, 26, 10),  (214, 160, 40), (250, 240, 210), (140, 100, 20),(230, 180, 60), (60, 42, 8)),
-    ("ungu",    (14, 6, 22),   (30, 10, 46),  (140, 40, 220), (240, 230, 250), (80, 20, 140), (160, 60, 230), (44, 10, 70)),
-    ("hijau",   (6, 16, 8),    (10, 34, 14),  (30, 160, 70),  (230, 250, 236), (14, 90, 40),  (40, 180, 90),  (8, 50, 18)),
-    ("jingga",  (18, 8, 4),    (40, 18, 6),   (240, 110, 20), (255, 240, 225), (160, 60, 10), (250, 140, 40), (70, 30, 6)),
-    ("mono",    (8, 8, 8),     (24, 24, 24),  (240, 240, 240),(30, 30, 30),    (60, 60, 60),  (110, 110, 110),(30, 30, 30)),
-    ("magenta", (18, 4, 14),   (44, 8, 34),   (230, 40, 150), (255, 230, 245), (140, 20, 90), (240, 80, 170),(70, 10, 46)),
-    ("laut",    (4, 12, 24),   (6, 26, 52),   (0, 170, 230),  (225, 245, 255), (0, 90, 140),  (0, 200, 255), (0, 40, 80)),
-    ("zaitun",  (12, 14, 6),   (28, 32, 12),  (150, 170, 40), (245, 250, 225), (80, 95, 20),  (170, 195, 60),(40, 48, 10)),
-    ("marun",   (16, 4, 8),    (40, 8, 18),   (160, 20, 60),  (250, 225, 235), (100, 10, 40), (190, 40, 80), (60, 6, 24)),
-    ("es",      (10, 14, 20),  (26, 34, 46),  (160, 200, 240),(20, 30, 44),    (60, 80, 110), (120, 160, 210),(30, 44, 64)),
-    ("api",     (16, 6, 4),    (46, 14, 6),   (250, 60, 30),  (255, 235, 220), (170, 30, 10), (255, 120, 40),(80, 20, 8)),
-]
-LATAR = ("gradien", "sapuan", "partikel", "titik", "sinar", "gumpal")
-DEKOR = ("gelombang-kanan", "gelombang-kiri", "pita", "cincin", "sudut", "garis", "tanpa")
-BENTUK = ("oktagon", "lingkaran", "kotak", "heksagon", "perisai")
-TATA = ("acuan", "tengah", "grid", "dua-kolom", "baris-ikon")
-IKON = ("warna", "mono")
-MASUK_BADGE = ("lenting", "turun", "putar", "zoom")
-MASUK_HANDLE = ("kiri", "atas", "pop", "fade")
+def _rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
+    # Dipanggil saat modul dimuat (PALET dibangun di atas), sebelum _clamp
+    # didefinisikan di bawah - jadi pembatasannya ditulis langsung di sini.
+    s = max(0.0, min(1.0, s))
+    v = max(0.0, min(1.0, v))
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, s, v)
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def _buat_palet() -> list[dict[str, Any]]:
+    """44 palet: 15 rona x dua watak (pekat & lembut), plus mono & aksen ganda."""
+    palet: list[dict[str, Any]] = []
+    nama_rona = ["merah", "jingga", "kuning", "lemon", "hijau", "zamrud", "teal", "sian",
+                 "biru", "laut", "nila", "ungu", "magenta", "merah-muda", "marun"]
+    for i, nama in enumerate(nama_rona):
+        h = i / len(nama_rona)
+        # pekat: latar gelap berona, aksen jenuh, bingkai terang
+        palet.append({
+            "nama": f"{nama} pekat", "atas": _rgb(h, 0.55, 0.07), "bawah": _rgb(h, 0.6, 0.2),
+            "aksen": _rgb(h, 0.85, 0.85), "aksen2": _rgb(h, 0.08, 0.96), "dekor1": _rgb(h, 0.7, 0.45),
+            "dekor2": _rgb(h, 0.75, 0.65), "glow": _rgb(h, 0.7, 0.3), "teks": (245, 245, 245),
+        })
+        # lembut: latar hampir hitam netral, aksen pastel, bingkai gelap
+        h2 = (h + 0.5) % 1.0
+        palet.append({
+            "nama": f"{nama} lembut", "atas": (9, 9, 12), "bawah": _rgb(h, 0.35, 0.16),
+            "aksen": _rgb(h, 0.45, 0.95), "aksen2": _rgb(h, 0.6, 0.35), "dekor1": _rgb(h2, 0.5, 0.35),
+            "dekor2": _rgb(h, 0.4, 0.5), "glow": _rgb(h, 0.5, 0.25), "teks": (240, 240, 240),
+        })
+    palet += [
+        {"nama": "mono putih", "atas": (8, 8, 8), "bawah": (26, 26, 26), "aksen": (242, 242, 242), "aksen2": (30, 30, 30),
+         "dekor1": (60, 60, 60), "dekor2": (120, 120, 120), "glow": (36, 36, 36), "teks": (236, 236, 236)},
+        {"nama": "mono arang", "atas": (16, 16, 18), "bawah": (40, 40, 44), "aksen": (70, 70, 76), "aksen2": (220, 220, 225),
+         "dekor1": (90, 90, 96), "dekor2": (140, 140, 150), "glow": (50, 50, 56), "teks": (240, 240, 240)},
+        {"nama": "emas hitam", "atas": (10, 8, 4), "bawah": (30, 24, 8), "aksen": (214, 170, 50), "aksen2": (250, 240, 210),
+         "dekor1": (120, 90, 20), "dekor2": (200, 160, 60), "glow": (60, 44, 10), "teks": (250, 244, 225)},
+        {"nama": "perak biru", "atas": (8, 12, 20), "bawah": (24, 34, 52), "aksen": (190, 210, 235), "aksen2": (20, 30, 48),
+         "dekor1": (60, 84, 120), "dekor2": (130, 160, 200), "glow": (30, 44, 70), "teks": (236, 242, 250)},
+    ]
+    return palet
+
+
+PALET = _buat_palet()
+LATAR = ("gradien", "sapuan", "partikel", "titik", "sinar", "gumpal", "garis-miring", "heks",
+         "butir", "radial", "pita-halus", "sorot", "kotak", "bokeh")
+DEKOR = ("gelombang-kanan", "gelombang-kiri", "pita", "cincin", "sudut", "garis", "tanpa", "bingkai",
+         "segitiga", "bar", "lingkaran", "diagonal-ganda", "busur", "titik-sudut")
+BENTUK = ("oktagon", "lingkaran", "kotak", "heksagon", "perisai", "berlian", "pil", "lencana", "bintang")
+TATA = ("acuan", "tengah", "grid", "dua-kolom", "baris-ikon", "kiri-atas", "bawah", "kolom-kanan", "melingkar", "dua-baris")
+IKON = ("warna", "mono", "garis", "lingkaran")
+MASUK_BADGE = ("lenting", "turun", "putar", "zoom", "kiri", "kedip")
+MASUK_HANDLE = ("kiri", "atas", "pop", "fade", "kanan", "ketik")
+GERAK_LATAR = ("diam", "zoom", "geser")
+NAMA_FONT = tuple(FONT)
 
 
 def pilih_gaya(seed: int) -> dict[str, Any]:
     """Satu nilai di tiap sumbu, ditentukan seed - sama seed, sama tampilan."""
     rnd = random.Random(seed)
     p = rnd.choice(PALET)
-    tata = rnd.choice(TATA)
     return {
-        "seed": seed,
-        "palet": p[0], "atas": p[1], "bawah": p[2], "aksen": p[3], "aksen2": p[4],
-        "dekor1": p[5], "dekor2": p[6], "glow": p[7],
-        "latar": rnd.choice(LATAR),
-        "dekor": rnd.choice(DEKOR),
-        "bentuk": rnd.choice(BENTUK),
-        "tata": tata,
-        "ikon": rnd.choice(IKON),
-        "masuk_badge": rnd.choice(MASUK_BADGE),
-        "masuk_handle": rnd.choice(MASUK_HANDLE),
-        "huruf_besar": rnd.random() < 0.55,
-        "miring": rnd.random() < 0.35,
-        "durasi": rnd.choice((4.5, 5.0, 5.5, 6.0)),
-        "sudut_sapuan": rnd.uniform(math.radians(18), math.radians(60)),
-        "denting_detik": 1.9,
-        "acak": rnd.random(),
+        "seed": seed, **p, "palet": p["nama"],
+        "latar": rnd.choice(LATAR), "dekor": rnd.choice(DEKOR), "bentuk": rnd.choice(BENTUK),
+        "tata": rnd.choice(TATA), "ikon": rnd.choice(IKON),
+        "font_badge": rnd.choice(NAMA_FONT), "font_teks": rnd.choice(NAMA_FONT),
+        "masuk_badge": rnd.choice(MASUK_BADGE), "masuk_handle": rnd.choice(MASUK_HANDLE),
+        "gerak_latar": rnd.choice(GERAK_LATAR), "glow_badge": rnd.random() < 0.5,
+        "huruf_besar": rnd.random() < 0.55, "miring": rnd.random() < 0.3,
+        "durasi": rnd.choice((4.5, 5.0, 5.5, 6.0, 6.5)),
+        "sudut_sapuan": rnd.uniform(math.radians(18), math.radians(62)),
+        "denting_detik": 1.9, "acak": rnd.random(), "acak2": rnd.random(),
     }
 
 
 def ringkas_gaya(g: dict[str, Any]) -> str:
     return (f"palet {g['palet']} · latar {g['latar']} · dekor {g['dekor']} · badge {g['bentuk']} · "
-            f"tata {g['tata']} · ikon {g['ikon']} · masuk {g['masuk_badge']}/{g['masuk_handle']}")
+            f"tata {g['tata']} · ikon {g['ikon']} · font {g['font_badge']}/{g['font_teks']} · "
+            f"masuk {g['masuk_badge']}/{g['masuk_handle']}")
 
 
 # ============================================================
 #  ALAT GAMBAR
 # ============================================================
 
-def _font(ukuran: int) -> Any:
+_FONT_CACHE: dict[tuple[str, int], Any] = {}
+
+
+def _font(ukuran: int, nama: str = "poppins") -> Any:
     from PIL import ImageFont
 
+    kunci = (nama, ukuran)
+    if kunci in _FONT_CACHE:
+        return _FONT_CACHE[kunci]
+    jalur = FONT.get(nama) or FONT["poppins"]
     try:
-        return ImageFont.truetype(FONT_BUNDLED, ukuran)
+        f = ImageFont.truetype(str(jalur), ukuran)
+        try:
+            nama_var = [n.decode() if isinstance(n, bytes) else n for n in f.get_variation_names()]
+            if "Bold" in nama_var:
+                f.set_variation_by_name("Bold")
+        except Exception:  # noqa: BLE001 - font statis tidak punya variasi
+            pass
     except Exception:  # noqa: BLE001
-        return ImageFont.load_default()
+        f = ImageFont.truetype(FONT_BUNDLED, ukuran)
+    _FONT_CACHE[kunci] = f
+    return f
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -264,10 +321,10 @@ def _lenting(t: float) -> float:
     return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
 
 
-def _teks_gambar(teks: str, ukuran: int, warna: tuple, miring: bool = False) -> Any:
+def _teks_gambar(teks: str, ukuran: int, warna: tuple, miring: bool = False, nama_font: str = "poppins") -> Any:
     from PIL import Image, ImageDraw
 
-    font = _font(ukuran)
+    font = _font(ukuran, nama_font)
     d0 = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     x0, y0, x1, y1 = d0.textbbox((0, 0), teks, font=font)
     tepi = max(6, ukuran // 6)
@@ -310,13 +367,15 @@ def _skala(im: Any, faktor: float) -> Any:
     return im.resize((max(2, int(w * faktor)), max(2, int(h * faktor))))
 
 
+def _lebih_terang(c: tuple, k: int) -> tuple:
+    return tuple(min(255, v + k) for v in c[:3])
+
+
 # ============================================================
 #  LATAR (statis per gaya) + GERAKAN LATAR (per frame)
 # ============================================================
 
 def _latar(w: int, h: int, g: dict[str, Any]) -> Any:
-    """Latar dasar: gradien dua warna + glow sudut + vignette. Pola tambahan
-    (titik/sinar/gumpal) ikut dipasang di sini kalau gayanya begitu."""
     import numpy as np
     from PIL import Image, ImageDraw, ImageFilter
 
@@ -324,46 +383,65 @@ def _latar(w: int, h: int, g: dict[str, Any]) -> Any:
     xs = np.linspace(0, 1, w, dtype=np.float32)[None, :]
     atas = np.array(g["atas"], np.float32)
     bawah = np.array(g["bawah"], np.float32)
-    # arah gradien ikut seed: tegak, atau miring
-    u = ys if g["acak"] < 0.5 else np.clip(0.7 * ys + 0.3 * xs, 0, 1)
-    # ys berbentuk (h,1): disebar ke (h,w) dulu, lalu ke kanal warna.
-    u = np.broadcast_to(u, (h, w))[:, :, None]
-    dasar = atas + (bawah - atas) * u
-    # glow di satu sudut
+    if g["latar"] == "radial":
+        u = np.clip(np.sqrt((xs - 0.5) ** 2 * 0.6 + (ys - 0.42) ** 2) * 1.6, 0, 1)
+        dasar = bawah + (atas - bawah) * u[:, :, None]
+    else:
+        u = ys if g["acak"] < 0.5 else np.clip(0.7 * ys + 0.3 * xs, 0, 1)
+        u = np.broadcast_to(u, (h, w))[:, :, None]
+        dasar = atas + (bawah - atas) * u
     sx, sy = (0.88, 0.94) if g["acak"] < 0.5 else (0.12, 0.08)
     d2 = (xs - sx) ** 2 * 1.1 + (ys - sy) ** 2 * 1.6
     dasar = dasar + np.exp(-d2 / 0.22)[:, :, None] * np.array(g["glow"], np.float32)
     vx, vy = (xs - 0.5) * 2, (ys - 0.5) * 2
     dasar *= (1.0 - 0.18 * np.clip(vx ** 2 + vy ** 2, 0, 1))[:, :, None]
+    if g["latar"] == "butir":
+        rng = np.random.default_rng(g["seed"])
+        dasar += rng.normal(0, 9, size=(h, w, 1)).astype(np.float32)
     im = Image.fromarray(np.clip(dasar, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
 
-    if g["latar"] == "titik":
-        lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(lap)
+    lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lap)
+    jenis = g["latar"]
+    if jenis == "titik":
         c = (*g["dekor2"], 70)
-        langkah = 56
-        for yy in range(28, h, langkah):
-            for xx in range(28, w, langkah):
+        for yy in range(28, h, 56):
+            for xx in range(28, w, 56):
                 d.ellipse((xx - 3, yy - 3, xx + 3, yy + 3), fill=c)
-        im.alpha_composite(lap)
-    elif g["latar"] == "gumpal":
-        lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(lap)
+    elif jenis == "garis-miring":
+        for k in range(-h, w + h, 90):
+            d.line([(k, 0), (k + h, h)], fill=(*g["dekor1"], 55), width=3)
+    elif jenis == "heks":
+        r = 54
+        for j, yy in enumerate(range(0, h + r, int(r * 1.5))):
+            for xx in range(0, w + r, int(r * 1.732)):
+                cx = xx + (r * 0.866 if j % 2 else 0)
+                pts = [(cx + r * 0.9 * math.cos(math.radians(60 * i + 30)), yy + r * 0.9 * math.sin(math.radians(60 * i + 30))) for i in range(6)]
+                d.polygon(pts, outline=(*g["dekor2"], 50))
+    elif jenis == "kotak":
+        s = 80
+        for j, yy in enumerate(range(0, h, s)):
+            for i, xx in enumerate(range(0, w, s)):
+                if (i + j) % 2 == 0:
+                    d.rectangle((xx, yy, xx + s, yy + s), fill=(255, 255, 255, 8))
+    elif jenis == "gumpal":
         rnd = random.Random(g["seed"] + 7)
-        for i, warna in enumerate((g["dekor1"], g["dekor2"], g["aksen"])):
+        for warna in (g["dekor1"], g["dekor2"], g["aksen"]):
             cx, cy = rnd.uniform(0.1, 0.9) * w, rnd.uniform(0.1, 0.9) * h
             r = rnd.uniform(0.25, 0.45) * w
             d.ellipse((cx - r, cy - r * 0.8, cx + r, cy + r * 0.8), fill=(*warna, 60))
         lap = lap.filter(ImageFilter.GaussianBlur(w * 0.12))
-        im.alpha_composite(lap)
+    im.alpha_composite(lap)
     return im
 
 
 def _sinar(w: int, h: int, g: dict[str, Any]) -> Any:
-    """Kipas sinar tipis berpusat di badge, diputar pelan per frame."""
     from PIL import Image, ImageDraw, ImageFilter
 
-    n = int(max(w, h) * 1.6)
+    # Kipasnya berpusat di badge (sepertiga atas layar) dan hanya perlu
+    # menjangkau bagian atas; 1,25x LEBAR layar cukup, dan 3x lebih murah
+    # daripada 1,25x tinggi - biayanya ada di pembesaran tiap frame.
+    n = int(w * 1.25)
     im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     c = n / 2
@@ -375,11 +453,11 @@ def _sinar(w: int, h: int, g: dict[str, Any]) -> Any:
 
 
 def _gerak_latar(frame: Any, w: int, h: int, t: float, g: dict[str, Any], cache: dict[str, Any]) -> None:
-    """Gerakan latar per frame sesuai gaya."""
     import numpy as np
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFilter
 
-    if g["latar"] == "sapuan":
+    jenis = g["latar"]
+    if jenis == "sapuan":
         sudut = g["sudut_sapuan"]
         xs = np.arange(w, dtype=np.float32)[None, :]
         ys = np.arange(h, dtype=np.float32)[:, None]
@@ -388,10 +466,10 @@ def _gerak_latar(frame: Any, w: int, h: int, t: float, g: dict[str, Any], cache:
         pos = pmax * (0.1 + 0.8 * ((t / g["durasi"]) % 1.0))
         sweep = np.exp(-((proj - pos) ** 2) / (2 * 150.0 ** 2)).astype(np.float32)
         lap = np.zeros((h, w, 4), np.uint8)
-        lap[:, :, :3] = g["aksen2"] if g["palet"] != "mono" else (255, 255, 255)
+        lap[:, :, :3] = g["aksen2"]
         lap[:, :, 3] = (sweep * 110).astype(np.uint8)
         frame.alpha_composite(Image.fromarray(lap, "RGBA"))
-    elif g["latar"] == "partikel":
+    elif jenis == "partikel":
         if "partikel" not in cache:
             rnd = random.Random(g["seed"] + 3)
             cache["partikel"] = [(rnd.uniform(0, w), rnd.uniform(0, h), rnd.uniform(2, 5),
@@ -403,10 +481,23 @@ def _gerak_latar(frame: Any, w: int, h: int, t: float, g: dict[str, Any], cache:
             a = int(120 + 100 * (0.5 + 0.5 * math.sin(ph + t * 2.0)))
             d.ellipse((px - r, y - r, px + r, y + r), fill=(*g["aksen2"], a))
         frame.alpha_composite(lap)
-    elif g["latar"] == "sinar":
-        # Kipas sinarnya buram, jadi diputar di 1/4 skala lalu diperbesar:
-        # memutar gambar 3000-an piksel tiap frame memakan ~30 detik per
-        # video, versi kecil ini di bawah 5 detik tanpa perbedaan yang tampak.
+    elif jenis == "bokeh":
+        # Lapisan yang memang buram digambar dan di-blur di 1/4 resolusi lalu
+        # diperbesar: blur satu frame penuh tiap frame adalah operasi termahal
+        # di Pillow, dan hasilnya tak berbeda untuk isi yang memang kabur.
+        if "bokeh" not in cache:
+            rnd = random.Random(g["seed"] + 5)
+            cache["bokeh"] = [(rnd.uniform(0, w), rnd.uniform(0, h), rnd.uniform(40, 130),
+                               rnd.uniform(4, 14), rnd.uniform(0, math.tau)) for _ in range(12)]
+        q = 4
+        lap = Image.new("RGBA", (w // q, h // q), (0, 0, 0, 0))
+        d = ImageDraw.Draw(lap)
+        for px, py, r, v, ph in cache["bokeh"]:
+            y = (py - v * t) % h
+            x = px + 30 * math.sin(ph + t * 0.6)
+            d.ellipse(((x - r) / q, (y - r) / q, (x + r) / q, (y + r) / q), fill=(*g["dekor2"], 28))
+        frame.alpha_composite(lap.filter(ImageFilter.GaussianBlur(18 / q)).resize((w, h), Image.BILINEAR))
+    elif jenis == "sinar":
         if "sinar" not in cache:
             penuh = _sinar(w, h, g)
             cache["sinar_n"] = penuh.width
@@ -414,6 +505,22 @@ def _gerak_latar(frame: Any, w: int, h: int, t: float, g: dict[str, Any], cache:
         n = cache["sinar_n"]
         s = cache["sinar"].rotate(t * 6.0, resample=Image.BILINEAR).resize((n, n), Image.BILINEAR)
         _tempel(frame, s, w // 2 - n // 2, int(h * 0.33) - n // 2, 1.0)
+    elif jenis == "pita-halus":
+        q = 4
+        lap = Image.new("RGBA", (w // q, h // q), (0, 0, 0, 0))
+        d = ImageDraw.Draw(lap)
+        for k in range(5):
+            titik = [(x / q, (h * (0.25 + 0.14 * k) + 40 * math.sin(x / 180 + t * 1.2 + k)) / q) for x in range(0, w + 40, 40)]
+            d.line(titik, fill=(*g["dekor2"], 40), width=max(2, 26 // q))
+        frame.alpha_composite(lap.filter(ImageFilter.GaussianBlur(8 / q)).resize((w, h), Image.BILINEAR))
+    elif jenis == "sorot":
+        q = 4
+        lap = Image.new("RGBA", (w // q, h // q), (0, 0, 0, 0))
+        d = ImageDraw.Draw(lap)
+        cx = w * (0.5 + 0.35 * math.sin(t * 0.7))
+        r = w * 0.55
+        d.ellipse(((cx - r) / q, (h * 0.3 - r) / q, (cx + r) / q, (h * 0.3 + r) / q), fill=(*g["dekor2"], 34))
+        frame.alpha_composite(lap.filter(ImageFilter.GaussianBlur(70 / q)).resize((w, h), Image.BILINEAR))
 
 
 # ============================================================
@@ -431,53 +538,84 @@ def _gelombang(draw: Any, w: int, h: int, t: float, naik: float, g: dict[str, An
                  - 34 * math.sin(u * 3.6 + fase + t * kec) - 18 * math.sin(u * 7.9 - fase * 0.6 + t * kec * 0.7))
             titik.append((x, int(y)))
         draw.polygon(titik + [(w, h), (0, h)], fill=(*isi, 255))
-        tepi = tuple(min(255, c + 40) for c in isi)
-        draw.line(titik, fill=(*tepi, 255), width=3)
+        draw.line(titik, fill=(*_lebih_terang(isi, 40), 255), width=3)
 
 
-def _dekor(frame: Any, w: int, h: int, t: float, g: dict[str, Any], pusat_badge: tuple[int, int], D: int) -> None:
+def _dekor(frame: Any, w: int, h: int, t: float, g: dict[str, Any], pusat: tuple[int, int], D: int) -> None:
     from PIL import Image, ImageDraw
 
     jenis = g["dekor"]
     naik = _halus(t / 0.9)
+    if jenis == "tanpa":
+        return
     if jenis in ("gelombang-kanan", "gelombang-kiri"):
         _gelombang(ImageDraw.Draw(frame), w, h, t, naik, g, kanan=(jenis == "gelombang-kanan"))
-    elif jenis == "pita":
-        lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(lap)
+        return
+    lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lap)
+    cx, cy = pusat
+    if jenis == "pita":
         geser = int((1 - naik) * 400)
         for i, warna in enumerate((g["dekor1"], g["dekor2"], g["aksen"])):
             y0 = h - 420 + i * 120 + geser + int(8 * math.sin(t * 1.5 + i))
             d.polygon([(0, y0 + 160), (w, y0 - 60), (w, y0 + 40), (0, y0 + 260)], fill=(*warna, 230))
-        frame.alpha_composite(lap)
     elif jenis == "cincin":
-        lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(lap)
-        cx, cy = pusat_badge
         for i in range(3):
             r = D * (0.62 + i * 0.14) * (0.9 + 0.1 * naik) + 6 * math.sin(t * 1.2 + i)
             d.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(*g["aksen"], 120 - i * 30), width=4)
-        frame.alpha_composite(lap)
     elif jenis == "sudut":
-        lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(lap)
         s = int(w * 0.55 * naik)
         d.polygon([(0, 0), (s, 0), (0, s)], fill=(*g["dekor1"], 200))
         d.polygon([(w, h), (w - s, h), (w, h - s)], fill=(*g["dekor2"], 200))
         d.polygon([(0, 0), (int(s * 0.6), 0), (0, int(s * 0.6))], fill=(*g["aksen"], 160))
-        frame.alpha_composite(lap)
     elif jenis == "garis":
-        lap = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(lap)
         panjang = int(w * naik)
         for i, yy in enumerate((int(h * 0.08), int(h * 0.11), int(h * 0.90), int(h * 0.93))):
             x0 = 0 if i % 2 == 0 else w - panjang
             d.line([(x0, yy), (x0 + panjang, yy)], fill=(*g["aksen"], 200), width=4 if i % 2 == 0 else 2)
-        frame.alpha_composite(lap)
+    elif jenis == "bingkai":
+        m = int(w * 0.045)
+        a = int(255 * naik)
+        d.rounded_rectangle((m, m, w - m, h - m), int(w * 0.04), outline=(*g["aksen"], a), width=6)
+        d.rounded_rectangle((m + 14, m + 14, w - m - 14, h - m - 14), int(w * 0.035), outline=(*g["aksen2"], a // 2), width=2)
+    elif jenis == "segitiga":
+        s = int(w * 0.7 * naik)
+        d.polygon([(w, 0), (w - s, 0), (w, int(s * 0.8))], fill=(*g["dekor1"], 210))
+        d.polygon([(0, h), (s, h), (0, h - int(s * 0.8))], fill=(*g["dekor2"], 210))
+    elif jenis == "bar":
+        tb = int(h * 0.06 * naik)
+        d.rectangle((0, 0, w, tb), fill=(*g["aksen"], 255))
+        d.rectangle((0, h - tb, w, h), fill=(*g["aksen"], 255))
+        d.rectangle((0, tb, w, tb + 6), fill=(*g["aksen2"], 200))
+        d.rectangle((0, h - tb - 6, w, h - tb), fill=(*g["aksen2"], 200))
+    elif jenis == "lingkaran":
+        rnd = random.Random(g["seed"] + 11)
+        for i in range(7):
+            r = rnd.uniform(40, 160) * (0.6 + 0.4 * naik)
+            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+            y += 10 * math.sin(t * 0.8 + i)
+            d.ellipse((x - r, y - r, x + r, y + r), outline=(*g["dekor2"], 110), width=3)
+    elif jenis == "diagonal-ganda":
+        geser = int((1 - naik) * w)
+        d.polygon([(w - geser, 0), (w + 220 - geser, 0), (0 + 220 - geser, h), (0 - geser, h)], fill=(*g["dekor1"], 150))
+        d.polygon([(w + 260 - geser, 0), (w + 340 - geser, 0), (340 - geser, h), (260 - geser, h)], fill=(*g["aksen"], 120))
+    elif jenis == "busur":
+        r = int(w * 1.3)
+        yb = h + int(r * 0.55) - int(120 * naik)
+        d.ellipse((w // 2 - r, yb - r, w // 2 + r, yb + r), fill=(*g["dekor1"], 255))
+        d.ellipse((w // 2 - r, yb - r + 60, w // 2 + r, yb + r + 60), fill=(*g["dekor2"], 255))
+    elif jenis == "titik-sudut":
+        for j in range(12):
+            for i in range(12):
+                r = max(0.0, (10 - i - j) * 1.1) * naik
+                if r > 0.5:
+                    d.ellipse((w - 40 - i * 44 - r, h - 40 - j * 44 - r, w - 40 - i * 44 + r, h - 40 - j * 44 + r), fill=(*g["aksen"], 200))
+                    d.ellipse((40 + i * 44 - r, 40 + j * 44 - r, 40 + i * 44 + r, 40 + j * 44 + r), fill=(*g["aksen"], 200))
+    frame.alpha_composite(lap)
 
 
 # ============================================================
-#  BADGE (logo) - lima bentuk, satu gaya bevel
+#  BADGE (logo) - sembilan bentuk, satu gaya bevel
 # ============================================================
 
 def _mask_bentuk(bentuk: str, n: int, r: float, bulat: float) -> Any:
@@ -486,17 +624,28 @@ def _mask_bentuk(bentuk: str, n: int, r: float, bulat: float) -> Any:
     c = n / 2
     m = Image.new("L", (n, n), 0)
     d = ImageDraw.Draw(m)
-    if bentuk == "lingkaran":
+    if bentuk in ("lingkaran", "lencana"):
         d.ellipse((c - r, c - r, c + r, c + r), fill=255)
         return m
     if bentuk == "kotak":
         d.rounded_rectangle((c - r, c - r, c + r, c + r), r * 0.28, fill=255)
         return m
-    if bentuk == "heksagon":
+    if bentuk == "pil":
+        d.rounded_rectangle((c - r, c - r * 0.62, c + r, c + r * 0.62), r * 0.62, fill=255)
+        return m
+    if bentuk == "berlian":
+        pts = [(c, c - r), (c + r, c), (c, c + r), (c - r, c)]
+    elif bentuk == "bintang":
+        pts = []
+        for i in range(16):
+            rr = r if i % 2 == 0 else r * 0.82
+            a = math.radians(22.5 * i - 90)
+            pts.append((c + rr * math.cos(a), c + rr * math.sin(a)))
+    elif bentuk == "heksagon":
         pts = [(c + r * math.cos(math.radians(60 * i - 30)), c + r * math.sin(math.radians(60 * i - 30))) for i in range(6)]
     elif bentuk == "perisai":
         pts = [(c - r, c - r * 0.85), (c + r, c - r * 0.85), (c + r, c + r * 0.15), (c, c + r), (c - r, c + r * 0.15)]
-    else:  # oktagon
+    else:
         pts = [(c + r * math.cos(math.radians(22.5 + 45 * i)), c + r * math.sin(math.radians(22.5 + 45 * i))) for i in range(8)]
     d.polygon(pts, fill=255)
     if bulat > 0:
@@ -514,22 +663,30 @@ def _badge(nama: str, diameter: int, g: dict[str, Any]) -> Any:
     im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
 
     def lapis(m: Any, warna: tuple) -> None:
-        lap = Image.new("RGBA", (n, n), (*warna, 255))
+        lap = Image.new("RGBA", (n, n), (*warna[:3], 255))
         lap.putalpha(m)
         im.alpha_composite(lap)
 
     bentuk = g["bentuk"]
     bulat = c * 0.05
+    aksen, bingkai = g["aksen"], g["aksen2"]
     bayang = _mask_bentuk(bentuk, n, c * 0.93, bulat)
     bayang = bayang.transform((n, n), Image.AFFINE, (1, 0, 0, 0, 1, -c * 0.07)).filter(ImageFilter.GaussianBlur(c * 0.09))
     lapis(bayang, (0, 0, 0))
-    aksen, bingkai = g["aksen"], g["aksen2"]
-    lapis(_mask_bentuk(bentuk, n, c * 0.94, c * 0.06), bingkai)
-    lapis(_mask_bentuk(bentuk, n, c * 0.855, bulat), tuple(max(0, v - 25) for v in aksen))
-    lapis(_mask_bentuk(bentuk, n, c * 0.815, bulat), bingkai)
-    mask = _mask_bentuk(bentuk, n, c * 0.775, c * 0.045)
+    if bentuk == "lencana":
+        # cincin luar terpisah dengan celah, lalu badan lingkaran
+        cincin = Image.new("L", (n, n), 0)
+        ImageDraw.Draw(cincin).ellipse((c * 0.03, c * 0.03, n - c * 0.03, n - c * 0.03), outline=255, width=int(c * 0.07))
+        lapis(cincin, bingkai)
+        lapis(_mask_bentuk(bentuk, n, c * 0.84, 0), bingkai)
+        lapis(_mask_bentuk(bentuk, n, c * 0.78, 0), tuple(max(0, v - 25) for v in aksen))
+        mask = _mask_bentuk(bentuk, n, c * 0.72, 0)
+    else:
+        lapis(_mask_bentuk(bentuk, n, c * 0.94, c * 0.06), bingkai)
+        lapis(_mask_bentuk(bentuk, n, c * 0.855, bulat), tuple(max(0, v - 25) for v in aksen))
+        lapis(_mask_bentuk(bentuk, n, c * 0.815, bulat), bingkai)
+        mask = _mask_bentuk(bentuk, n, c * 0.775, c * 0.045)
     lapis(mask, aksen)
-    # gradien radial: terang di tengah-atas
     ys = np.arange(n, dtype=np.float32)[:, None]
     xs = np.arange(n, dtype=np.float32)[None, :]
     r2 = ((xs - c) ** 2 + (ys - c * 0.85) ** 2) / (c * 0.8) ** 2
@@ -549,33 +706,34 @@ def _badge(nama: str, diameter: int, g: dict[str, Any]) -> Any:
     kilau.putalpha(Image.composite(kilau.getchannel("A"), Image.new("L", (n, n), 0), mask))
     im.alpha_composite(kilau)
 
-    # nama channel dua baris, warna teks kontras dengan aksen
-    gelap = sum(aksen) / 3 < 140
-    warna_teks = (255, 255, 255, 255) if gelap or g["palet"] != "mono" else (20, 20, 20, 255)
-    if g["palet"] == "mono":
-        warna_teks = (20, 20, 20, 255)
+    # nama channel: kontras terhadap warna aksen
+    terang_aksen = 0.299 * aksen[0] + 0.587 * aksen[1] + 0.114 * aksen[2]
+    warna_teks = (20, 20, 24, 255) if terang_aksen > 150 else (255, 255, 255, 255)
     kata = nama.upper().split()
-    if len(kata) >= 2:
+    lebar_maks = c * (1.05 if bentuk in ("lingkaran", "lencana", "heksagon", "berlian", "bintang") else 1.15)
+    if bentuk == "pil":
+        baris_baris = [(" ".join(kata), c)]
+        lebar_maks = c * 1.6
+    elif len(kata) >= 2:
         belah = max(1, len(kata) // 2) if len(kata) > 2 else 1
-        atas, bawah = " ".join(kata[:belah]), " ".join(kata[belah:])
+        baris_baris = [(" ".join(kata[:belah]), c * 0.80), (" ".join(kata[belah:]), c * 1.22)]
     else:
         s = nama.upper()
-        atas, bawah = (s[: len(s) // 2], s[len(s) // 2:]) if len(s) > 6 else (s, "")
+        baris_baris = [(s[: len(s) // 2], c * 0.80), (s[len(s) // 2:], c * 1.22)] if len(s) > 6 else [(s, c)]
     d = ImageDraw.Draw(im)
-    lebar_maks = c * (1.05 if bentuk in ("lingkaran", "heksagon") else 1.15)
-    for baris, y_pusat in ((atas, c * 0.80), (bawah, c * 1.22)):
+    for baris, y_pusat in baris_baris:
         if not baris:
             continue
         uk = int(c * 0.30)
-        f = _font(uk)
+        f = _font(uk, g["font_badge"])
         while uk > 20 and d.textbbox((0, 0), baris, font=f)[2] > lebar_maks:
             uk -= 4
-            f = _font(uk)
+            f = _font(uk, g["font_badge"])
         x0, y0, x1, y1 = d.textbbox((0, 0), baris, font=f)
         px, py = c - (x1 - x0) / 2 - x0, y_pusat - (y1 - y0) / 2 - y0
         d.text((px + 4, py + 5), baris, font=f, fill=(0, 0, 0, 150))
         d.text((px, py), baris, font=f, fill=warna_teks)
-    if atas and bawah:
+    if len(baris_baris) == 2 and all(b for b, _ in baris_baris):
         d.line([(c * 0.45, c), (c * 1.55, c)], fill=(*warna_teks[:3], 230), width=int(c * 0.02))
     return im.resize((D, D), Image.LANCZOS)
 
@@ -590,90 +748,92 @@ def _logo_unggahan(path: str, diameter: int) -> Any:
     return kanvas
 
 
+def _glow_badge(D: int, g: dict[str, Any]) -> Any:
+    from PIL import Image, ImageDraw, ImageFilter
+
+    n = int(D * 1.6)
+    im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    r = D * 0.55
+    ImageDraw.Draw(im).ellipse((n / 2 - r, n / 2 - r, n / 2 + r, n / 2 + r), fill=(*g["aksen"], 150))
+    return im.filter(ImageFilter.GaussianBlur(D * 0.14))
+
+
 # ============================================================
-#  IKON PLATFORM - warna merek, atau mono (putih di aksen)
+#  IKON PLATFORM - glyph merek resmi
 # ============================================================
 
+_GLYPH_CACHE: dict[str, Any] = {}
+
+
+def _glyph(platform: str) -> Any:
+    from PIL import Image
+
+    if platform not in _GLYPH_CACHE:
+        _GLYPH_CACHE[platform] = Image.open(ASET / "ikon" / f"{platform}.png").convert("RGBA")
+    return _GLYPH_CACHE[platform]
+
+
 def _ikon(platform: str, s: int, g: dict[str, Any]) -> Any:
+    """Ikon platform: glyph resmi di atas latar sesuai gaya.
+
+    warna     : latar warna merek (Instagram gradien), glyph putih - seperti app icon.
+    mono      : latar warna aksen palet, glyph putih.
+    garis     : tanpa latar penuh, lingkaran garis tipis + glyph warna aksen2.
+    lingkaran : latar lingkaran warna merek, glyph putih.
+    """
     import numpy as np
     from PIL import Image, ImageDraw
 
-    S = 4
+    S = 3
     n = s * S
+    gaya = g["ikon"]
     im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    mono = g["ikon"] == "mono"
-    bulat_penuh = mono and g["acak"] < 0.5
-    rad = n * 0.22
     mask = Image.new("L", (n, n), 0)
-    if bulat_penuh:
+    if gaya in ("lingkaran", "garis"):
         ImageDraw.Draw(mask).ellipse((0, 0, n - 1, n - 1), fill=255)
     else:
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, n - 1, n - 1), rad, fill=255)
-    putih = (255, 255, 255, 255)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, n - 1, n - 1), n * 0.22, fill=255)
 
-    def latar_ikon(warna: tuple) -> None:
-        if bulat_penuh:
-            d.ellipse((0, 0, n - 1, n - 1), fill=(*warna, 255))
+    if gaya == "garis":
+        # Tanpa latar penuh, glyph-nya harus selalu kontras dengan apa pun di
+        # belakangnya - dulu memakai warna aksen, dan di atas dekor sewarna
+        # (mis. busur ungu) ikonnya nyaris hilang. Warna teks palet aman.
+        d.ellipse((n * 0.03, n * 0.03, n * 0.97, n * 0.97), outline=(*g["teks"], 200), width=max(2, n // 28))
+        warna_glyph = g["teks"]
+    elif gaya == "mono":
+        d.rounded_rectangle((0, 0, n - 1, n - 1), n * 0.22, fill=(*g["aksen"], 255))
+        terang = 0.299 * g["aksen"][0] + 0.587 * g["aksen"][1] + 0.114 * g["aksen"][2]
+        warna_glyph = (20, 20, 24) if terang > 150 else (255, 255, 255)
+    else:
+        if platform == "instagram":
+            ys = np.linspace(0, 1, n, dtype=np.float32)[:, None]
+            xs = np.linspace(0, 1, n, dtype=np.float32)[None, :]
+            u = np.clip(0.6 * ys + 0.4 * (1 - xs), 0, 1)[:, :, None]
+            a, m, b = (np.array(v, np.float32) for v in ((255, 190, 60), (225, 45, 110), (110, 45, 200)))
+            arr = np.where(u < 0.5, a + (m - a) * (u / 0.5), m + (b - m) * ((u - 0.5) / 0.5))
+            bg = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+            bg.putalpha(mask)
+            im = bg
+            d = ImageDraw.Draw(im)
+        elif gaya == "lingkaran":
+            d.ellipse((0, 0, n - 1, n - 1), fill=(*WARNA_MEREK[platform], 255))
         else:
-            d.rounded_rectangle((0, 0, n - 1, n - 1), rad, fill=(*warna, 255))
+            d.rounded_rectangle((0, 0, n - 1, n - 1), n * 0.22, fill=(*WARNA_MEREK[platform], 255))
+        warna_glyph = (255, 255, 255)
 
-    if platform == "instagram" and not mono:
-        ys = np.linspace(0, 1, n, dtype=np.float32)[:, None]
-        xs = np.linspace(0, 1, n, dtype=np.float32)[None, :]
-        u = np.clip(0.6 * ys + 0.4 * (1 - xs), 0, 1)[:, :, None]
-        a, m, b = (np.array(v, np.float32) for v in ((255, 190, 60), (225, 45, 110), (110, 45, 200)))
-        arr = np.where(u < 0.5, a + (m - a) * (u / 0.5), m + (b - m) * ((u - 0.5) / 0.5))
-        bg = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
-        bg.putalpha(mask)
-        im = bg
-        d = ImageDraw.Draw(im)
-    else:
-        warna_bg = g["aksen"] if mono else {
-            "instagram": (225, 45, 110), "youtube": (255, 0, 0), "facebook": (24, 119, 242),
-            "tiktok": (0, 0, 0), "x": (0, 0, 0), "threads": (0, 0, 0)}[platform]
-        if mono and g["palet"] == "mono":
-            warna_bg = (240, 240, 240)
-            putih = (20, 20, 20, 255)
-        latar_ikon(warna_bg)
-
-    if platform == "instagram":
-        p = n * 0.2
-        d.rounded_rectangle((p, p, n - p, n - p), n * 0.14, outline=putih, width=int(n * 0.075))
-        r = n * 0.16
-        d.ellipse((n / 2 - r, n / 2 - r, n / 2 + r, n / 2 + r), outline=putih, width=int(n * 0.075))
-        q = n * 0.045
-        d.ellipse((n * 0.70 - q, n * 0.30 - q, n * 0.70 + q, n * 0.30 + q), fill=putih)
-    elif platform == "youtube":
-        p = n * 0.2
-        d.rounded_rectangle((p, n * 0.28, n - p, n * 0.72), n * 0.12, fill=putih)
-        isi = (*g["aksen"], 255) if mono else (255, 0, 0, 255)
-        if mono and g["palet"] == "mono":
-            isi = (240, 240, 240, 255)
-        d.polygon([(n * 0.43, n * 0.38), (n * 0.43, n * 0.62), (n * 0.63, n * 0.5)], fill=isi)
-    elif platform == "facebook":
-        f = _font(int(n * 0.86))
-        x0, y0, x1, y1 = d.textbbox((0, 0), "f", font=f)
-        d.text((n * 0.56 - (x1 - x0) / 2 - x0, n * 0.62 - (y1 - y0) / 2 - y0), "f", font=f, fill=putih)
-    elif platform == "tiktok":
-        lapisan = (((37, 244, 238, 255), -n * 0.02, -n * 0.02), ((254, 44, 85, 255), n * 0.02, n * 0.02), (putih, 0, 0)) \
-            if not mono else ((putih, 0, 0),)
-        for warna, dx, dy in lapisan:
-            bx, by = n * 0.40 + dx, n * 0.66 + dy
-            r = n * 0.12
-            d.ellipse((bx - r, by - r, bx + r, by + r), fill=warna)
-            d.rectangle((bx + r * 0.55, n * 0.20 + dy, bx + r * 0.55 + n * 0.075, by), fill=warna)
-            d.arc((bx + r * 0.55 - n * 0.02, n * 0.18 + dy, bx + n * 0.42, n * 0.48 + dy), start=270, end=30, fill=warna, width=int(n * 0.075))
-    elif platform == "x":
-        lw = int(n * 0.085)
-        d.line([(n * 0.25, n * 0.25), (n * 0.75, n * 0.75)], fill=putih, width=lw)
-        d.line([(n * 0.75, n * 0.25), (n * 0.25, n * 0.75)], fill=putih, width=lw)
-    else:
-        f = _font(int(n * 0.78))
-        x0, y0, x1, y1 = d.textbbox((0, 0), "@", font=f)
-        d.text((n / 2 - (x1 - x0) / 2 - x0, n * 0.52 - (y1 - y0) / 2 - y0), "@", font=f, fill=putih)
-
-    if not (platform == "instagram" and not mono):
+    # glyph: PNG putih-transparan diwarnai lalu ditempel di tengah
+    ukur = int(n * 0.60)
+    gl = _glyph(platform).resize((ukur, ukur), Image.LANCZOS)
+    if platform == "tiktok" and gaya in ("warna", "lingkaran"):
+        # ciri khas TikTok: bayangan sian & merah muda di kiri-atas dan kanan-bawah
+        for warna, dx, dy in (((37, 244, 238), -n * 0.02, -n * 0.02), ((254, 44, 85), n * 0.02, n * 0.02)):
+            lap = Image.new("RGBA", (ukur, ukur), (*warna, 255)); lap.putalpha(gl.getchannel("A"))
+            im.alpha_composite(lap, (int((n - ukur) / 2 + dx), int((n - ukur) / 2 + dy)))
+    lap = Image.new("RGBA", (ukur, ukur), (*warna_glyph[:3], 255))
+    lap.putalpha(gl.getchannel("A"))
+    im.alpha_composite(lap, ((n - ukur) // 2, (n - ukur) // 2))
+    if gaya != "garis" and not (platform == "instagram" and gaya == "warna"):
         im.putalpha(Image.composite(im.getchannel("A"), Image.new("L", (n, n), 0), mask))
     return im.resize((s, s), Image.LANCZOS)
 
@@ -682,63 +842,93 @@ def _ikon(platform: str, s: int, g: dict[str, Any]) -> Any:
 #  TATA LETAK
 # ============================================================
 
-def _susun(w: int, h: int, g: dict[str, Any], isi: list[tuple[str, str]], pakai_nama_teks: bool) -> dict[str, Any]:
-    """Posisi badge, nama (teks), dan tiap baris handle untuk tata letak gaya ini."""
+def _susun(w: int, h: int, g: dict[str, Any], jumlah: int, pakai_nama_teks: bool) -> dict[str, Any]:
     tata = g["tata"]
-    n = len(isi)
-    L: dict[str, Any] = {"baris": []}
+    n = jumlah
+    L: dict[str, Any] = {"baris": [], "nama": None}
+
+    def baris_kiri(x_ikon: int, y0: int, pitch: int, ikon: int, font: int, jarak: int) -> None:
+        for i in range(n):
+            L["baris"].append({"ikon": (x_ikon, y0 + i * pitch), "teks": (x_ikon + ikon + jarak, y0 + i * pitch), "ikon_s": ikon, "font": font})
+
     if tata == "dua-kolom":
         D = int(w * 0.40)
         L["badge"] = (int(w * 0.06), int(h * 0.30), D)
-        ikon = int(w * 0.075)
-        pitch = int(h * 0.062)
-        x0 = int(w * 0.52)
-        y0 = int(h * 0.30) + (D - n * pitch) // 2
-        for i in range(n):
-            L["baris"].append({"ikon": (x0, y0 + i * pitch), "teks": (x0 + ikon + int(w * 0.02), y0 + i * pitch), "ikon_s": ikon, "font": int(w * 0.040)})
+        ikon = int(w * 0.075); pitch = int(h * 0.062)
+        baris_kiri(int(w * 0.52), int(h * 0.30) + (D - n * pitch) // 2, pitch, ikon, int(w * 0.040), int(w * 0.02))
         L["nama"] = (w // 2, int(h * 0.30) + D + int(h * 0.05))
     elif tata == "grid":
         D = int(w * 0.44)
         L["badge"] = ((w - D) // 2, int(h * 0.14), D)
-        ikon = int(w * 0.07)
-        kol_w = int(w * 0.44)
-        x_kol = [int(w * 0.05), int(w * 0.51)]
-        y0 = int(h * 0.14) + D + int(h * 0.09)
-        pitch = int(h * 0.075)
+        ikon = int(w * 0.07); kol_w = int(w * 0.44); x_kol = [int(w * 0.05), int(w * 0.51)]
+        y0 = int(h * 0.14) + D + int(h * 0.09); pitch = int(h * 0.075)
         for i in range(n):
             xk, yk = x_kol[i % 2], y0 + (i // 2) * pitch
             L["baris"].append({"pil": (xk, yk, kol_w, int(h * 0.058)), "ikon": (xk + 12, yk + 6), "teks": (xk + 12 + ikon + 14, yk + 6), "ikon_s": ikon, "font": int(w * 0.034)})
         L["nama"] = (w // 2, int(h * 0.14) + D + int(h * 0.03))
+    elif tata == "dua-baris":
+        D = int(w * 0.42)
+        L["badge"] = ((w - D) // 2, int(h * 0.15), D)
+        ikon = int(w * 0.062); kol_w = int(w * 0.30); x_kol = [int(w * 0.035), int(w * 0.35), int(w * 0.665)]
+        y0 = int(h * 0.15) + D + int(h * 0.10); pitch = int(h * 0.085)
+        for i in range(n):
+            xk, yk = x_kol[i % 3], y0 + (i // 3) * pitch
+            L["baris"].append({"pil": (xk, yk, kol_w, int(h * 0.062)), "ikon": (xk + 10, yk + 8), "teks": (xk + 10 + ikon + 10, yk + 8), "ikon_s": ikon, "font": int(w * 0.026)})
+        L["nama"] = (w // 2, int(h * 0.15) + D + int(h * 0.03))
     elif tata == "baris-ikon":
         D = int(w * 0.48)
         L["badge"] = ((w - D) // 2, int(h * 0.16), D)
-        ikon = int(w * 0.11)
-        per_baris = 3
-        gap = int(w * 0.30)
-        x0 = w // 2 - gap
+        ikon = int(w * 0.11); gap = int(w * 0.30); x0 = w // 2 - gap
         y0 = int(h * 0.16) + D + int(h * 0.10)
         for i in range(n):
-            xk = x0 + (i % per_baris) * gap - ikon // 2
-            yk = y0 + (i // per_baris) * int(h * 0.15)
+            xk = x0 + (i % 3) * gap - ikon // 2; yk = y0 + (i // 3) * int(h * 0.15)
             L["baris"].append({"ikon": (xk, yk), "teks_tengah": (xk + ikon // 2, yk + ikon + 10), "ikon_s": ikon, "font": int(w * 0.030)})
         L["nama"] = (w // 2, int(h * 0.16) + D + int(h * 0.035))
+    elif tata == "melingkar":
+        D = int(w * 0.40)
+        L["badge"] = ((w - D) // 2, int(h * 0.24), D)
+        ikon = int(w * 0.10); cx, cy = w // 2, int(h * 0.24) + D // 2; R = D * 0.85
+        for i in range(n):
+            a = -math.pi / 2 + i * math.tau / max(1, n)
+            L["baris"].append({"ikon": (int(cx + R * math.cos(a) - ikon / 2), int(cy + R * math.sin(a) - ikon / 2)), "teks_tengah": None, "ikon_s": ikon, "font": int(w * 0.030)})
+        y0 = int(h * 0.24) + D + int(h * 0.20); pitch = int(h * 0.044)
+        for i in range(n):
+            L["baris"][i]["teks_tengah_y"] = y0 + i * pitch
+        L["nama"] = (w // 2, int(h * 0.24) + D + int(h * 0.12))
+    elif tata == "kiri-atas":
+        D = int(w * 0.30)
+        L["badge"] = (int(w * 0.06), int(h * 0.10), D)
+        ikon = int(w * 0.085); pitch = int(h * 0.072)
+        baris_kiri(int(w * 0.10), int(h * 0.10) + D + int(h * 0.09), pitch, ikon, int(w * 0.052), int(w * 0.03))
+        L["nama"] = (int(w * 0.06) + D + int(w * 0.06) + int(w * 0.25), int(h * 0.10) + D // 2 - int(w * 0.03))
+        L["nama_kiri"] = True
+    elif tata == "bawah":
+        D = int(w * 0.46)
+        L["badge"] = ((w - D) // 2, int(h * 0.56), D)
+        ikon = int(w * 0.078); pitch = int(h * 0.060)
+        baris_kiri(int(w * 0.24), int(h * 0.12), pitch, ikon, int(w * 0.046), int(w * 0.03))
+        L["nama"] = (w // 2, int(h * 0.56) + D + int(h * 0.03))
+    elif tata == "kolom-kanan":
+        D = int(w * 0.44)
+        L["badge"] = (int(w * 0.05), int(h * 0.32), D)
+        ikon = int(w * 0.07); pil_w = int(w * 0.40); x = int(w * 0.56)
+        y0 = int(h * 0.32) + (D - n * int(h * 0.068)) // 2
+        for i in range(n):
+            yk = y0 + i * int(h * 0.068)
+            L["baris"].append({"pil": (x, yk, pil_w, int(h * 0.056)), "ikon": (x + 10, yk + 6), "teks": (x + 10 + ikon + 10, yk + 6), "ikon_s": ikon, "font": int(w * 0.030)})
+        L["nama"] = (int(w * 0.05) + D // 2, int(h * 0.32) + D + int(h * 0.03))
     elif tata == "tengah":
         D = int(w * 0.50)
         L["badge"] = ((w - D) // 2, int(h * 0.15), D)
-        ikon = int(w * 0.075)
-        pitch = int(h * 0.062)
-        y0 = int(h * 0.15) + D + int(h * 0.09)
+        ikon = int(w * 0.075); pitch = int(h * 0.062); y0 = int(h * 0.15) + D + int(h * 0.09)
         for i in range(n):
             L["baris"].append({"tengah": True, "y": y0 + i * pitch, "ikon_s": ikon, "font": int(w * 0.044)})
         L["nama"] = (w // 2, int(h * 0.15) + D + int(h * 0.03))
     else:  # acuan
         D = int(w * 0.56)
         L["badge"] = ((w - D) // 2, int(h * 0.17), D)
-        ikon = int(w * 0.082)
-        pitch = int(h * 0.062) if n <= 4 else int(h * 0.055)
-        y0 = int(h * 0.17) + D + int(h * 0.11)
-        for i in range(n):
-            L["baris"].append({"ikon": (int(w * 0.22), y0 + i * pitch), "teks": (int(w * 0.22) + ikon + int(w * 0.03), y0 + i * pitch), "ikon_s": ikon, "font": int(w * 0.050)})
+        ikon = int(w * 0.082); pitch = int(h * 0.062) if n <= 4 else int(h * 0.055)
+        baris_kiri(int(w * 0.22), int(h * 0.17) + D + int(h * 0.11), pitch, ikon, int(w * 0.050), int(w * 0.03))
         L["nama"] = (w // 2, int(h * 0.17) + D + int(h * 0.035))
     L["pakai_nama_teks"] = pakai_nama_teks
     return L
@@ -760,17 +950,19 @@ def render_video(job: dict[str, Any], g: dict[str, Any], folder: Path, ev: threa
 
     latar = _latar(w, h, g)
     pakai_logo = bool(job.get("logo")) and Path(job["logo"]).is_file()
-    L = _susun(w, h, g, isi, pakai_nama_teks=pakai_logo or g["tata"] in ("grid", "baris-ikon", "dua-kolom"))
+    nama_teks_perlu = pakai_logo or g["tata"] in ("grid", "baris-ikon", "dua-kolom", "kiri-atas", "bawah", "melingkar", "dua-baris", "kolom-kanan")
+    L = _susun(w, h, g, len(isi), nama_teks_perlu)
     bx, by, D = L["badge"]
     badge = _logo_unggahan(job["logo"], D) if pakai_logo else _badge(channel, D, g)
+    glow = _glow_badge(D, g) if g["glow_badge"] else None
     pusat_badge = (bx + D // 2, by + D // 2)
-    nama_im = _teks_gambar(huruf(channel), int(w * 0.058), (*g["aksen2"][:3], 255) if g["palet"] != "mono" else (240, 240, 240, 255), miring=g["miring"]) if L["pakai_nama_teks"] else None
+    nama_im = _teks_gambar(huruf(channel), int(w * 0.058), (*g["teks"], 255), miring=g["miring"], nama_font=g["font_teks"]) if L["pakai_nama_teks"] else None
 
-    warna_teks = (245, 245, 245, 255) if g["palet"] != "mono" else (235, 235, 235, 255)
+    warna_teks = (*g["teks"], 255)
     baris_ims = []
     for (k, nilai), b in zip(isi, L["baris"]):
         ik = _ikon(k, b["ikon_s"], g)
-        tx = _teks_gambar(huruf(nilai) if g["huruf_besar"] and g["acak"] < 0.3 else nilai, b["font"], warna_teks)
+        tx = _teks_gambar(huruf(nilai) if g["huruf_besar"] and g["acak"] < 0.3 else nilai, b["font"], warna_teks, nama_font=g["font_teks"])
         baris_ims.append((ik, tx, b))
 
     t_badge, t_handle = 0.35, 1.6
@@ -808,7 +1000,25 @@ def render_video(job: dict[str, Any], g: dict[str, Any], folder: Path, ev: threa
                 proses.kill()
                 raise Dibatalkan("Render dihentikan.")
             t = n / FPS
-            frame = latar.copy()
+            # gerak latar: zoom pelan / geser pelan / diam
+            if g["gerak_latar"] == "zoom":
+                # 16 tingkat zoom dihitung sekali (langkah ~0,4%, tak terlihat
+                # pada gradien), bukan resize latar penuh tiap frame - itu
+                # yang membuat satu video memakan lebih dari semenit.
+                k = min(15, int(16 * t / durasi))
+                if ("zoom", k) not in cache:
+                    f = 1.0 + 0.06 * (k / 15)
+                    big = latar.resize((int(w * f), int(h * f)))
+                    cache[("zoom", k)] = big.crop(((big.width - w) // 2, (big.height - h) // 2, (big.width - w) // 2 + w, (big.height - h) // 2 + h))
+                frame = cache[("zoom", k)].copy()
+            elif g["gerak_latar"] == "geser":
+                if "latar_lebar" not in cache:
+                    cache["latar_lebar"] = latar.resize((int(w * 1.08), int(h * 1.08)))
+                big = cache["latar_lebar"]
+                dx = int((big.width - w) * (t / durasi)); dy = int((big.height - h) * 0.5)
+                frame = big.crop((dx, dy, dx + w, dy + h))
+            else:
+                frame = latar.copy()
             _gerak_latar(frame, w, h, t, g, cache)
             _dekor(frame, w, h, t, g, pusat_badge, D)
 
@@ -818,21 +1028,33 @@ def render_video(job: dict[str, Any], g: dict[str, Any], folder: Path, ev: threa
                 a = _clamp(u / 0.35)
                 apung = int(5 * math.sin(t * 1.8))
                 jenis = g["masuk_badge"]
+                dx = dy = 0
                 if jenis == "lenting":
-                    sk = max(0.02, _lenting(u)); bimg = _skala(badge, sk); dy = 0
+                    bimg = _skala(badge, max(0.02, _lenting(u)))
                 elif jenis == "turun":
-                    sk = 1.0; bimg = badge; dy = int(-(1 - _halus(u)) * h * 0.25)
+                    bimg = badge; dy = int(-(1 - _halus(u)) * h * 0.25)
                 elif jenis == "putar":
-                    sk = max(0.05, _halus(u)); bimg = _skala(badge, sk).rotate((1 - _halus(u)) * 180, resample=Image.BICUBIC, expand=False); dy = 0
-                else:  # zoom
-                    sk = 1.35 - 0.35 * _halus(u); bimg = _skala(badge, sk); dy = 0
-                _tempel(frame, bimg, bx + (D - bimg.width) // 2, by + (D - bimg.height) // 2 + apung + dy, a)
+                    bimg = _skala(badge, max(0.05, _halus(u))).rotate((1 - _halus(u)) * 180, resample=Image.BICUBIC, expand=False)
+                elif jenis == "kiri":
+                    bimg = badge; dx = int(-(1 - _halus(u)) * w * 0.6)
+                elif jenis == "kedip":
+                    bimg = _skala(badge, 1.0 + 0.06 * math.sin(min(u, 1.0) * math.pi * 2))
+                else:
+                    bimg = _skala(badge, 1.35 - 0.35 * _halus(u))
+                if glow is not None:
+                    gx = pusat_badge[0] - glow.width // 2 + dx
+                    gy = pusat_badge[1] - glow.height // 2 + dy + apung
+                    _tempel(frame, glow, gx, gy, a * (0.7 + 0.3 * math.sin(t * 2.0)))
+                _tempel(frame, bimg, bx + (D - bimg.width) // 2 + dx, by + (D - bimg.height) // 2 + apung + dy, a)
 
             # ----- nama (teks) -----
             if nama_im is not None and t >= t_badge + 0.6:
                 a = _halus((t - t_badge - 0.6) / 0.5)
                 nx, ny = L["nama"]
-                _tempel(frame, nama_im, nx - nama_im.width // 2, ny + int(24 * (1 - a)), a)
+                x = nx - nama_im.width // 2
+                if L.get("nama_kiri"):
+                    x = int(w * 0.06) + D + int(w * 0.06)
+                _tempel(frame, nama_im, x, ny + int(24 * (1 - a)), a)
 
             # ----- handle -----
             for i, (ik, tx, b) in enumerate(baris_ims):
@@ -842,34 +1064,39 @@ def render_video(job: dict[str, Any], g: dict[str, Any], folder: Path, ev: threa
                 u = (t - mulai) / 0.45
                 a = _halus(u)
                 jenis = g["masuk_handle"]
-                dx = int(-70 * (1 - a)) if jenis == "kiri" else 0
+                dx = int(-70 * (1 - a)) if jenis == "kiri" else int(70 * (1 - a)) if jenis == "kanan" else 0
                 dy = int(40 * (1 - a)) if jenis == "atas" else 0
                 sk = max(0.05, _lenting(u)) if jenis == "pop" else 1.0
                 ikx = _skala(ik, sk) if sk != 1.0 else ik
+                txx_im = tx
+                if jenis == "ketik":
+                    lebar = max(1, int(tx.width * _clamp(u)))
+                    txx_im = tx.crop((0, 0, lebar, tx.height))
                 if "pil" in b:
                     px, py, pw, ph = b["pil"]
                     lap = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
                     ImageDraw.Draw(lap).rounded_rectangle((0, 0, pw - 1, ph - 1), ph // 2, fill=(*g["aksen"][:3], 60), outline=(*g["aksen2"][:3], 140), width=2)
                     _tempel(frame, lap, px + dx, py + dy, a)
                 if b.get("tengah"):
-                    # Satu tepi kiri untuk SEMUA baris, dari baris terlebar -
-                    # kalau tiap baris dipusatkan sendiri, ikon baris pendek
-                    # (mis. "@tvrakyat") melompat ke kanan dan kolomnya bergerigi.
                     if "lebar_tengah" not in cache:
                         cache["lebar_tengah"] = max(i2.width + 18 + t2.width for i2, t2, _ in baris_ims)
                     x0 = w // 2 - cache["lebar_tengah"] // 2
                     _tempel(frame, ikx, x0 + dx + (ik.width - ikx.width) // 2, b["y"] + dy + (ik.height - ikx.height) // 2, a)
-                    _tempel(frame, tx, x0 + ik.width + 18 + dx, b["y"] + dy + (ik.height - tx.height) // 2, a)
-                elif "teks_tengah" in b:
+                    _tempel(frame, txx_im, x0 + ik.width + 18 + dx, b["y"] + dy + (ik.height - tx.height) // 2, a)
+                elif "teks_tengah_y" in b:
+                    ix, iy = b["ikon"]
+                    _tempel(frame, ikx, ix + dx + (ik.width - ikx.width) // 2, iy + dy + (ik.height - ikx.height) // 2, a)
+                    _tempel(frame, txx_im, w // 2 - tx.width // 2, b["teks_tengah_y"] + dy, a)
+                elif "teks_tengah" in b and b["teks_tengah"] is not None:
                     ix, iy = b["ikon"]
                     _tempel(frame, ikx, ix + dx + (ik.width - ikx.width) // 2, iy + dy + (ik.height - ikx.height) // 2, a)
                     cx, cy = b["teks_tengah"]
-                    _tempel(frame, tx, cx - tx.width // 2, cy + dy, a)
+                    _tempel(frame, txx_im, cx - tx.width // 2, cy + dy, a)
                 else:
                     ix, iy = b["ikon"]
                     txx, txy = b["teks"]
                     _tempel(frame, ikx, ix + dx + (ik.width - ikx.width) // 2, iy + dy + (ik.height - ikx.height) // 2, a)
-                    _tempel(frame, tx, txx + dx, txy + dy + (ik.height - tx.height) // 2, a)
+                    _tempel(frame, txx_im, txx + dx, txy + dy + (ik.height - tx.height) // 2, a)
 
             try:
                 proses.stdin.write(frame.convert("RGB").tobytes())
