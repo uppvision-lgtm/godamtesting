@@ -33,6 +33,21 @@ SUPABASE_PUBLIC = os.getenv("SUPABASE_PUBLIC_BUCKET", "false").lower() in ("1", 
 SIGNED_URL_TTL = int(os.getenv("SUPABASE_SIGNED_URL_TTL", "86400"))
 TIMEOUT = httpx.Timeout(120.0, connect=15.0)
 
+# Batas ukuran satu berkas yang mau diterima Supabase. Ini batas PAKET, bukan
+# setelan bucket: bucket godam-testing menyatakan 512 MB, tapi paket gratis
+# menolak apa pun di atas 50 MB dengan 413 "EntityTooLarge" (diukur: 49 MB
+# diterima, 51 MB ditolak). Berkas yang ditolak di sini tidak akan pernah
+# sampai ke worker, karena Supabase satu-satunya jembatan antar-container.
+BATAS_BERKAS_MB = float(os.getenv("SUPABASE_MAX_FILE_MB", "50"))
+
+# Sisa aman di bawah batas itu untuk batas yang ditawarkan ke pengguna.
+JARAK_AMAN_MB = 2.0
+
+
+def batas_unggah_mb() -> float:
+    """Ukuran berkas terbesar yang aman dijanjikan ke pengguna."""
+    return max(1.0, BATAS_BERKAS_MB - JARAK_AMAN_MB)
+
 
 class StorageError(RuntimeError):
     """Kegagalan saat berurusan dengan Supabase Storage."""

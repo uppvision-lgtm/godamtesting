@@ -82,7 +82,15 @@ SOURCE_CACHE_SECONDS = float(os.getenv("VIDEO_SOURCE_CACHE_SECONDS", "21600"))
 # Video sumber yang diunggah dari komputer pengguna. Batasnya sengaja lebih
 # kecil dari aset layer: video sumber diproses utuh oleh ffmpeg, dan berkas
 # besar membuat unggahannya sendiri lama dan rawan putus.
-MAX_SOURCE_UPLOAD_MB = float(os.getenv("VIDEO_MAX_SOURCE_UPLOAD_MB", "100"))
+# Batasnya tidak boleh melewati apa yang mau diterima Supabase. Yang lebih
+# besar TETAP terunggah ke disk backend dan dibalas 200, tapi diam-diam
+# ditolak Supabase - dan karena worker hanya bisa mengambil dari sana,
+# rendernya kemudian gagal dengan "video sumber sudah tidak ada di server",
+# yang diulang berapa kali pun tidak akan pernah berhasil.
+MAX_SOURCE_UPLOAD_MB = min(
+    float(os.getenv("VIDEO_MAX_SOURCE_UPLOAD_MB", "100")),
+    storage.batas_unggah_mb(),
+)
 AWALAN_UNGGAHAN = "upload://"
 # Tempat video unggahan disimpan di Supabase, supaya worker yang berjalan
 # sebagai layanan terpisah tetap bisa mengambilnya.

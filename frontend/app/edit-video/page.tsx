@@ -31,7 +31,10 @@ const NAMA_SET_PERTAMA = "TV Rakyat";
 // hanya karena keduanya tidak sepakat. Sekarang angkanya diminta ke server
 // lewat /api/video/info; nilai di bawah hanya dipakai sebelum jawabannya
 // datang.
-const BATAS_AWAL = { aset: 200, sumber: 100 };
+// Dipakai hanya sampai /api/video/info terbaca; angka aslinya dari server.
+// Batas atasnya bukan selera kita: Supabase paket gratis menolak berkas di
+// atas 50 MB, dan berkas yang tak sampai ke sana tak pernah sampai ke worker.
+const BATAS_AWAL = { aset: 48, sumber: 48 };
 
 // Unggahan besar dikirim langsung ke backend, bukan lewat proxy halaman:
 // fungsi serverless Vercel membatasi badan permintaan sekitar 4 MB. Kalau

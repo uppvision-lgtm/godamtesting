@@ -47,7 +47,12 @@ router = APIRouter(prefix="/api/video", tags=["video"])
 # yang diinginkan di server sendiri yang kuat.
 MAX_QUEUED_JOBS = max(0, int(os.getenv("VIDEO_MAX_QUEUED_JOBS", "0")))
 MAX_BATCH = max(0, int(os.getenv("VIDEO_MAX_BATCH", "0")))
-MAX_ASSET_MB = float(os.getenv("VIDEO_MAX_ASSET_MB", "200"))
+# Sama seperti video sumber: aset yang tidak diterima Supabase tidak akan
+# pernah sampai ke worker, dan set layernya selalu gagal dirender.
+MAX_ASSET_MB = min(
+    float(os.getenv("VIDEO_MAX_ASSET_MB", "200")),
+    storage.batas_unggah_mb(),
+)
 # Sisi terpanjang gambar layer setelah dirapikan. Berkas desain kerap jauh
 # lebih besar dari kanvas 720x1280 — satu berkas 3375x5706 memakan 77 MB
 # begitu ffmpeg membukanya, dan beberapa layer sekaligus membuat proses render
