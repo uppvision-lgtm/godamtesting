@@ -799,7 +799,13 @@ def duplicate_template(
     # jadi menyalin berkali-kali tidak menghasilkan nama kembar.
     diminta = nama_baru.strip() or f"{asal.get('name', 'Set')} (salinan)"
     isi = {**asal, "id": id_baru, "name": nama_set_unik(diminta, id_baru, pemilik)}
-    isi.pop("aset_dari", None)
+    # Sumber yang MEMINJAM asetnya (aset_dari) tidak punya berkas di foldernya
+    # sendiri - berkasnya ada di set akar - jadi salinannya harus ikut
+    # meminjam dari akar yang sama. Dulu pinjaman ini selalu dibuang, dan
+    # salinan dari set pinjaman lahir tanpa satu aset pun: pratinjaunya
+    # kosong dan setiap rendernya gagal "aset tidak ditemukan".
+    if not str(asal.get("aset_dari") or "").strip():
+        isi.pop("aset_dari", None)
     hasil = save_template(isi, id_baru, owner=pemilik)
     logger.info("Set %s disalin ke %s beserta %d berkas", sumber_id, id_baru, disalin)
     return hasil

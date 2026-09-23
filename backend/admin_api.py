@@ -144,6 +144,32 @@ def perbaiki_storage(pengguna: dict[str, Any] = Depends(developer_wajib)) -> dic
     return ve.perbaiki_storage()
 
 
+@router.get("/users/{username}/jobs")
+def job_pengguna(
+    username: str, batas: int = 50, _: dict[str, Any] = Depends(developer_wajib)
+) -> dict[str, Any]:
+    """Riwayat render satu akun, lengkap dengan lognya - untuk menelusuri keluhan.
+
+    Status job dibatasi pemiliknya di API biasa, jadi keluhan "video macet"
+    atau "teksnya tidak muncul" dari akun lain tidak bisa diperiksa dengan
+    fakta tanpa jalur ini. Sebelum dikembalikan, job yang terlantar (aktif
+    tapi lama tak berkabar) ditandai gagal supaya yang terlihat keadaan
+    sebenarnya, bukan "menyusun 2%" yang beku.
+    """
+    vt.tandai_terlantar()
+    nama = username.strip().lower()
+    return {"username": nama, "jobs": vt.daftar_job(max(1, min(200, batas)), owner=nama)}
+
+
+@router.get("/jobs/{job_id}")
+def job_satu(job_id: str, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
+    """Satu job milik siapa pun, apa adanya."""
+    try:
+        return vt.segarkan_kalau_terlantar(vt.baca_status(job_id))
+    except ve.VideoError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @router.post("/users/{username}/peran")
 def ubah_peran(
     username: str, peran: str, pengguna: dict[str, Any] = Depends(developer_wajib)

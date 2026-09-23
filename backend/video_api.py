@@ -698,6 +698,9 @@ def hapus_template(
     _template_milik(template_id, pengguna)
     # Menghapus template yang sedang dipakai membuat job berjalan kehilangan
     # bahannya di tengah jalan, dan hasil yang sudah ada kehilangan namanya.
+    # Job terlantar (ditinggal worker mati) tidak boleh menyandera template
+    # selamanya; ditandai gagal dulu sebelum dihitung sebagai "sedang dipakai".
+    vt.tandai_terlantar()
     berjalan = [
         j
         for j in vt.daftar_job(200, owner=_nama_akun(pengguna) or "")
@@ -954,6 +957,9 @@ def daftar_job(
     """Riwayat render akun yang masuk. Tamu tidak punya riwayat tersimpan."""
     if not pengguna or pengguna.get("tamu"):
         return {"jobs": []}
+    # Job yang ditinggal worker mati ditandai gagal dulu, supaya daftar yang
+    # tampil adalah keadaan sebenarnya - bukan "menyusun 2%" yang beku.
+    vt.tandai_terlantar()
     return {"jobs": vt.daftar_job(max(1, min(100, limit)), owner=pengguna["username"])}
 
 
@@ -961,7 +967,10 @@ def daftar_job(
 def status_job(
     job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
 ) -> dict[str, Any]:
-    return _job_terjangkau(job_id, pengguna)
+    # Job aktif yang sudah lama membisu ditandai gagal di sini juga, sebab
+    # inilah yang dipoll halaman tiap beberapa detik: tanpa ini, orang
+    # menatap "menyusun 2%" tanpa akhir dan tombol Coba lagi tak pernah muncul.
+    return vt.segarkan_kalau_terlantar(_job_terjangkau(job_id, pengguna))
 
 
 @router.get("/jobs/{job_id}/file")

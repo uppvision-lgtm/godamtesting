@@ -26,6 +26,8 @@ from typing import Any
 import redis
 
 import storage
+from celery.signals import worker_ready
+
 from celery_app import celery_app
 from video_edit import (
     MEDIA_DIR,
@@ -321,6 +323,76 @@ def bersihkan_storage_yatim(paksa: bool = False) -> dict[str, int]:
             hasil["job"], hasil["unggahan"],
         )
     return hasil
+
+
+# Job dianggap TERLANTAR kalau statusnya masih aktif tetapi lama tidak
+# diperbarui. Render yang sehat memperbarui progresnya tiap beberapa detik,
+# dan unduhan terpanjang dibatasi VIDEO_DOWNLOAD_TIMEOUT (600 detik). Jadi
+# lima belas menit tanpa kabar hanya mungkin kalau worker-nya mati di tengah
+# jalan - dan tanpa penanda ini, job itu membeku di "menyusun 2%" selamanya,
+# sekaligus menyandera templatenya (hapus ditolak 409 selama ada job aktif).
+TERLANTAR_DETIK = float(os.getenv("VIDEO_JOB_TERLANTAR_DETIK", "900"))
+STATUS_AKTIF_JOB = ("queued", "downloading", "rendering")
+STATUS_BERJALAN_JOB = ("downloading", "rendering")
+PESAN_TERLANTAR = (
+    "Terputus: server dijalankan ulang di tengah proses. Tekan Coba lagi "
+    "untuk membuat ulang dari awal."
+)
+
+
+def _umur_kabar(status: dict[str, Any]) -> float:
+    """Detik sejak status terakhir diperbarui."""
+    try:
+        return time.time() - float(status.get("updated") or status.get("created") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def segarkan_kalau_terlantar(status: dict[str, Any]) -> dict[str, Any]:
+    """Kalau satu job aktif sudah lama membisu, tandai gagal dan kembalikan
+    keadaan barunya. Dipanggil dari pemantau status per job, jadi murah."""
+    if status.get("status") in STATUS_AKTIF_JOB and _umur_kabar(status) > TERLANTAR_DETIK:
+        return tulis_status(status["job_id"], status="error", log=PESAN_TERLANTAR)
+    return status
+
+
+def tandai_terlantar(semua_berjalan: bool = False, alasan: str = PESAN_TERLANTAR) -> int:
+    """Tandai job terlantar sebagai gagal. Kembalikan berapa yang ditandai.
+
+    ``semua_berjalan`` dipakai saat worker baru hidup: worker ini tunggal dan
+    belum mengerjakan apa pun, jadi job yang statusnya "downloading" atau
+    "rendering" PASTI sisa worker lama yang mati - tak perlu menunggu 15
+    menit. Job "queued" dibiarkan: tugasnya bisa jadi masih ada di broker
+    dan akan dikerjakan; kalau memang hilang, aturan umurnya yang menangkap.
+    """
+    ditandai = 0
+    for job in daftar_job(1000):
+        st = job.get("status")
+        if st not in STATUS_AKTIF_JOB:
+            continue
+        if (semua_berjalan and st in STATUS_BERJALAN_JOB) or _umur_kabar(job) > TERLANTAR_DETIK:
+            tulis_status(job["job_id"], status="error", log=alasan)
+            ditandai += 1
+    return ditandai
+
+
+@worker_ready.connect
+def _pulihkan_saat_worker_hidup(**_: Any) -> None:
+    """Begitu worker siap, job yang ditinggal worker lama ditandai gagal.
+
+    Deploy memulai ulang kontainer worker; render yang sedang berjalan mati
+    tanpa sempat menulis apa pun. Ini yang membuat "menyusun 2%" beku.
+    """
+    try:
+        n = tandai_terlantar(
+            semua_berjalan=True,
+            alasan="Terputus: worker dijalankan ulang (deploy) di tengah proses. "
+                   "Tekan Coba lagi untuk membuat ulang dari awal.",
+        )
+        if n:
+            logger.warning("%d job terlantar ditandai gagal saat worker hidup", n)
+    except Exception:  # noqa: BLE001 - pemulihan tidak boleh menggagalkan worker
+        logger.exception("Gagal menandai job terlantar saat worker hidup")
 
 
 def buang_job(job_id: str) -> None:
