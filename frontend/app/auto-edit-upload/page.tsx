@@ -690,9 +690,9 @@ export default function AutoEditUploadPage() {
                         className={styles.naskah}
                         rows={3}
                         value={isiManual}
-                        maxLength={100}
+                        maxLength={200}
                         disabled={sedangJalan}
-                        placeholder={isi || "maksimal 100 huruf, dipenggal otomatis jadi 4 baris"}
+                        placeholder={isi || "maksimal 200 huruf, dipenggal otomatis jadi beberapa baris"}
                         onChange={(e) => setIsiManual(e.target.value)}
                       />
                     </label>

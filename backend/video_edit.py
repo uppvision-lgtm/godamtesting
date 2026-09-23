@@ -1037,25 +1037,45 @@ def _gambar_teks_berita(
     def tinggi_blok(uk: int, jumlah_baris: int) -> int:
         return int(round(uk * kelipatan)) * jumlah_baris
 
+    def batas_baris(uk: int) -> int:
+        """Berapa baris yang boleh dipakai pada ukuran font ini.
+
+        ``max_lines`` adalah pagar desain untuk teks pendek pada ukuran
+        aslinya. Untuk teks panjang yang sudah disusutkan, yang sebenarnya
+        membatasi adalah tinggi kotaknya - dan selama paragrafnya masih muat
+        di dalam kotak, menambah baris jauh lebih baik daripada memenggal
+        kalimat beritanya di tengah jalan.
+        """
+        if tinggi_maks is None:
+            return maks_baris
+        return max(maks_baris, tinggi_maks // max(1, int(round(uk * kelipatan))))
+
     # Susutkan font sampai paragrafnya muat, baik jumlah barisnya maupun —
     # kalau ada kotak — tinggi keseluruhannya.
     ukuran = ukuran_awal
     font = ImageFont.truetype(jalur_font, ukuran)
     baris = _bungkus_kata(gambar, kata, font, batas)
+
     def belum_muat() -> bool:
-        if len(baris) > maks_baris:
+        if len(baris) > batas_baris(ukuran):
             return True
         return tinggi_maks is not None and tinggi_blok(ukuran, len(baris)) > tinggi_maks
-    while belum_muat() and ukuran > ukuran_min:
+
+    # Batas bawah kedua: kalau pada ``min_size`` pun belum muat, font
+    # diturunkan lebih jauh lagi. ``min_size`` itu selera keterbacaan, dan
+    # tulisan yang agak kecil masih jauh lebih baik daripada isi berita yang
+    # hilang separuh - dulu sisanya langsung dibuang di sini.
+    lantai = min(ukuran_min, max(8, int(ukuran_awal * 0.4)))
+    while belum_muat() and ukuran > lantai:
         ukuran -= 1
         font = ImageFont.truetype(jalur_font, ukuran)
         baris = _bungkus_kata(gambar, kata, font, batas)
-    if len(baris) > maks_baris:
+    if len(baris) > batas_baris(ukuran):
         logger.warning(
             "Teks '%s' tetap %d baris pada ukuran %d; sisanya dibuang",
             teks.get("name"), len(baris), ukuran,
         )
-        baris = baris[:maks_baris]
+        baris = baris[: batas_baris(ukuran)]
 
     tinggi_baris = int(round(ukuran * kelipatan))
     if kotak:

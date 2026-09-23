@@ -2062,8 +2062,8 @@ export default function EditVideoPage() {
                       className={styles.naskah}
                       rows={3}
                       value={isiManual}
-                      maxLength={100}
-                      placeholder={isi || "maksimal 100 karakter, dipenggal otomatis jadi maksimal 4 baris"}
+                      maxLength={200}
+                      placeholder={isi || "maksimal 200 karakter, dipenggal otomatis jadi beberapa baris"}
                       onChange={(e) => setIsiManual(e.target.value)}
                     />
                   </label>
