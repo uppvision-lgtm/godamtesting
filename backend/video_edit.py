@@ -1548,6 +1548,67 @@ def sisa_tahanan(url: str) -> float:
     return max(0.0, _BATAS_LOKAL.get(situs, 0.0) - time.time())
 
 
+# Galat yt-dlp yang sering muncul, diterjemahkan jadi kalimat yang bisa
+# dikerjakan pengguna. Tanpa ini yang tampil di halaman adalah teks Inggris
+# panjang berisi flag baris perintah ("--cookies-from-browser") dan tautan
+# wiki GitHub - benar secara teknis, tapi tidak memberi tahu apa pun tentang
+# apa yang harus dilakukan berikutnya.
+_TERJEMAHAN: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"confirm you.{0,3}re not a bot|Sign in to confirm", re.I),
+        "YouTube menolak permintaan dari server ini karena menganggapnya robot. "
+        "Link YouTube memang belum bisa dipakai di sini. Pakai link Instagram "
+        "atau TikTok, atau unduh videonya dulu lalu kirim lewat pilihan "
+        "\u201cFile\u201d di atas.",
+    ),
+    (
+        re.compile(r"empty media response|login required|requires? (a )?login|"
+                   r"only available (for|to) registered", re.I),
+        "Postingan ini tidak bisa dibaca tanpa akun. Pilih akun Instagram di "
+        "Kelola Akun supaya dibaca memakai sesi akun itu, atau unggah berkas "
+        "videonya lewat pilihan \u201cFile\u201d.",
+    ),
+    (
+        re.compile(r"private (video|account)|This account is private", re.I),
+        "Akun atau videonya privat, jadi tidak bisa diambil. Pakai video yang "
+        "bisa dibuka umum, atau unggah berkasnya langsung.",
+    ),
+    (
+        re.compile(r"video unavailable|has been removed|no longer available|"
+                   r"content isn.{0,3}t available|not available on this app", re.I),
+        "Videonya sudah tidak ada atau dihapus di sumbernya.",
+    ),
+    (
+        re.compile(r"age.?restricted|inappropriate for some users", re.I),
+        "Videonya dibatasi umur, jadi tidak bisa diambil tanpa akun.",
+    ),
+    (
+        re.compile(r"Unsupported URL|is not a valid URL", re.I),
+        "Link ini tidak dikenali. Pakai link Instagram, TikTok, atau link "
+        "langsung ke berkas MP4.",
+    ),
+    (
+        re.compile(r"Unable to download webpage|Failed to resolve|"
+                   r"Connection (reset|refused)|Temporary failure", re.I),
+        "Situs sumbernya tidak bisa dihubungi dari server ini. Coba lagi "
+        "sebentar lagi.",
+    ),
+)
+
+
+def _pesan_ramah(keluaran: str) -> str:
+    """Terjemahkan galat yt-dlp jadi kalimat yang bisa ditindaklanjuti.
+
+    Kembaliannya kosong kalau galatnya belum dikenal - dan di situ pesan
+    aslinya tetap dipakai, karena galat yang tidak dikenal lebih berguna
+    ditampilkan apa adanya daripada disamarkan jadi "terjadi kesalahan".
+    """
+    for pola, pesan in _TERJEMAHAN:
+        if pola.search(keluaran):
+            return pesan
+    return ""
+
+
 def _tahan_situs(url: str) -> None:
     """Catat bahwa situs ini baru saja menolak karena terlalu sering diminta."""
     situs = _situs(url)
@@ -1958,6 +2019,9 @@ def preview_source(url: str, session_id: str | None = None) -> dict[str, Any]:
             if berkas_cookie is not None
             else ""
         )
+        ramah = _pesan_ramah(f"{hasil.stdout or ''}\n{hasil.stderr or ''}")
+        if ramah:
+            raise VideoError(ramah)
         raise VideoError(f"Tidak bisa membaca link: {detail[:300]}{tambahan}")
 
     _bebaskan_situs(url)

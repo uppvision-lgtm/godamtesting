@@ -305,7 +305,9 @@ class PlaywrightPlatform(ABC):
             for domain in domains
         ]
 
-    async def buka_masuk(self, page, url: str, ditolak, tunggu_ms: int = 4_000) -> str | None:
+    async def buka_masuk(
+        self, page, url: str, ditolak, tunggu_ms: int = 4_000, timeout_ms: int = 60_000
+    ) -> str | None:
         """Buka `url` sebagai akun yang sudah masuk.
 
         `ditolak(page)` mengembalikan True kalau yang muncul halaman login.
@@ -313,7 +315,7 @@ class PlaywrightPlatform(ABC):
         dicoba sampai ada yang diterima. Kembaliannya wilayah yang berhasil
         ("" = tidak perlu cookie wilayah), atau None kalau semua ditolak.
         """
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         await page.wait_for_timeout(tunggu_ms)
         if not await ditolak(page):
             return ""
@@ -321,7 +323,7 @@ class PlaywrightPlatform(ABC):
             return None
         for wilayah in self.wilayah_kandidat:
             await page.context.add_cookies(self.cookie_wilayah(wilayah))
-            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             await page.wait_for_timeout(tunggu_ms)
             if not await ditolak(page):
                 print(f"[{self.platform_key}] wilayah data: {wilayah}", flush=True)

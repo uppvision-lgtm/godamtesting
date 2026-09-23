@@ -1850,12 +1850,16 @@ export default function EditVideoPage() {
           <div className={styles.form}>
             {modeSumber === "link" ? (
               <>
+            {/* YouTube sengaja tidak disebut di bawah: dari IP server ini
+                YouTube selalu menolak dengan "Sign in to confirm you're not a
+                bot", jadi menyebutnya hanya menjanjikan yang tidak bisa
+                ditepati. Galatnya sendiri sudah diterjemahkan di server. */}
             <label>
               <span>Link video</span>
               <input
                 value={link}
                 onChange={(e) => setLink(e.target.value)}
-                placeholder="https://www.instagram.com/reel/... atau TikTok / YouTube / link MP4"
+                placeholder="https://www.instagram.com/reel/... atau TikTok / link MP4"
               />
             </label>
 

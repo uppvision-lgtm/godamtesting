@@ -526,7 +526,7 @@ export default function AutoEditUploadPage() {
                 type="url"
                 value={link}
                 spellCheck={false}
-                placeholder="https://www.instagram.com/reel/... atau link TikTok / YouTube"
+                placeholder="https://www.instagram.com/reel/... atau link TikTok"
                 disabled={sedangJalan}
                 onChange={(e) => setLink(e.target.value)}
               />

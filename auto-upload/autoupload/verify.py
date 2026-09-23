@@ -13,7 +13,10 @@ di akunnya.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import time
 
 from autoupload.browser import CHROME_UA, STEALTH_ARGS, STEALTH_INIT_SCRIPT, VIEWPORT
 from autoupload.platforms import REGISTRY
@@ -74,10 +77,20 @@ NAMA_JS: dict[str, str] = {
         const a = document.querySelector('a[href^="/@"]');
         return a ? a.getAttribute('href').slice(2) : "";
     }""",
+    # Tombol pengalih akun di sidebar HANYA memuat "@handle" kalau sidebarnya
+    # sedang lebar. Jendela pemeriksaan cuma 1000 px, dan pada lebar itu X
+    # menciutkan sidebar jadi ikon tanpa tulisan - sehingga nama akun X selalu
+    # kosong dan di halaman hanya tampak "ssid - aktif". Tautan profil di
+    # navigasi tetap ada pada lebar berapa pun, dan href-nya adalah handle-nya.
     "twitter": """() => {
+        const a = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+        const h = a && a.getAttribute('href');
+        if (h && /^[/][A-Za-z0-9_]{1,20}$/.test(h)) return h.slice(1);
         const e = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
         const m = e && (e.innerText || "").match(/@([A-Za-z0-9_]{1,20})/);
-        return m ? m[1] : "";
+        if (m) return m[1];
+        const j = document.documentElement.innerHTML.match(/"screen_name":"([A-Za-z0-9_]{1,20})"/);
+        return j ? j[1] : "";
     }""",
     "facebook": """() => {
         const m = document.documentElement.innerHTML.match(/"NAME":"([^"]{2,40})"/);
@@ -97,6 +110,22 @@ NAMA_JS: dict[str, str] = {
 
 TIMEOUT_MS = 25_000
 
+# Batas keras satu pemeriksaan. Proxy Railway memutus permintaan pada 300
+# detik dan membalas 502 "upstream error" - halaman lalu hanya bisa berputar
+# lalu gagal tanpa sebab. Lebih baik berhenti sendiri lebih awal dengan alasan
+# yang bisa dibaca. TikTok yang mencoba lima wilayah adalah kasus terpanjang:
+# 6 x (TIMEOUT_MS + jeda) kira-kira 3 menit.
+BATAS_DETIK = float(os.getenv("VERIFY_TIMEOUT_DETIK", "240"))
+
+PLATFORM_NAMA = {
+    "instagram": "Instagram",
+    "tiktok": "TikTok",
+    "twitter": "X / Twitter",
+    "threads": "Threads",
+    "facebook": "Facebook",
+    "youtube": "YouTube",
+}
+
 
 async def _tampak_login(halaman, platform: str) -> bool:
     """True kalau halamannya meminta login, bukan menampilkan isi akun."""
@@ -115,6 +144,33 @@ async def _tampak_login(halaman, platform: str) -> bool:
 
 
 async def periksa_sesi(platform: str, session_id: str) -> dict:
+    """Periksa sesi, tapi jangan pernah melebihi batas waktu proxy.
+
+    Pembungkus tipis di atas :func:`_periksa_inti`. Tanpa ini pemeriksaan yang
+    macet menggantung sampai proxy memutusnya pada 300 detik, dan yang sampai
+    ke pengguna cuma 502 tanpa penjelasan.
+    """
+    mulai = time.monotonic()
+    try:
+        hasil = await asyncio.wait_for(_periksa_inti(platform, session_id), BATAS_DETIK)
+    except asyncio.TimeoutError:
+        log.warning("Pemeriksaan sesi %s melewati %.0f detik", platform, BATAS_DETIK)
+        return {
+            "ok": False,
+            "pesan": (
+                f"Pemeriksaan tidak selesai dalam {BATAS_DETIK:.0f} detik. "
+                f"{PLATFORM_NAMA.get(platform, platform.title())} mungkin sedang "
+                "lambat atau menahan permintaan dari server ini. Coba lagi "
+                "beberapa saat lagi."
+            ),
+            "url": "",
+            "nama": "",
+        }
+    log.info("Pemeriksaan sesi %s selesai dalam %.1f detik", platform, time.monotonic() - mulai)
+    return hasil
+
+
+async def _periksa_inti(platform: str, session_id: str) -> dict:
     """Buka beranda platform dengan cookie ini. Kembalikan {ok, pesan, url}."""
     kelas = REGISTRY.get(platform)
     if kelas is None:
@@ -138,7 +194,9 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
         async with async_playwright() as pw:
             # Konteks sekali pakai, BUKAN profil tersimpan: yang diuji adalah
             # cookie yang baru ditempel, bukan sesi lama yang kebetulan ada.
+            t0 = time.monotonic()
             peramban = await pw.chromium.launch(headless=True, args=STEALTH_ARGS)
+            log.info("[%s] chromium hidup dalam %.1f detik", platform, time.monotonic() - t0)
             konteks = await peramban.new_context(user_agent=CHROME_UA, viewport=VIEWPORT)
             await konteks.add_init_script(STEALTH_INIT_SCRIPT)
             await konteks.add_cookies(cookies)
@@ -152,7 +210,11 @@ async def periksa_sesi(platform: str, session_id: str) -> dict:
                 async def ditolak(p) -> bool:
                     return await _tampak_login(p, platform)
 
-                wilayah = await adapter.buka_masuk(halaman, url_awal, ditolak, 3500)
+                t1 = time.monotonic()
+                wilayah = await adapter.buka_masuk(
+                    halaman, url_awal, ditolak, 3500, timeout_ms=TIMEOUT_MS
+                )
+                log.info("[%s] halaman terbuka dalam %.1f detik", platform, time.monotonic() - t1)
                 akhir = (halaman.url or "").lower()
                 # Alamat saja tidak cukup. Instagram dan X menampilkan formulir
                 # login di alamat yang sama persis, tanpa mengalihkan ke mana

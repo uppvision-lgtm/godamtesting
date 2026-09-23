@@ -32,7 +32,13 @@ TABEL = "app_forms"
 
 # Halaman yang boleh menyimpan. Daftar tertutup supaya nama halaman dari
 # permintaan tidak bisa dipakai membuat baris sembarangan.
-HALAMAN_SAH = {"auto-comment", "auto-upload", "edit-video"}
+#
+# "auto-comment-threads" sempat tertinggal: halaman Threads dibuat belakangan
+# dengan kunci simpannya sendiri, tapi tidak pernah didaftarkan di sini.
+# Akibatnya tiap membuka halaman itu server menjawab 404, dan pengaturan bot
+# Threads hanya hidup di peramban yang sedang dipakai - hilang begitu ganti
+# perangkat atau data situs dibersihkan, padahal versi Instagram tersimpan.
+HALAMAN_SAH = {"auto-comment", "auto-comment-threads", "auto-upload", "edit-video"}
 
 # Batas ukuran isian setelah dijadikan JSON. Halaman Auto Comment bisa memuat
 # puluhan bot, tetapi tidak ada alasan sah untuk melewati angka ini.
