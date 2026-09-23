@@ -924,6 +924,12 @@ export default function EditVideoPage() {
     // Id dibuat dari namanya supaya mudah dikenali di penyimpanan, dengan
     // akhiran acak agar dua set bernama mirip tidak saling menimpa.
     await muatSet(idBaru(nama), nama);
+    // Daftarnya ikut disegarkan. Tanpa ini template yang baru dibuat memang
+    // tersimpan di server, tetapi tidak muncul di pilihan maupun di daftar
+    // centang "Template yang dipakai" sampai halaman dimuat ulang - jadi
+    // tampak seperti tombolnya tidak bekerja. Duplikat dan Hapus sudah
+    // melakukannya sejak dulu; hanya jalur ini yang terlewat.
+    await muatDaftar();
     setPesanLayer(`Template "${nama}" dibuat. Unggah berkas tiap layernya.`);
   }
 
