@@ -1448,6 +1448,17 @@ export default function EditVideoPage() {
     if (modeSumber === "file" && !berkasSumber) return "Pilih dulu video dari komputer.";
     if (modeSumber === "file" && captionManual.trim().length < 3) return "Isi dulu caption videonya.";
     if (pilihanSet.length === 0) return "Centang dulu minimal satu template di bawah.";
+    // Hook adalah isi beritanya; tanpa ini render berjalan tanpa teks dan
+    // videonya keluar cuma kotak putih. Diperiksa sebelum tombol hidup.
+    if (membuatHook) return "Tunggu sebentar, isi beritanya sedang dibuat.";
+    if (
+      !susunHook(
+        modeTeks === "manual" ? kickerManual : kicker,
+        modeTeks === "manual" ? isiManual : isi
+      ).trim()
+    ) {
+      return "Isi beritanya masih kosong - tulis sendiri atau buat otomatis dari link.";
+    }
     return "";
   })();
 

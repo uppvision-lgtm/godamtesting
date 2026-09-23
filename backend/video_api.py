@@ -369,6 +369,22 @@ def _sesi_instagram_otomatis(pengguna: dict[str, Any] | None, url: str) -> str:
     return ""
 
 
+def _pastikan_hook(texts: dict[str, str] | None) -> None:
+    """Tolak render tanpa isi berita.
+
+    Setiap set layer punya layer teks "hook" - itulah isi beritanya. Kalau
+    kosong, ffmpeg cuma melewatinya dan videonya keluar dengan kotak putih
+    tanpa tulisan: tampak seperti "isi berita tidak muncul", padahal memang
+    tidak pernah dikirim. Ditolak di sini, sebelum jatah tamu dipotong dan
+    sebelum worker sibuk merender sesuatu yang pasti mengecewakan.
+    """
+    if not str((texts or {}).get("hook") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Isi beritanya kosong. Tulis sendiri atau buat otomatis dari link dulu.",
+        )
+
+
 def _pemilik(pengguna: dict[str, Any] | None) -> str:
     """Nama pemilik untuk perhitungan kuota: akun, id tamu, atau kosong."""
     return str((pengguna or {}).get("username") or "").strip().lower()
@@ -795,6 +811,7 @@ def mulai_job(
     pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, Any]:
     _template_terlihat(body.template_id, pengguna)
+    _pastikan_hook(body.texts)
 
     jatah_tamu.pakai("render", pengguna, request)
     _pastikan_kuota(pengguna)
@@ -928,6 +945,7 @@ def mulai_banyak_job(
     # Satu template = satu video, jadi mengirim lima template memakai lima
     # jatah - bukan satu. Kalau tidak, batasnya bisa dilewati dengan
     # mencentang semua template sekaligus.
+    _pastikan_hook(body.texts)
     jatah_tamu.pakai("render", pengguna, request, len(ids))
     _pastikan_kuota(pengguna)
     _pastikan_antrean_muat(len(ids))

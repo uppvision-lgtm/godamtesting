@@ -312,6 +312,12 @@ export default function AutoEditUploadPage() {
       return `Pilih dulu template untuk ${a?.nama_akun || a?.session_name || "akun itu"}.`;
     }
     if (!caption.trim()) return "Caption wajib diisi.";
+    // Hook adalah isi beritanya. Dulu tidak diperiksa: menekan tombol sebelum
+    // hook-nya jadi (atau saat kosong) menjalankan render TANPA teks, dan
+    // videonya keluar cuma kotak putih - terlihat seperti "isi berita tidak
+    // muncul", padahal memang tidak pernah dikirim.
+    if (membuatHook) return "Tunggu sebentar, isi beritanya sedang dibuat.";
+    if (!teksHook.trim()) return "Isi beritanya masih kosong - tulis sendiri atau buat otomatis dari link.";
     return "";
   })();
 
