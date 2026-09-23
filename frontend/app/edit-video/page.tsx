@@ -423,7 +423,6 @@ export default function EditVideoPage() {
   const [modeSumber, setModeSumber] = useState<"link" | "file">("link");
   const [berkasSumber, setBerkasSumber] = useState<BerkasSumber | null>(null);
   const [mengunggahSumber, setMengunggahSumber] = useState(false);
-  const [captionManual, setCaptionManual] = useState("");
   const [sumberManual, setSumberManual] = useState("");
   const [pratinjau, setPratinjau] = useState<Pratinjau | null>(null);
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
@@ -500,8 +499,8 @@ export default function EditVideoPage() {
         // sama dengan pembuatan video, jadi letak dan ukurannya benar-benar
         // seperti hasil akhirnya - bukan sekadar kotak kosong.
         const contoh = susunHook(
-          modeTeks === "manual" ? kickerManual : kicker,
-          modeTeks === "manual" ? isiManual : isi
+          modeTeksEfektif === "manual" ? kickerManual : kicker,
+          modeTeksEfektif === "manual" ? isiManual : isi
         );
         const res = await apiFetch(
           `/api/video/templates/${idSet}/preview.png?teks=1&v=${versiPratinjau}` +
@@ -1087,10 +1086,17 @@ export default function EditVideoPage() {
     return [info.title, info.description].filter(Boolean).join(". ");
   }
 
-  /** Naskah yang jadi bahan teks hook, sesuai mode sumber yang dipilih. */
+  /** Naskah yang jadi bahan teks hook. Hanya ada pada sumber LINK: judul dan
+   *  deskripsi video aslinya. Video dari komputer tidak membawa keterangan
+   *  apa pun, dan mengetik caption hanya untuk disuruh AI meringkasnya lagi
+   *  jelas lebih repot daripada langsung menulis isi beritanya sendiri. */
   function naskahAktif(): string {
-    return modeSumber === "file" ? captionManual : naskahDariPratinjau(pratinjau);
+    return modeSumber === "file" ? "" : naskahDariPratinjau(pratinjau);
   }
+
+  /** Mode teks yang benar-benar berlaku. Sumber berkas selalu manual, tanpa
+   *  mengubah pilihan yang tersimpan supaya mode link tetap memakai AI. */
+  const modeTeksEfektif = modeSumber === "file" ? "manual" : modeTeks;
 
   /** Nama pemilik untuk kredit "SUMBER: ..." di bar bawah. */
   const namaSumber = modeSumber === "file" ? sumberManual.trim() : pratinjau?.uploader || "";
@@ -1101,13 +1107,6 @@ export default function EditVideoPage() {
     const timer = setTimeout(() => void bacaLink(link.trim()), 700);
     return () => clearTimeout(timer);
   }, [link, bacaLink, modeSumber]);
-
-  // Mode berkas: caption diketik sendiri, lalu teks hook disusun darinya.
-  useEffect(() => {
-    if (modeSumber !== "file") return;
-    const timer = setTimeout(() => void buatHook(captionManual.trim()), 900);
-    return () => clearTimeout(timer);
-  }, [captionManual, buatHook, modeSumber]);
 
   /** Unggah video sumber dari komputer; hasilnya alamat "upload://..." */
   async function unggahSumber(file: File) {
@@ -1370,8 +1369,8 @@ export default function EditVideoPage() {
     try {
       const texts: Record<string, string> = {};
       const teksHook = susunHook(
-        modeTeks === "manual" ? kickerManual : kicker,
-        modeTeks === "manual" ? isiManual : isi
+        modeTeksEfektif === "manual" ? kickerManual : kicker,
+        modeTeksEfektif === "manual" ? isiManual : isi
       );
       if (teksHook) texts.hook = teksHook;
       // Kredit pemilik video asli, diambil dari link sumber. Huruf kapital
@@ -1449,15 +1448,14 @@ export default function EditVideoPage() {
       return `Videonya lebih dari ${Math.round((pratinjau.max_seconds || 600) / 60)} menit — terlalu panjang untuk diedit.`;
     }
     if (modeSumber === "file" && !berkasSumber) return "Pilih dulu video dari komputer.";
-    if (modeSumber === "file" && captionManual.trim().length < 3) return "Isi dulu caption videonya.";
     if (pilihanSet.length === 0) return "Centang dulu minimal satu template di bawah.";
     // Hook adalah isi beritanya; tanpa ini render berjalan tanpa teks dan
     // videonya keluar cuma kotak putih. Diperiksa sebelum tombol hidup.
     if (membuatHook) return "Tunggu sebentar, isi beritanya sedang dibuat.";
     if (
       !susunHook(
-        modeTeks === "manual" ? kickerManual : kicker,
-        modeTeks === "manual" ? isiManual : isi
+        modeTeksEfektif === "manual" ? kickerManual : kicker,
+        modeTeksEfektif === "manual" ? isiManual : isi
       ).trim()
     ) {
       return "Isi beritanya masih kosong - tulis sendiri atau buat otomatis dari link.";
@@ -1942,22 +1940,6 @@ export default function EditVideoPage() {
             )}
             <label>
               <span>
-                  Caption video
-                  <Bantuan>
-                    Wajib diisi. Tulisan berita di video disusun dari caption ini, jadi
-                    ceritakan isi videonya beberapa kalimat.
-                  </Bantuan>
-                </span>
-              <textarea
-                className={styles.naskah}
-                rows={3}
-                value={captionManual}
-                onChange={(e) => setCaptionManual(e.target.value)}
-                placeholder="Ceritakan isi videonya beberapa kalimat. Tulisan berita disusun dari sini."
-              />
-            </label>
-            <label>
-              <span>
                   Pemilik video
                   <Bantuan>
                     Opsional. Ditulis sebagai kredit &quot;SUMBER: ...&quot; di bar bawah video.
@@ -1994,25 +1976,27 @@ export default function EditVideoPage() {
                     Putih
                   </button>
                 </div>
-                <div className={styles.pilihMode}>
-                  <button
-                    type="button"
-                    className={modeTeks === "ai" ? styles.modeAktif : styles.modeBtn}
-                    onClick={() => setModeTeks("ai")}
-                  >
-                    AI
-                  </button>
-                  <button
-                    type="button"
-                    className={modeTeks === "manual" ? styles.modeAktif : styles.modeBtn}
-                    onClick={() => setModeTeks("manual")}
-                  >
-                    Manual
-                  </button>
-                </div>
+                {modeSumber === "link" && (
+                  <div className={styles.pilihMode}>
+                    <button
+                      type="button"
+                      className={modeTeks === "ai" ? styles.modeAktif : styles.modeBtn}
+                      onClick={() => setModeTeks("ai")}
+                    >
+                      AI
+                    </button>
+                    <button
+                      type="button"
+                      className={modeTeks === "manual" ? styles.modeAktif : styles.modeBtn}
+                      onClick={() => setModeTeks("manual")}
+                    >
+                      Manual
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {modeTeks === "ai" ? (
+              {modeTeksEfektif === "ai" ? (
                 <>
                   {membuatHook && (
                     <div aria-label="Sedang menyusun tulisan berita">
@@ -2085,7 +2069,10 @@ export default function EditVideoPage() {
                       untuk empat baris, ukuran hurufnya diperkecil sedikit saat dirender.
                     </Bantuan>
                   </p>
-                  {isi && (
+                  {/* Hanya pada sumber link: di mode berkas AI tidak pernah
+                      dijalankan, dan tanpa syarat ini tombolnya masih muncul
+                      membawa saran sisa dari link yang tadi dibuka. */}
+                  {modeSumber === "link" && isi && (
                     <button
                       type="button"
                       className={styles.ghostBtn}
