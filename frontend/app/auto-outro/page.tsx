@@ -35,6 +35,8 @@ type Job = {
   punya_video: boolean;
   message: string;
   logs: string[];
+  seed?: number;
+  gaya?: string;
 };
 
 const LANGKAH: Record<string, string> = {
@@ -61,8 +63,6 @@ export default function AutoOutroPage() {
   const bolehLihat = peran === PERAN_DEVELOPER;
 
   const [channel, setChannel] = useState("");
-  const [tagline, setTagline] = useState("");
-  const [ajakan, setAjakan] = useState("");
   const [akun, setAkun] = useState<Record<string, string>>(KOSONG);
   const [job, setJob] = useState<Job | null>(null);
   const [galatJob, setGalatJob] = useState("");
@@ -126,7 +126,7 @@ export default function AutoOutroPage() {
       const r = await apiFetch("/api/outro/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: channel.trim(), tagline: tagline.trim(), ajakan: ajakan.trim(), akun }),
+        body: JSON.stringify({ channel: channel.trim(), akun }),
       });
       if (!r.ok) {
         setGalatJob(await bacaGalat(r, "Gagal memulai."));
@@ -141,13 +141,15 @@ export default function AutoOutroPage() {
         punya_video: false,
         message: "Menunggu giliran.",
         logs: [],
+        seed: j.seed,
+        gaya: j.gaya,
       });
     } catch {
       setGalatJob("Backend tidak merespons.");
     } finally {
       setMengirim(false);
     }
-  }, [channel, tagline, ajakan, akun, mengirim]);
+  }, [channel, akun, mengirim]);
 
   async function hentikan() {
     if (!job) return;
@@ -160,8 +162,6 @@ export default function AutoOutroPage() {
 
   function kosongkan() {
     setChannel("");
-    setTagline("");
-    setAjakan("");
     setAkun(KOSONG);
     setJob(null);
     setGalatJob("");
@@ -209,9 +209,9 @@ export default function AutoOutroPage() {
                 <span className={styles.badge}>Developer</span>
               </div>
               <p className={styles.hint}>
-                Isi nama channel, tagline, dan akun tiap sosmed, lalu tekan sekali. Outronya
-                dirender sendiri meniru gaya TV Rakyat (gratis, tanpa batas), dan nama serta
-                username ditulis persis.
+                Isi nama channel dan akun tiap sosmed, lalu tekan sekali. Tiap kali ditekan,
+                gayanya berbeda — palet, latar, bentuk logo, tata letak, animasi — tapi logo,
+                nama TV, dan keenam sosmed selalu ada dan ditulis persis. Gratis, tanpa batas.
               </p>
 
               <div className={styles.form}>
@@ -228,30 +228,6 @@ export default function AutoOutroPage() {
                         onChange={(e) => setChannel(e.target.value)}
                         placeholder="TV Rakyat"
                         maxLength={80}
-                        disabled={sedangJalan}
-                      />
-                    </label>
-                  </div>
-                  <div className={styles.row}>
-                    <label>
-                      <span>Tagline (opsional)</span>
-                      <input
-                        type="text"
-                        value={tagline}
-                        onChange={(e) => setTagline(e.target.value)}
-                        placeholder="TV Rakyat, Medianya Rakyat"
-                        maxLength={80}
-                        disabled={sedangJalan}
-                      />
-                    </label>
-                    <label>
-                      <span>Teks ajakan</span>
-                      <input
-                        type="text"
-                        value={ajakan}
-                        onChange={(e) => setAjakan(e.target.value)}
-                        placeholder="Follow untuk Update Terkini"
-                        maxLength={60}
                         disabled={sedangJalan}
                       />
                     </label>
@@ -333,6 +309,11 @@ export default function AutoOutroPage() {
                     </div>
                   )}
                   <p className={job.status === "error" ? styles.galat : styles.hint}>{job.message}</p>
+                  {job.gaya && (
+                    <p className={styles.hint}>
+                      Gaya #{job.seed}: {job.gaya}
+                    </p>
+                  )}
 
                   {videoUrl && (
                     <div className={styles.rincianKotak}>
