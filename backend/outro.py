@@ -1219,7 +1219,7 @@ def _gelombang_dpp(draw: Any, w: int, h: int, t: float) -> None:
 
 
 def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
-                ukuran: int, warna: tuple, nama_font: str = "poppins") -> None:
+                ukuran: int, warna: tuple, nama_font: str = "poppins") -> tuple[float, float]:
     """Tulis teks melengkung mengikuti busur BAWAH lingkaran (bentuk senyum).
 
     Tiap huruf digambar sendiri lalu diputar sesuai garis singgungnya, supaya
@@ -1235,6 +1235,7 @@ def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
     # sudut diukur dari sumbu +x, searah jarum jam (y layar ke bawah);
     # dasar lingkaran = 90 derajat. Teks dibaca kiri ke kanan = sudut menurun.
     a = math.pi / 2 + (total / 2) / r
+    a_awal = a
     for c, lc in zip(teks, lebar):
         a_tengah = a - (lc / 2) / r
         x = pusat[0] + r * math.cos(a_tengah)
@@ -1249,6 +1250,22 @@ def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
         huruf = huruf.rotate(derajat, resample=Image.BICUBIC, expand=True)
         kanvas.alpha_composite(huruf, (int(x - huruf.width / 2), int(y - huruf.height / 2)))
         a -= lc / r
+    # rentang sudut yang ditempati teks (radian, dari kiri ke kanan = menurun)
+    return a_awal, a
+
+
+def _busur_garis(kanvas: Any, pusat: tuple[float, float], r: float,
+                 a0: float, a1: float, tebal: int, warna: tuple) -> None:
+    """Garis melengkung dari sudut a0 ke a1 (radian), dihaluskan 3x."""
+    from PIL import Image, ImageDraw
+
+    S = 3
+    lap = Image.new("RGBA", (kanvas.width * S, kanvas.height * S), (0, 0, 0, 0))
+    cx, cy = pusat[0] * S, pusat[1] * S
+    rr = r * S
+    lo, hi = sorted((math.degrees(a0), math.degrees(a1)))
+    ImageDraw.Draw(lap).arc((cx - rr, cy - rr, cx + rr, cy + rr), lo, hi, fill=warna, width=max(1, tebal * S))
+    kanvas.alpha_composite(lap.resize(kanvas.size, Image.LANCZOS))
 
 
 def _logo_dpp(nama_channel: str, diameter: int) -> Any:
@@ -1270,13 +1287,27 @@ def _logo_dpp(nama_channel: str, diameter: int) -> Any:
     f_ukur = _font(ukuran)
     from PIL import ImageDraw
     lebar = ImageDraw.Draw(Image.new("L", (1, 1))).textlength(nama, font=f_ukur)
-    # nama panjang disusutkan supaya busurnya tidak melewati sisi logo
-    while lebar > diameter * 0.62 and ukuran > 12:
+    # Nama panjang disusutkan supaya busurnya paling lebar ~90 derajat: lebih
+    # dari itu ujung-ujungnya naik sampai menabrak huruf RAKYAT (teruji
+    # dengan "Kabupaten Aceh Tenggara" pada batas lama 0,62 D).
+    while lebar > diameter * 0.44 and ukuran > 12:
         ukuran -= 2
         f_ukur = _font(ukuran)
         lebar = ImageDraw.Draw(Image.new("L", (1, 1))).textlength(nama, font=f_ukur)
-    _teks_busur(kanvas, nama, (diameter / 2, diameter / 2), diameter * 0.315,
-                ukuran, (232, 232, 232, 255))
+    pusat = (diameter / 2, diameter / 2)
+    # Sedikit lebih tinggi dari posisi "Aceh Barat" pada logo acuan (0,315 D):
+    # ada garis di bawah teksnya, dan pada 0,315 D garis itu jatuh tepat di
+    # cincin perak - abu di atas abu, tidak terlihat.
+    r = diameter * 0.283
+    warna = (232, 232, 232, 255)
+    a0, a1 = _teks_busur(kanvas, nama, pusat, r, ukuran, warna)
+    # Garis atas dan bawah yang mengapit nama, melengkung sejajar dengan
+    # teksnya dan sedikit lebih panjang di kedua ujung - permintaan pemilik.
+    lebih = (ukuran * 0.9) / r
+    jarak = diameter * 0.05
+    tebal = max(2, int(diameter * 0.006))
+    for radius in (r - jarak, r + jarak):
+        _busur_garis(kanvas, pusat, radius, a0 + lebih, a1 - lebih, tebal, warna)
     return kanvas
 
 
