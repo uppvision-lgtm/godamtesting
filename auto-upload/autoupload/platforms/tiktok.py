@@ -92,9 +92,13 @@ class TikTok(PlaywrightPlatform):
     # membuat driver-nya menegaskan lalu mati. X selamat karena hanya sekali
     # navigasi. Jangan dipasang lagi tanpa menangani unroute per navigasi.
     #
-    # Headless LAMA tetap dipakai, seperti X: headless bawaan menjalankan
-    # tumpukan peramban lengkap, dan di kontainer 954 MB itulah yang membuat
-    # pemakaian menyentuh batas.
+    # Headless LAMA, seperti X. JUJUR: ini TIDAK menyelesaikan masalahnya.
+    # Diuji sendirian pada 24 September 2026 (post #30) dan unggahannya tetap
+    # mati di komposer dengan "Target crashed" serta oom_kill=1, puncak
+    # memori menyentuh batas 954 MB persis. Dibiarkan terpasang karena tidak
+    # merugikan dan menyamakan perilakunya dengan X, bukan karena terbukti
+    # menolong. Tuas di kode sudah habis: unggahan TikTok butuh kontainer
+    # yang lebih besar dari 954 MB.
     extra_args = ("--headless=old",)
 
     async def _do_upload(
