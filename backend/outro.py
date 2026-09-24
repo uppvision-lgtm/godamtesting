@@ -1298,16 +1298,18 @@ def _logo_dpp(nama_channel: str, diameter: int) -> Any:
     # Sedikit lebih tinggi dari posisi "Aceh Barat" pada logo acuan (0,315 D):
     # ada garis di bawah teksnya, dan pada 0,315 D garis itu jatuh tepat di
     # cincin perak - abu di atas abu, tidak terlihat.
-    r = diameter * 0.283
+    r = diameter * 0.29
     warna = (232, 232, 232, 255)
     a0, a1 = _teks_busur(kanvas, nama, pusat, r, ukuran, warna)
-    # Garis atas dan bawah yang mengapit nama, melengkung sejajar dengan
-    # teksnya dan sedikit lebih panjang di kedua ujung - permintaan pemilik.
-    lebih = (ukuran * 0.9) / r
-    jarak = diameter * 0.05
+    # Garis atas dan bawah yang mengapit nama, melengkung sejajar teksnya.
+    # Rapat ke teks tapi tetap bercelah, dan panjangnya PERSIS selebar teks -
+    # berhenti di huruf pertama dan terakhir. Versi awal (celah 0,05 D dan
+    # ujung diperpanjang) dinilai pemilik jelek: garis atasnya menabrak
+    # RAKYAT dan garisnya menjulur jauh melewati tulisannya.
+    jarak = diameter * 0.038
     tebal = max(2, int(diameter * 0.006))
     for radius in (r - jarak, r + jarak):
-        _busur_garis(kanvas, pusat, radius, a0 + lebih, a1 - lebih, tebal, warna)
+        _busur_garis(kanvas, pusat, radius, a0, a1, tebal, warna)
     return kanvas
 
 
