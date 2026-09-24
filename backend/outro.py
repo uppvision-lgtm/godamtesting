@@ -126,12 +126,22 @@ def minta_batal(job_id: str) -> bool:
     return True
 
 
+MODE_SAH = ("biasa", "dpp")
+
+
 def mulai_job(
-    channel: str, akun: dict[str, str], seed: int | None = None, logo_path: str | None = None
+    channel: str,
+    akun: dict[str, str],
+    seed: int | None = None,
+    logo_path: str | None = None,
+    mode: str = "biasa",
 ) -> str:
     channel = " ".join(str(channel or "").split())
     if not channel:
         raise OutroError("Nama channel wajib diisi.")
+    mode = str(mode or "biasa").strip().lower()
+    if mode not in MODE_SAH:
+        raise OutroError(f"Mode '{mode}' tidak dikenal.")
     job_id = uuid.uuid4().hex[:12]
     if seed is None:
         # Dari 12 digit heksa job_id langsung. Dulu di-pad kanan menjadi UUID
@@ -148,7 +158,11 @@ def mulai_job(
             "channel": channel,
             "akun": {k: str(akun.get(k) or "").strip() for k in KUNCI_AKUN},
             "seed": int(seed),
-            "gaya": ringkas_gaya(gaya),
+            "mode": mode,
+            # Mode DPP tidak memakai sumbu gaya: tampilannya tetap, meniru
+            # outro TV Rakyat, yang berganti hanya nama channel di logo dan
+            # daftar sosmednya.
+            "gaya": ringkas_gaya(gaya) if mode == "biasa" else "DPP - meniru outro TV Rakyat",
             "logo": logo_path or "",
             "video": "",
             "message": "Menunggu giliran.",
@@ -170,17 +184,21 @@ def _jalankan(job_id: str) -> None:
             job = baca_job(job_id) or {}
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum mulai.")
-            gaya = pilih_gaya(int(job["seed"]))
+            lapor = lambda p: _catat(job_id, f"Merender outro ... {p}%", progress=5 + int(p * 0.85))
             _catat(job_id, f"Merender outro ({job['gaya']}) ...",
                    status="running", langkah="render", progress=5)
-            mentah = render_video(
-                job, gaya, folder, ev,
-                lambda p: _catat(job_id, f"Merender outro ... {p}%", progress=5 + int(p * 0.85)),
-            )
+            if job.get("mode") == "dpp":
+                mentah = render_dpp(job, folder, ev, lapor)
+            else:
+                gaya = pilih_gaya(int(job["seed"]))
+                mentah = render_video(job, gaya, folder, ev, lapor)
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum menempel audio.")
             _catat(job_id, "Menempel audio ...", langkah="audio", progress=92)
-            hasil = tempel_audio(mentah, folder, gaya["denting_detik"])
+            if job.get("mode") == "dpp":
+                hasil = tempel_audio_dpp(mentah, folder)
+            else:
+                hasil = tempel_audio(mentah, folder, gaya["denting_detik"])
             _catat(job_id, f"Video outro siap ({hasil.stat().st_size / 1_048_576:.1f} MB).",
                    status="done", langkah="selesai", progress=100, video=str(hasil))
         except Dibatalkan as error:
@@ -1136,6 +1154,347 @@ def tempel_audio(video: Path, folder: Path, detik: float) -> Path:
     hasil = subprocess.run(perintah, capture_output=True, text=True, timeout=120)
     if hasil.returncode != 0 or not keluaran.is_file():
         logger.warning("audio gagal ditempel, video tanpa audio dipakai: %s", (hasil.stderr or "").strip()[-200:])
+        shutil.copy2(video, keluaran)
+    return keluaran
+
+
+# ============================================================
+#  MODE DPP - meniru outro TV Rakyat, nama channel di logo
+# ============================================================
+#
+# Berbeda dari mode biasa yang tiap kali berganti gaya, mode DPP tampilannya
+# TETAP: latar gelap bersemburat merah, gelombang merah di dasar, logo
+# TV Rakyat asli masuk dengan putaran-balik, tagline, pil emas berpendar,
+# lalu daftar sosmed - persis outro.mp4 pada set layer TV Rakyat. Yang
+# berganti hanya dua hal: nama channel yang ditulis melengkung di bawah
+# tulisan RAKYAT pada logonya (mis. "Aceh Barat"), dan handle sosmednya.
+# Tagline dan ajakannya sengaja dikunci sama dengan acuan.
+
+DPP = ASET / "dpp"
+DPP_LOGO = DPP / "logo.png"       # logo bersih, tanpa nama daerah
+DPP_AUDIO = DPP / "audio.m4a"     # jalur suara outro acuan, dipakai apa adanya
+DPP_TAGLINE = "TV Rakyat, Medianya Rakyat"
+DPP_AJAKAN = "Follow untuk Update Terkini"
+DPP_DETIK = 5.5
+# Kapan tiap unsur mulai tampil, diukur dari frame-frame acuan.
+DPP_T_LOGO, DPP_T_TAGLINE, DPP_T_HANDLE, DPP_T_PIL = 0.95, 2.1, 2.5, 2.85
+
+
+def _latar_dpp(w: int, h: int) -> Any:
+    """Latar gelap dengan semburat merah-cokelat hangat dari kanan-bawah."""
+    import numpy as np
+    from PIL import Image
+
+    ys = np.linspace(0, 1, h, dtype=np.float32)[:, None]
+    xs = np.linspace(0, 1, w, dtype=np.float32)[None, :]
+    dasar = np.zeros((h, w, 3), np.float32)
+    dasar[:, :, 0] = 7 + 9 * ys + 12 * ys ** 2
+    dasar[:, :, 1] = 6 + 3 * ys
+    dasar[:, :, 2] = 6 + 2 * ys
+    d2 = (xs - 0.92) ** 2 * 1.3 + (ys - 0.98) ** 2 * 2.2
+    dasar += np.exp(-d2 / 0.16)[:, :, None] * np.array([40, 9, 4], np.float32)
+    vx, vy = (xs - 0.5) * 2, (ys - 0.5) * 2
+    dasar *= (1.0 - 0.18 * np.clip(vx ** 2 + vy ** 2, 0, 1))[:, :, None]
+    return Image.fromarray(np.clip(dasar, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+
+
+def _gelombang_dpp(draw: Any, w: int, h: int, t: float) -> None:
+    """Tiga lapis gelombang merah di dasar, menjulang di kanan, bergerak pelan."""
+    lapis = (  # isi, tepi, fase, turun, naik_kanan, kecepatan
+        ((108, 8, 16, 255), (150, 26, 34, 255), 0.0, 0, 300, 0.7),
+        ((158, 12, 22, 255), (206, 42, 50, 255), 1.7, 70, 225, 0.9),
+        ((214, 22, 30, 255), (240, 84, 88, 255), 3.3, 150, 150, 1.15),
+    )
+    dasar_y = h - 240
+    for isi, tepi, fase, turun, naik_kanan, kec in lapis:
+        titik = []
+        for x in range(0, w + 40, 40):
+            u = x / w
+            y = (dasar_y + turun + 140 * (1 - u) ** 1.2 - naik_kanan * u ** 1.7
+                 - 34 * math.sin(u * 3.6 + fase + t * kec)
+                 - 18 * math.sin(u * 7.9 - fase * 0.6 + t * kec * 0.7))
+            titik.append((x, int(y)))
+        draw.polygon(titik + [(w, h), (0, h)], fill=isi)
+        draw.line(titik, fill=tepi, width=3)
+
+
+def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
+                ukuran: int, warna: tuple, nama_font: str = "poppins") -> None:
+    """Tulis teks melengkung mengikuti busur BAWAH lingkaran (bentuk senyum).
+
+    Tiap huruf digambar sendiri lalu diputar sesuai garis singgungnya, supaya
+    bagian atas huruf selalu menghadap ke pusat - seperti "Aceh Barat" di
+    logo acuan. Diletakkan simetris di titik terbawah lingkaran.
+    """
+    from PIL import Image, ImageDraw
+
+    f = _font(ukuran, nama_font)
+    ukur = ImageDraw.Draw(Image.new("L", (1, 1)))
+    lebar = [ukur.textlength(c, font=f) for c in teks]
+    total = sum(lebar)
+    # sudut diukur dari sumbu +x, searah jarum jam (y layar ke bawah);
+    # dasar lingkaran = 90 derajat. Teks dibaca kiri ke kanan = sudut menurun.
+    a = math.pi / 2 + (total / 2) / r
+    for c, lc in zip(teks, lebar):
+        a_tengah = a - (lc / 2) / r
+        x = pusat[0] + r * math.cos(a_tengah)
+        y = pusat[1] + r * math.sin(a_tengah)
+        # kotak huruf dengan sedikit ruang, diputar mengelilingi pusatnya
+        kw, kh = int(lc + ukuran), int(ukuran * 1.6)
+        huruf = Image.new("RGBA", (kw, kh), (0, 0, 0, 0))
+        d = ImageDraw.Draw(huruf)
+        x0, y0, x1, y1 = d.textbbox((0, 0), c, font=f)
+        d.text((kw / 2 - (x1 - x0) / 2 - x0, kh / 2 - (y1 - y0) / 2 - y0), c, font=f, fill=warna)
+        derajat = math.degrees(math.pi / 2 - a_tengah)
+        huruf = huruf.rotate(derajat, resample=Image.BICUBIC, expand=True)
+        kanvas.alpha_composite(huruf, (int(x - huruf.width / 2), int(y - huruf.height / 2)))
+        a -= lc / r
+
+
+def _logo_dpp(nama_channel: str, diameter: int) -> Any:
+    """Logo TV Rakyat asli dengan nama channel melengkung di bawah RAKYAT."""
+    from PIL import Image
+
+    if not DPP_LOGO.is_file():
+        raise OutroError(f"Logo DPP tidak ditemukan: {DPP_LOGO}")
+    im = Image.open(DPP_LOGO).convert("RGBA")
+    im.thumbnail((diameter, diameter), Image.LANCZOS)
+    kanvas = Image.new("RGBA", (diameter, diameter), (0, 0, 0, 0))
+    kanvas.alpha_composite(im, ((diameter - im.width) // 2, (diameter - im.height) // 2))
+    nama = " ".join(nama_channel.split())
+    if not nama:
+        return kanvas
+    # Jari-jari dan ukuran huruf diukur dari logo acuan "Aceh Barat":
+    # pusat teks berjarak ~0,30 tinggi logo dari pusat, tinggi huruf ~0,053.
+    ukuran = int(diameter * 0.066)
+    f_ukur = _font(ukuran)
+    from PIL import ImageDraw
+    lebar = ImageDraw.Draw(Image.new("L", (1, 1))).textlength(nama, font=f_ukur)
+    # nama panjang disusutkan supaya busurnya tidak melewati sisi logo
+    while lebar > diameter * 0.62 and ukuran > 12:
+        ukuran -= 2
+        f_ukur = _font(ukuran)
+        lebar = ImageDraw.Draw(Image.new("L", (1, 1))).textlength(nama, font=f_ukur)
+    _teks_busur(kanvas, nama, (diameter / 2, diameter / 2), diameter * 0.315,
+                ukuran, (232, 232, 232, 255))
+    return kanvas
+
+
+def _pil_dpp(teks: str, lebar: int, tinggi: int) -> tuple[Any, list[tuple[float, float]]]:
+    """Pil emas berteks + titik-titik kelilingnya (jalur cahaya berputar)."""
+    from PIL import Image, ImageDraw
+
+    S = 3
+    W, H = lebar * S, tinggi * S
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    tepi = int(H * 0.06)
+    r = H / 2 - tepi
+    d.rounded_rectangle((tepi, tepi, W - tepi, H - tepi), r, outline=(212, 168, 60, 190), width=int(H * 0.045))
+    f = _font(int(H * 0.36))
+    x0, y0, x1, y1 = d.textbbox((0, 0), teks, font=f)
+    while (x1 - x0) > W * 0.82 and f.size > 12:
+        f = _font(f.size - 2)
+        x0, y0, x1, y1 = d.textbbox((0, 0), teks, font=f)
+    d.text((W / 2 - (x1 - x0) / 2 - x0 + 2, H / 2 - (y1 - y0) / 2 - y0 + 3), teks, font=f, fill=(0, 0, 0, 160))
+    d.text((W / 2 - (x1 - x0) / 2 - x0, H / 2 - (y1 - y0) / 2 - y0), teks, font=f, fill=(255, 255, 255, 255))
+    im = im.resize((lebar, tinggi), Image.LANCZOS)
+    t, rr = tepi / S, r / S
+    titik: list[tuple[float, float]] = []
+    seg = 40
+    L, R, T, B = t + rr, lebar - t - rr, t, tinggi - t
+    for i in range(seg + 1):
+        titik.append((L + (R - L) * i / seg, T))
+    for i in range(1, seg):
+        a = -math.pi / 2 + math.pi * i / seg
+        titik.append((R + rr * math.cos(a), t + rr + rr * math.sin(a)))
+    for i in range(seg + 1):
+        titik.append((R - (R - L) * i / seg, B))
+    for i in range(1, seg):
+        a = math.pi / 2 + math.pi * i / seg
+        titik.append((L + rr * math.cos(a), t + rr + rr * math.sin(a)))
+    return im, titik
+
+
+def _cahaya_pil_dpp(lebar: int, tinggi: int, titik: list[tuple[float, float]], p: float) -> Any:
+    """Seberkas cahaya emas yang berjalan di keliling pil (p: 0..1)."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    im = Image.new("RGBA", (lebar, tinggi), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    n = len(titik)
+    awal = int(p * n) % n
+    seg = [titik[(awal + i) % n] for i in range(int(n * 0.26))]
+    d.line(seg, fill=(255, 205, 80, 235), width=max(4, tinggi // 5), joint="curve")
+    im = im.filter(ImageFilter.GaussianBlur(tinggi * 0.11))
+    d = ImageDraw.Draw(im)
+    d.line(seg, fill=(255, 225, 120, 255), width=max(3, tinggi // 12), joint="curve")
+    im = im.filter(ImageFilter.GaussianBlur(tinggi * 0.03))
+    d = ImageDraw.Draw(im)
+    d.line(seg, fill=(255, 246, 200, 255), width=max(2, tinggi // 26), joint="curve")
+    return im
+
+
+def _mulai_ffmpeg(folder: Path, w: int, h: int) -> tuple[Any, Path, Any]:
+    """Pipa rawvideo -> x264, dengan -threads dibatasi (kontainer 1 GB)."""
+    keluaran = folder / "video-tanpa-audio.mp4"
+    utas = os.getenv("VIDEO_THREADS", "1") or "1"
+    if utas == "0":
+        utas = "1"
+    galat = (folder / "ffmpeg.log").open("w", encoding="utf-8")
+    proses = subprocess.Popen(
+        [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+         "-threads", utas,
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(FPS), "-i", "-",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p",
+         "-threads", utas, "-movflags", "+faststart", str(keluaran)],
+        stdin=subprocess.PIPE, stderr=galat,
+    )
+    return proses, keluaran, galat
+
+
+def render_dpp(job: dict[str, Any], folder: Path, ev: threading.Event, lapor: Callable[[int], None]) -> Path:
+    from PIL import Image, ImageDraw
+
+    w = VIDEO_W - VIDEO_W % 2
+    h = VIDEO_H - VIDEO_H % 2
+    isi = [(k, job["akun"][k]) for k in KUNCI_AKUN if job["akun"].get(k)]
+
+    # --- unsur tetap, dirender sekali ---
+    latar = _latar_dpp(w, h)
+    D = int(w * 0.56)
+    logo = _logo_dpp(job["channel"], D)
+    bx, by = (w - D) // 2, int(h * 0.19)
+    tag_im = _teks_gambar(DPP_TAGLINE, int(w * 0.062), (255, 255, 255, 255), miring=True)
+    tag_y = by + D + int(h * 0.03)
+    pil_w, pil_h = int(w * 0.60), int(h * 0.05)
+    pil_im, pil_titik = _pil_dpp(DPP_AJAKAN, pil_w, pil_h)
+    pil_x, pil_y = (w - pil_w) // 2, tag_y + tag_im.height + int(h * 0.02)
+    ikon_s = int(w * 0.085)
+    pitch = int(h * 0.0505) if len(isi) <= 4 else int(h * 0.046)
+    baris_y0 = pil_y + pil_h + int(h * 0.035)
+    baris = [(_ikon(k, ikon_s, {"ikon": "warna"}),
+              _teks_gambar(v, int(w * 0.043), (255, 255, 255, 255))) for k, v in isi]
+    # 16 tingkat ukuran logo dicache: mengubah ukuran PNG besar tiap frame
+    # itulah yang dulu membuat render lambat.
+    cache_logo: dict[tuple[int, int], Any] = {}
+
+    def logo_ukuran(lebar_l: int, tinggi_l: int) -> Any:
+        kunci = (max(2, lebar_l), max(2, tinggi_l))
+        if kunci not in cache_logo:
+            cache_logo[kunci] = logo.resize(kunci, Image.LANCZOS)
+        return cache_logo[kunci]
+
+    total = max(1, int(FPS * DPP_DETIK))
+    proses, keluaran, galat = _mulai_ffmpeg(folder, w, h)
+    berkas_log = folder / "ffmpeg.log"
+
+    def _sebab_mati() -> str:
+        try:
+            if not galat.closed:
+                galat.flush()
+            b = [x for x in berkas_log.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+        except (OSError, ValueError):
+            b = []
+        if proses.returncode == -9:
+            return "ffmpeg dihentikan paksa oleh sistem (SIGKILL) - hampir pasti kehabisan memori."
+        return f"ffmpeg keluar dengan kode {proses.returncode}" + (f": {b[-1][:200]}" if b else " tanpa pesan.")
+
+    try:
+        lapor_tiap = max(1, total // 12)
+        for n in range(total):
+            if ev.is_set():
+                proses.kill()
+                raise Dibatalkan("Render dihentikan.")
+            t = n / FPS
+            frame = latar.copy()
+            _gelombang_dpp(ImageDraw.Draw(frame), w, h, t)
+
+            # logo: putaran-balik (lebar mengikuti |cos|) + lentingan ukuran
+            if t >= DPP_T_LOGO:
+                u = t - DPP_T_LOGO
+                p = _clamp(u / 1.0)
+                # putaran-balik selesai dalam 0,3 detik; ukurannya melonjak ke
+                # 1,35x, bertahan sebentar, lalu turun ke ukuran akhir - persis
+                # urutan frame acuan pada 1,0 / 1,1 / 1,4 / 1,7 / 1,9 detik.
+                sudut = (1 - _halus(_clamp(u / 0.3))) * math.pi / 2
+                if u < 0.45:
+                    sk = 0.2 + 1.15 * _halus(u / 0.45)
+                elif u < 0.75:
+                    sk = 1.35
+                else:
+                    sk = 1.35 - 0.35 * _halus((u - 0.75) / 0.25)
+                sk = max(0.05, sk)
+                tinggi_l = int(D * sk)
+                lebar_l = int(D * sk * max(0.04, abs(math.cos(sudut))))
+                im_l = logo_ukuran(lebar_l, tinggi_l)
+                apung = int(4 * math.sin(t * 1.6)) if p >= 1 else 0
+                # tingkat ukuran dibulatkan ke 16 langkah supaya cache-nya kena
+                _tempel(frame, im_l, bx + (D - im_l.width) // 2, by + (D - im_l.height) // 2 + apung,
+                        _clamp((t - DPP_T_LOGO) / 0.2))
+
+            # tagline: naik dari bawah sambil memudar masuk
+            if t >= DPP_T_TAGLINE:
+                a = _halus((t - DPP_T_TAGLINE) / 0.35)
+                _tempel(frame, tag_im, (w - tag_im.width) // 2, tag_y + int(180 * (1 - a)), a)
+
+            # handle: masuk hampir bersamaan dari kiri
+            for i, (ik, tx) in enumerate(baris):
+                mulai = DPP_T_HANDLE + i * 0.06
+                if t < mulai:
+                    continue
+                a = _halus((t - mulai) / 0.35)
+                geser = int(-50 * (1 - a))
+                y = baris_y0 + i * pitch
+                _tempel(frame, ik, int(w * 0.225) + geser, y, a)
+                _tempel(frame, tx, int(w * 0.338) + geser, y + (ikon_s - tx.height) // 2, a)
+
+            # pil: cahayanya datang lebih dulu, garis pilnya menyusul
+            if t >= DPP_T_PIL:
+                a_cahaya = _halus((t - DPP_T_PIL) / 0.25)
+                a_pil = _halus((t - DPP_T_PIL - 0.2) / 0.35)
+                if a_pil > 0:
+                    _tempel(frame, pil_im, pil_x, pil_y, a_pil)
+                cahaya = _cahaya_pil_dpp(pil_w, pil_h, pil_titik, ((t - DPP_T_PIL) / 1.6) % 1.0)
+                _tempel(frame, cahaya, pil_x, pil_y, a_cahaya)
+
+            try:
+                proses.stdin.write(frame.convert("RGB").tobytes())
+            except BrokenPipeError:
+                break
+            if n % lapor_tiap == 0:
+                lapor(int(n / total * 100))
+    finally:
+        if proses.stdin:
+            try:
+                proses.stdin.close()
+            except OSError:
+                pass
+        proses.wait()
+        galat.close()
+    if proses.returncode != 0 or not keluaran.is_file():
+        raise OutroError(f"Gagal merender outro DPP: {_sebab_mati()}")
+    lapor(100)
+    return keluaran
+
+
+def tempel_audio_dpp(video: Path, folder: Path) -> Path:
+    """Pasang jalur suara outro acuan apa adanya (sudah sejajar dari detik 0)."""
+    keluaran = folder / "outro.mp4"
+    if not DPP_AUDIO.is_file():
+        shutil.copy2(video, keluaran)
+        return keluaran
+    utas = os.getenv("VIDEO_THREADS", "1") or "1"
+    hasil = subprocess.run(
+        [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", utas,
+         "-i", str(video), "-i", str(DPP_AUDIO),
+         "-map", "0:v", "-map", "1:a", "-shortest",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+         "-movflags", "+faststart", str(keluaran)],
+        capture_output=True, text=True, timeout=120,
+    )
+    if hasil.returncode != 0 or not keluaran.is_file():
+        logger.warning("audio DPP gagal ditempel, video tanpa audio dipakai: %s", (hasil.stderr or "").strip()[-200:])
         shutil.copy2(video, keluaran)
     return keluaran
 

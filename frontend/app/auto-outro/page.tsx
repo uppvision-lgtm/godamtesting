@@ -27,8 +27,11 @@ const SOSMED: Sosmed[] = [
 ];
 const KOSONG: Record<string, string> = Object.fromEntries(SOSMED.map((s) => [s.kunci, ""]));
 
+type Mode = "biasa" | "dpp";
+
 type Job = {
   job_id: string;
+  mode?: Mode;
   status: "queued" | "running" | "done" | "error" | "dibatalkan";
   langkah: string;
   progress: number;
@@ -62,6 +65,9 @@ export default function AutoOutroPage() {
   const siap = useSudahHidrasi();
   const bolehLihat = peran === PERAN_DEVELOPER;
 
+  // "biasa": gaya acak, tiap tekan beda. "dpp": meniru outro TV Rakyat apa
+  // adanya; nama channel ditulis melengkung di logonya, sosmed dari isian.
+  const [mode, setMode] = useState<Mode>("biasa");
   const [channel, setChannel] = useState("");
   const [akun, setAkun] = useState<Record<string, string>>(KOSONG);
   const [job, setJob] = useState<Job | null>(null);
@@ -126,7 +132,7 @@ export default function AutoOutroPage() {
       const r = await apiFetch("/api/outro/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: channel.trim(), akun }),
+        body: JSON.stringify({ channel: channel.trim(), akun, mode }),
       });
       if (!r.ok) {
         setGalatJob(await bacaGalat(r, "Gagal memulai."));
@@ -143,13 +149,14 @@ export default function AutoOutroPage() {
         logs: [],
         seed: j.seed,
         gaya: j.gaya,
+        mode: j.mode,
       });
     } catch {
       setGalatJob("Backend tidak merespons.");
     } finally {
       setMengirim(false);
     }
-  }, [channel, akun, mengirim]);
+  }, [channel, akun, mode, mengirim]);
 
   async function hentikan() {
     if (!job) return;
@@ -208,11 +215,37 @@ export default function AutoOutroPage() {
                 <h2>Auto Outro</h2>
                 <span className={styles.badge}>Developer</span>
               </div>
-              <p className={styles.hint}>
-                Isi nama channel dan akun tiap sosmed, lalu tekan sekali. Tiap kali ditekan,
-                gayanya berbeda — palet, latar, bentuk logo, tata letak, animasi — tapi logo,
-                nama TV, dan keenam sosmed selalu ada dan ditulis persis. Gratis, tanpa batas.
-              </p>
+              <div className={styles.aksi}>
+                <button
+                  type="button"
+                  className={mode === "biasa" ? styles.btnUtama : styles.btnSekunder}
+                  onClick={() => setMode("biasa")}
+                  disabled={sedangJalan}
+                >
+                  Biasa
+                </button>
+                <button
+                  type="button"
+                  className={mode === "dpp" ? styles.btnUtama : styles.btnSekunder}
+                  onClick={() => setMode("dpp")}
+                  disabled={sedangJalan}
+                >
+                  DPP
+                </button>
+              </div>
+              {mode === "biasa" ? (
+                <p className={styles.hint}>
+                  Isi nama channel dan akun tiap sosmed, lalu tekan sekali. Tiap kali ditekan,
+                  gayanya berbeda — palet, latar, bentuk logo, tata letak, animasi — tapi logo,
+                  nama TV, dan keenam sosmed selalu ada dan ditulis persis. Gratis, tanpa batas.
+                </p>
+              ) : (
+                <p className={styles.hint}>
+                  Persis outro TV Rakyat: latar, gerakan, tagline, dan pil emasnya sama. Yang
+                  berbeda hanya logonya — logo TV Rakyat asli dengan nama channel ditulis
+                  melengkung di bawah RAKYAT, mis. &quot;Aceh Barat&quot; — dan sosmed dari isian.
+                </p>
+              )}
 
               <div className={styles.form}>
                 <div className={styles.blok}>
@@ -221,12 +254,12 @@ export default function AutoOutroPage() {
                   </div>
                   <div className={styles.row}>
                     <label>
-                      <span>Nama channel</span>
+                      <span>{mode === "dpp" ? "Nama channel — ditulis di logo" : "Nama channel"}</span>
                       <input
                         type="text"
                         value={channel}
                         onChange={(e) => setChannel(e.target.value)}
-                        placeholder="TV Rakyat"
+                        placeholder={mode === "dpp" ? "Aceh Barat" : "TV Rakyat"}
                         maxLength={80}
                         disabled={sedangJalan}
                       />
@@ -309,10 +342,14 @@ export default function AutoOutroPage() {
                     </div>
                   )}
                   <p className={job.status === "error" ? styles.galat : styles.hint}>{job.message}</p>
-                  {job.gaya && (
-                    <p className={styles.hint}>
-                      Gaya #{job.seed}: {job.gaya}
-                    </p>
+                  {job.mode === "dpp" ? (
+                    <p className={styles.hint}>Mode DPP — meniru outro TV Rakyat.</p>
+                  ) : (
+                    job.gaya && (
+                      <p className={styles.hint}>
+                        Gaya #{job.seed}: {job.gaya}
+                      </p>
+                    )
                   )}
 
                   {videoUrl && (

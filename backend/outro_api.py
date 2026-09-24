@@ -17,7 +17,7 @@ yang boleh membukanya.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -35,6 +35,9 @@ class OutroBody(BaseModel):
     # Seed gaya. Kosong = acak (tiap outro beda); diisi = mengulang tampilan
     # yang sama persis, mis. untuk membuat ulang yang disukai.
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    # "biasa": gaya acak bersumbu (bawaan). "dpp": meniru outro TV Rakyat
+    # apa adanya - nama channel ditulis melengkung di logo, sosmed dari isian.
+    mode: Literal["biasa", "dpp"] = "biasa"
 
 
 @router.get("/jobs")
@@ -45,10 +48,12 @@ def daftar(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
 @router.post("/jobs")
 def buat(body: OutroBody, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
     try:
-        job_id = outro.mulai_job(body.channel, body.akun, body.seed)
+        job_id = outro.mulai_job(body.channel, body.akun, body.seed, mode=body.mode)
     except outro.OutroError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"job_id": job_id, "status": "queued"}
+    job = outro.baca_job(job_id) or {}
+    return {"job_id": job_id, "status": "queued", "mode": body.mode,
+            "seed": job.get("seed"), "gaya": job.get("gaya", "")}
 
 
 @router.get("/jobs/{job_id}")
@@ -88,6 +93,7 @@ def _ringkas(job: dict[str, Any]) -> dict[str, Any]:
         "langkah": job.get("langkah"),
         "progress": job.get("progress", 0),
         "channel": job.get("channel"),
+        "mode": job.get("mode", "biasa"),
         "seed": job.get("seed"),
         "gaya": job.get("gaya", ""),
         "akun": job.get("akun", {}),
