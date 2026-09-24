@@ -90,6 +90,12 @@ class TikTok(PlaywrightPlatform):
     # oom_kill=1" - kontainernya memang kehabisan memori, bukan TikTok yang
     # menolak. Penawar yang sama sudah dipakai X (lihat twitter.py).
     jenis_diblokir = ("image", "media", "font")
+    # Headless LAMA, seperti X. Headless bawaan (yang baru) menjalankan
+    # tumpukan peramban lengkap dan itulah yang membuat pemakaian menyentuh
+    # batas di kontainer ini. Memblokir gambar saja TIDAK cukup: diuji pada
+    # 24 September 2026, unggahan justru mati lebih awal lagi (di "membuka
+    # halaman", bukan di komposer) dengan oom_kill bertambah.
+    extra_args = ("--headless=old",)
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
