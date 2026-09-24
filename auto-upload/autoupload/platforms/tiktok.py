@@ -82,6 +82,14 @@ class TikTok(PlaywrightPlatform):
     # paling sering dipakai pengguna di sini.
     wilayah_cookie = "tt-target-idc"
     wilayah_kandidat = ("alisg", "useast2a", "useast5", "maliva", "useast1a")
+    # Halaman TikTok Studio penuh sampul video dan avatar; tidak satu pun
+    # dibutuhkan bot ini - berkas dilampirkan lewat input file, caption
+    # diketik, dan kesiapan dibaca dari tombol. Diukur di server pada 24
+    # September 2026: unggahan mati dengan "Target crashed" tepat setelah
+    # videonya terlampir, dan cgroup melaporkan "batas 954 MB, puncak 954 MB,
+    # oom_kill=1" - kontainernya memang kehabisan memori, bukan TikTok yang
+    # menolak. Penawar yang sama sudah dipakai X (lihat twitter.py).
+    jenis_diblokir = ("image", "media", "font")
 
     async def _do_upload(
         self, page, media_path: Path, caption: str, media_kind: MediaKind, **options: object
@@ -102,6 +110,8 @@ class TikTok(PlaywrightPlatform):
         # pemuatan halaman unggah, dan pelampiran berkas - menit-menit yang
         # di layar tampak sebagai satu angka 5% yang tidak bergerak. Waktunya
         # ikut dicatat ke log supaya kalau melambat, ketahuan langkah mana.
+        await self.blokir_berat(page)
+
         t0 = time.monotonic()
         wilayah = await self.buka_masuk(page, _URL_DAFTAR, _ditolak_login, _JEDA_DAFTAR)
         print(f"[tiktok] masuk: {time.monotonic() - t0:.1f}s (wilayah={wilayah})", flush=True)
