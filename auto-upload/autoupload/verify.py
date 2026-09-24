@@ -152,6 +152,43 @@ PLATFORM_NAMA = {
 }
 
 
+# Galat yang berarti "proses peramban mati", bukan "halaman menolak".
+_TANDA_MATI = ("targetclosed", "target crashed", "page crashed", "browser has been closed")
+
+
+def _memori() -> str:
+    """Keadaan memori kontainer, untuk ditempel di catatan kegagalan."""
+    try:
+        from autoupload.uploader import _keadaan_memori
+
+        return _keadaan_memori() or "memori kontainer: tidak terbaca"
+    except Exception:  # noqa: BLE001 - keterangan tambahan, bukan syarat
+        return "memori kontainer: tidak terbaca"
+
+
+def _pesan_gagal(platform: str, error: Exception) -> str:
+    """Terjemahkan kegagalan pemeriksaan jadi kalimat yang jujur.
+
+    "TargetClosedError" tidak berarti apa-apa bagi pengguna, dan yang lebih
+    buruk: ia terbaca seperti masalah pada Session ID yang baru saja ditempel,
+    padahal akunnya tersimpan baik-baik saja dan sesinya belum tentu salah.
+    Yang sebenarnya terjadi adalah proses peramban di server dibunuh kernel
+    karena kehabisan memori - paling sering di X, yang aplikasi webnya
+    memuat 143 berkas skrip dan merupakan halaman terberat yang dibuka alat
+    ini.
+    """
+    teks = f"{type(error).__name__}: {error}".lower()
+    if any(t in teks for t in _TANDA_MATI):
+        nama = PLATFORM_NAMA.get(platform, platform.title())
+        return (
+            f"Peramban di server kehabisan memori saat membuka {nama}, jadi "
+            "sesinya belum sempat diperiksa. Akunnya tetap tersimpan - coba "
+            "tekan Periksa lagi beberapa saat lagi. Kalau terus berulang, "
+            "memori server memang perlu dinaikkan."
+        )
+    return f"Tidak bisa membuka halamannya: {type(error).__name__}"
+
+
 async def _tampak_login(halaman, platform: str) -> bool:
     """True kalau halamannya meminta login, bukan menampilkan isi akun."""
     akhir = (halaman.url or "").lower()
@@ -297,10 +334,10 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
                 await konteks.close()
                 await peramban.close()
     except Exception as error:  # noqa: BLE001
-        log.warning("Pemeriksaan sesi %s gagal: %s", platform, error)
+        log.warning("Pemeriksaan sesi %s gagal: %s | %s", platform, error, _memori())
         return {
             "ok": False,
-            "pesan": f"Tidak bisa membuka halamannya: {type(error).__name__}",
+            "pesan": _pesan_gagal(platform, error),
             "url": "",
             "nama": "",
         }
