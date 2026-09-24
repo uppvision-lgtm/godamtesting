@@ -137,11 +137,16 @@ class TikTok(PlaywrightPlatform):
         try:
             await kotak.wait_for(state="visible", timeout=120_000)
         except Exception as exc:  # noqa: BLE001
+            # Sebab aslinya WAJIB ikut. Tanpa ini "editor caption tidak
+            # muncul" terbaca sebagai berkas ditolak, padahal habisnya waktu
+            # (TikTok memang lambat) dan perambannya MATI (kontainer kehabisan
+            # memori) adalah dua hal yang sama sekali berbeda - dan yang kedua
+            # gagal seketika, bukan setelah 120 detik.
+            sebab = f"{type(exc).__name__}: {str(exc).splitlines()[0][:100]}"
             keadaan = await self._keadaan(page)
-            print(f"[tiktok] editor caption TIDAK MUNCUL {keadaan}", flush=True)
+            print(f"[tiktok] editor caption TIDAK MUNCUL ({sebab}) {keadaan}", flush=True)
             raise PlatformError(
-                "TikTok tidak pernah menampilkan editor caption; berkasnya "
-                f"kemungkinan ditolak. {keadaan}"
+                f"TikTok tidak pernah menampilkan editor caption. {sebab} {keadaan}"
             ) from exc
         print(f"[tiktok] media terlampir: {time.monotonic() - t0:.1f}s", flush=True)
         lapor(*tahap.LAMPIR)
@@ -431,8 +436,17 @@ class TikTok(PlaywrightPlatform):
                 f"[url={page.url[:90]} | judul={judul} | "
                 f"iframe={len(page.frames) - 1} | isi=\"{teks}\"]"
             )
-        except Exception:  # noqa: BLE001 - diagnosa tidak boleh menutupi galat asli
-            return "[keadaan halaman tidak terbaca]"
+        except Exception as exc:  # noqa: BLE001 - diagnosa tidak boleh menutupi galat asli
+            # Halaman yang tidak bisa ditanyai judulnya berarti perambannya
+            # sudah tidak ada. Di kontainer ini penyebabnya hampir selalu
+            # memori, jadi angkanya ikut dibawa - tanpa itu kegagalannya cuma
+            # bisa ditebak.
+            from autoupload.uploader import _keadaan_memori
+
+            return (
+                f"[peramban sudah mati: {type(exc).__name__} | "
+                f"memori: {_keadaan_memori() or 'tidak terbaca'}]"
+            )
 
     @staticmethod
     async def _tutup_popup(page) -> None:
