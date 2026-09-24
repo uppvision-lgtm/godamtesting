@@ -12,13 +12,12 @@ from pathlib import Path
 from autoupload.browser import MediaKind
 from autoupload.config import (
     JOB_TIMEOUT_MENIT,
-    MAKS_PANJANG_GALAT,
     RIWAYAT_SIMPAN_HARI,
     UPLOAD_DIR,
 )
 from autoupload.db import Post, PostTarget, SessionLocal, SocialAccount
 from autoupload.rahasia import buka
-from autoupload.uploader import fan_out_upload
+from autoupload.uploader import fan_out_upload, ringkas_galat
 
 log = logging.getLogger("autoupload")
 
@@ -125,20 +124,6 @@ def create_post(
     db.commit()
     db.refresh(post)
     return post
-
-
-def _ringkas_galat(pesan: str | None) -> str:
-    """Pangkas pesan galat sebelum masuk basis data.
-
-    Jejak Playwright bisa ribuan huruf dan tumpah apa adanya ke layar. Baris
-    pertamanya sudah memuat inti masalahnya; sisanya hanya berguna di log.
-    """
-    if not pesan:
-        return ""
-    baris = pesan.strip().splitlines()[0].strip()
-    if len(baris) <= MAKS_PANJANG_GALAT:
-        return baris
-    return baris[: MAKS_PANJANG_GALAT - 1].rstrip() + "…"
 
 
 def _buang_media(jalur: str | None) -> None:
@@ -328,13 +313,19 @@ async def run_post(post_id: int) -> list[dict]:
         rows = db.query(PostTarget).filter(PostTarget.post_id == post_id).order_by(PostTarget.id).all()
         ok = 0
         for row, result in zip(rows, results):
-            row.status = "success" if result.success else "failed"
-            # 100 hanya di sini: saat targetnya benar-benar selesai.
-            row.progress = 100 if result.success else (row.progress or 0)
-            row.tahap = "selesai" if result.success else (row.tahap or "")
-            row.url = result.url or ""
-            row.error = _ringkas_galat(result.error)
-            row.attempts += 1
+            # Barisnya biasanya SUDAH ditulis oleh fan_out_upload begitu
+            # targetnya selesai, supaya halaman tidak menampilkan yang sudah
+            # kelar sebagai masih berjalan. Yang di sini tinggal jaring
+            # pengaman: hanya baris yang penulisannya gagal yang diisi ulang,
+            # sehingga attempts tidak terhitung dua kali.
+            if row.status not in ("success", "failed"):
+                row.status = "success" if result.success else "failed"
+                # 100 hanya di sini: saat targetnya benar-benar selesai.
+                row.progress = 100 if result.success else (row.progress or 0)
+                row.tahap = "selesai" if result.success else (row.tahap or "")
+                row.url = result.url or ""
+                row.error = ringkas_galat(result.error)
+                row.attempts += 1
             ok += int(result.success)
         post.status = "done" if ok == len(results) else ("partial" if ok else "failed")
         db.commit()

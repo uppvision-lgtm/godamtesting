@@ -14,11 +14,32 @@ from pathlib import Path
 
 from autoupload.browser import MediaKind, PlatformError, UploadResult, session_names
 from autoupload.caption import adapt_caption
-from autoupload.config import MAKS_PARALEL
+from autoupload.config import BATAS_TARGET_DETIK, MAKS_PANJANG_GALAT, MAKS_PARALEL
 from autoupload.platforms import REGISTRY
 
 log = logging.getLogger("autoupload")
 
+
+def _lama_terbaca(detik: int) -> str:
+    """"600" -> "10 menit". Dipakai di pesan galat yang dibaca pengguna."""
+    if detik < 60:
+        return f"{detik} detik"
+    menit, sisa = divmod(detik, 60)
+    return f"{menit} menit" if not sisa else f"{menit} menit {sisa} detik"
+
+
+def ringkas_galat(pesan: str | None) -> str:
+    """Pangkas pesan galat sebelum masuk basis data.
+
+    Jejak Playwright bisa ribuan huruf dan tumpah apa adanya ke layar. Baris
+    pertamanya sudah memuat inti masalahnya; sisanya hanya berguna di log.
+    """
+    if not pesan:
+        return ""
+    baris = pesan.strip().splitlines()[0].strip()
+    if len(baris) <= MAKS_PANJANG_GALAT:
+        return baris
+    return baris[: MAKS_PANJANG_GALAT - 1].rstrip() + "…"
 
 
 # Galat yang wajar terjadi sesaat: jaringan putus, satu dialog telat muncul,
@@ -181,6 +202,40 @@ async def fan_out_upload(
 
         return lapor
 
+    def _simpan_hasil(target_id, hasil: UploadResult) -> None:
+        """Tulis hasil satu target begitu ia selesai.
+
+        Dulu semua baris baru ditulis SESUDAH seluruh batch kembali. Dua
+        akibatnya nyata: (1) target yang sudah selesai tetap tampak berjalan
+        di halaman, karena yang hidup hanya angka persennya - dan angka itu
+        sengaja tidak pernah mundur, jadi yang beku di 96% tidak bisa
+        dibedakan dari yang sedang bekerja; (2) kalau satu target menggantung,
+        SEMUA hasil ikut hilang, termasuk akun yang sebenarnya sudah berhasil.
+        Menulisnya di sini membuat tiap keberhasilan langsung tercatat.
+        """
+        if target_id is None:
+            return
+        try:
+            from autoupload.db import PostTarget, SessionLocal
+
+            db = SessionLocal()
+            try:
+                baris = db.query(PostTarget).filter(PostTarget.id == target_id).first()
+                if baris is None:
+                    return
+                baris.status = "success" if hasil.success else "failed"
+                # 100 HANYA di sini: saat targetnya benar-benar selesai.
+                baris.progress = 100 if hasil.success else (baris.progress or 0)
+                baris.tahap = "selesai" if hasil.success else (baris.tahap or "")
+                baris.url = hasil.url or ""
+                baris.error = ringkas_galat(hasil.error)
+                baris.attempts = (baris.attempts or 0) + 1
+                db.commit()
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 - hasilnya masih ditulis ulang di akhir
+            log.exception("Gagal menyimpan hasil target %s", target_id)
+
     async def _sekali(t: dict) -> UploadResult:
         t = dict(t)
         # Tiap target boleh membawa video dan captionnya sendiri; yang tidak
@@ -207,7 +262,33 @@ async def fan_out_upload(
 
     async def _antre(t: dict) -> UploadResult:
         async with gerbang:
-            return await _run(t)
+            # Dijalankan sebagai task terpisah supaya batas waktunya benar-
+            # benar mengikat. asyncio.wait_for menunggu pembatalannya SELESAI,
+            # dan kalau yang menggantung justru pembersihan perambannya, kita
+            # kembali menggantung - persis yang hendak dicegah. Di sini
+            # pembatalan hanya diberi masa tenggang; sesudah itu giliran
+            # diteruskan apa pun yang terjadi pada sisa-sisanya.
+            tugas = asyncio.create_task(_run(t))
+            selesai, _ = await asyncio.wait({tugas}, timeout=BATAS_TARGET_DETIK)
+            if tugas in selesai:
+                hasil = tugas.result()
+            else:
+                log.warning(
+                    "%s: tidak selesai dalam %s detik; gilirannya dilepas",
+                    t.get("platform"), BATAS_TARGET_DETIK,
+                )
+                tugas.cancel()
+                await asyncio.wait({tugas}, timeout=20)
+                hasil = UploadResult(
+                    platform=str(t.get("platform") or ""),
+                    success=False,
+                    error=(
+                        f"Berhenti sendiri setelah {_lama_terbaca(BATAS_TARGET_DETIK)} "
+                        "tanpa kemajuan. Akun lain tetap dilanjutkan."
+                    ),
+                )
+            _simpan_hasil(t.get("target_id"), hasil)
+            return hasil
 
     return list(await asyncio.gather(*[_antre(t) for t in targets]))
 

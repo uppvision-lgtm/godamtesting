@@ -28,6 +28,14 @@ MAKS_PANJANG_GALAT = int(os.getenv("AUTOUPLOAD_MAKS_GALAT", "240"))
 # Chromium yang memakan ratusan megabyte, jadi mengerjakan seratus akun
 # sekaligus akan menghabiskan memori mesin apa pun. Sisanya mengantre.
 MAKS_PARALEL = max(1, int(os.getenv("AUTOUPLOAD_MAKS_PARALEL", "3")))
+# Batas keras satu target. Karena target dikerjakan bergiliran, SATU yang
+# menggantung menyandera semua sisanya - selamanya, sebab tidak ada satu pun
+# langkah adapter yang punya batas menyeluruh. Diamati langsung: sembilan akun
+# berhenti di "menyiapkan peramban" dan tidak pernah lanjut. Lewat batas ini
+# targetnya dicap gagal dan gilirannya diserahkan ke yang berikutnya.
+# Unggahan normal makan 1-3 menit (Instagram pernah 131 detik), dan angka ini
+# masih memberi kelonggaran untuk satu kali ulang.
+BATAS_TARGET_DETIK = max(60, int(os.getenv("AUTOUPLOAD_BATAS_TARGET_DETIK", "600")))
 # Batas akun tertaut per platform.
 MAKS_AKUN_PER_PLATFORM = max(1, int(os.getenv("AUTOUPLOAD_MAKS_AKUN", "100")))
 
