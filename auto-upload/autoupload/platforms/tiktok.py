@@ -16,6 +16,7 @@ Catatan yang didapat dari pengamatan langsung, bukan tebakan:
 """
 
 import re
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -95,39 +96,54 @@ class TikTok(PlaywrightPlatform):
         # Halaman daftar sekaligus penentu wilayah data: kalau ditolak, cookie
         # wilayah dicoba satu per satu di sini, sehingga halaman unggah di
         # bawah sudah pasti memakai wilayah yang benar.
+        # Kemajuan dilaporkan di SETIAP langkah panjang di bawah ini. Dulu
+        # tidak: sesudah MULAI (5%) laporan berikutnya baru LAMPIR (50%),
+        # padahal di antaranya ada pencarian wilayah data sampai lima kali,
+        # pemuatan halaman unggah, dan pelampiran berkas - menit-menit yang
+        # di layar tampak sebagai satu angka 5% yang tidak bergerak. Waktunya
+        # ikut dicatat ke log supaya kalau melambat, ketahuan langkah mana.
+        t0 = time.monotonic()
         wilayah = await self.buka_masuk(page, _URL_DAFTAR, _ditolak_login, _JEDA_DAFTAR)
+        print(f"[tiktok] masuk: {time.monotonic() - t0:.1f}s (wilayah={wilayah})", flush=True)
         if wilayah is None:
             raise PlatformError(
                 "Sesi TikTok sudah tidak valid (ter-logout). Perbarui Session ID "
                 "di halaman Kelola Akun."
             )
+        lapor(*tahap.HALAMAN)
         sebelum = set(await _tautan_di_halaman(page, _PEMILIH_POST))
 
+        t0 = time.monotonic()
         await page.goto(self.start_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(6_000)
+        print(f"[tiktok] halaman unggah: {time.monotonic() - t0:.1f}s", flush=True)
 
         if await _ditolak_login(page):
             raise PlatformError(
                 "Sesi TikTok sudah tidak valid (halaman login muncul). Perbarui "
                 "Session ID di halaman Kelola Akun."
             )
+        lapor(*tahap.KOMPOSER)
 
         # 1. Lampirkan berkas.
-        await page.locator('input[type="file"]').first.set_input_files(
-            str(media_path.resolve()), timeout=120_000
-        )
+        t0 = time.monotonic()
+        await self._lampirkan(page, media_path)
+        print(f"[tiktok] berkas dikirim: {time.monotonic() - t0:.1f}s", flush=True)
 
         # Kotak caption baru ada setelah berkasnya diterima - itu sekaligus
         # tanda lampirannya masuk.
         kotak = page.locator('div[contenteditable="true"].public-DraftEditor-content').first
+        t0 = time.monotonic()
         try:
             await kotak.wait_for(state="visible", timeout=120_000)
         except Exception as exc:  # noqa: BLE001
+            keadaan = await self._keadaan(page)
+            print(f"[tiktok] editor caption TIDAK MUNCUL {keadaan}", flush=True)
             raise PlatformError(
                 "TikTok tidak pernah menampilkan editor caption; berkasnya "
-                "kemungkinan ditolak."
+                f"kemungkinan ditolak. {keadaan}"
             ) from exc
-        print("[tiktok] media terlampir", flush=True)
+        print(f"[tiktok] media terlampir: {time.monotonic() - t0:.1f}s", flush=True)
         lapor(*tahap.LAMPIR)
 
         await self._tutup_popup(page)
@@ -346,6 +362,77 @@ class TikTok(PlaywrightPlatform):
             f"Tanggal {hari} tidak bisa dipilih di kalender TikTok - "
             "TikTok hanya menerima jadwal sampai sepuluh hari ke depan."
         )
+
+    async def _lampirkan(self, page, media_path: Path) -> None:
+        """Serahkan berkasnya ke kotak unggah TikTok.
+
+        Dulu satu baris: locator('input[type="file"]').first. Dua kelemahannya
+        terbukti di server pada 24 September 2026, dan keduanya berakhir sama -
+        "Locator.set_input_files: Timeout 120000ms exceeded" tanpa sepatah pun
+        tentang APA yang sebenarnya ada di halaman:
+
+        1. Kotak unggahnya bisa berada di dalam IFRAME. Pencarian di bingkai
+           utama tidak akan pernah menemukannya, berapa lama pun ditunggu.
+        2. Kalau TikTok justru menyodorkan tantangan keamanan atau halaman
+           lain, tidak ada input berkas sama sekali - dan yang pantas
+           dilaporkan adalah itu, bukan "timeout".
+
+        Jadi: bingkai utama dulu dengan tunggu yang lebih pendek, lalu semua
+        bingkai anak, dan kalau tetap nihil barulah menyerah - sambil membawa
+        keadaan halamannya apa adanya.
+        """
+        pemilih = 'input[type="file"]'
+        # Semua bingkai diperiksa BERSAMAAN tiap detik, bukan bingkai utama
+        # sampai habis waktunya baru yang lain: kalau kotaknya memang di
+        # iframe, menunggui bingkai utama hanya membuang menit.
+        bingkai = await self._cari_kotak(page, pemilih, 45)
+        if bingkai is not None:
+            if bingkai is not page.main_frame:
+                print(f"[tiktok] kotak unggah ada di iframe: {bingkai.url[:80]}", flush=True)
+            await bingkai.locator(pemilih).first.set_input_files(
+                str(media_path.resolve()), timeout=120_000
+            )
+            return
+
+        keadaan = await self._keadaan(page)
+        print(f"[tiktok] kotak unggah TIDAK ADA {keadaan}", flush=True)
+        raise PlatformError(f"Kotak unggah TikTok tidak ada. {keadaan}")
+
+    @staticmethod
+    async def _cari_kotak(page, pemilih: str, batas_detik: float):
+        """Bingkai pertama yang memuat `pemilih`, atau None kalau tidak ada."""
+        habis = time.monotonic() + batas_detik
+        while True:
+            for bingkai in page.frames:
+                try:
+                    if await bingkai.locator(pemilih).count():
+                        return bingkai
+                except Exception:  # noqa: BLE001 - bingkai bisa hilang saat dibaca
+                    continue
+            if time.monotonic() >= habis:
+                return None
+            await page.wait_for_timeout(1_000)
+
+    @staticmethod
+    async def _keadaan(page) -> str:
+        """Potret ringkas halaman, untuk ikut ke pesan galat dan ke log.
+
+        Screenshot kegagalan memang disimpan, tetapi hanya bisa dilihat lewat
+        halaman admin. Ringkasan teks ini ikut ke kolom galat barisnya dan ke
+        log Railway, sehingga penyebabnya bisa dibaca tanpa membuka apa pun.
+        """
+        try:
+            judul = (await page.title() or "")[:60]
+            teks = await page.evaluate(
+                "() => (document.body ? document.body.innerText : '')"
+                ".replace(/\\s+/g, ' ').trim().slice(0, 200)"
+            )
+            return (
+                f"[url={page.url[:90]} | judul={judul} | "
+                f"iframe={len(page.frames) - 1} | isi=\"{teks}\"]"
+            )
+        except Exception:  # noqa: BLE001 - diagnosa tidak boleh menutupi galat asli
+            return "[keadaan halaman tidak terbaca]"
 
     @staticmethod
     async def _tutup_popup(page) -> None:
