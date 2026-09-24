@@ -553,9 +553,23 @@ class PlaywrightPlatform(ABC):
                     detail += f" [debug: {shot.name}]"
                 return UploadResult(platform=self.platform_key, success=False, error=detail)
             finally:
-                await context.close()  # profil (termasuk cookie baru) disimpan saat close
-                if peramban is not None:
-                    await peramban.close()
+                # Penutupan TIDAK boleh melempar. Kalau perambannya sudah
+                # mati, close() melempar galatnya sendiri dari dalam finally
+                # dan MENIMPA galat asli - persis yang terjadi pada 24
+                # September 2026: yang sampai ke pengguna "BrowserContext
+                # .close: the handler is closed", padahal sebab sebenarnya
+                # driver Playwright yang mati. Satu jam terbuang mengejar
+                # pesan yang salah.
+                for tutup in (context.close, getattr(peramban, "close", None)):
+                    if tutup is None:
+                        continue
+                    try:
+                        await tutup()  # profil + cookie baru disimpan saat close
+                    except Exception as galat_tutup:  # noqa: BLE001
+                        log.warning(
+                            "[%s] gagal menutup peramban: %s",
+                            self.platform_key, str(galat_tutup).splitlines()[0][:120],
+                        )
 
     async def _save_debug_shot(self, page) -> Path | None:
         """Simpan screenshot + konteks halaman saat upload gagal, untuk melacak
