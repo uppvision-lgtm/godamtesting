@@ -139,6 +139,20 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
 
   const aktif = PLATFORM.filter((p) => akunDari(p.id)?.verified === true).length;
 
+  /** Nama "akun-N" pertama yang BELUM dipakai di platform ini.
+   *  Dulu dihitung dari jumlah akun + 1. Dengan nama yang tidak berurutan
+   *  (mis. akun-3 dan akun-4 saja, setelah akun-2 diputus) hasilnya "akun-3" -
+   *  nama yang sudah dipakai - dan karena nama sesi yang sama berarti
+   *  "ganti akun itu", menautkan akun baru diam-diam MENIMPA akun lama. */
+  const namaSesiBaru = (p: PlatformId) => {
+    const terpakai = new Set(
+      akun.filter((a) => a.platform === p).map((a) => (a.session_name || "").toLowerCase())
+    );
+    let n = 2;
+    while (terpakai.has(`akun-${n}`)) n += 1;
+    return `akun-${n}`;
+  };
+
   const isi = (c: string) => (nilaiCookie[c] || "").trim();
 
   const lengkap = (p: Platform) => {
@@ -417,7 +431,7 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                           onClick={() => {
                             setGalatAkun("");
                             setNilaiCookie({});
-                            setNamaSesi(`akun-${akunSemua(p.id).length + 1}`);
+                            setNamaSesi(namaSesiBaru(p.id));
                             setBuka(p.id);
                           }}
                         >
