@@ -654,7 +654,9 @@ async def add_account_masuk(
     if req.platform not in PLATFORMS:
         raise HTTPException(400, f"Platform harus salah satu dari {PLATFORMS}")
     try:
-        hasil = await masuk.masuk_dengan_sandi(req.platform, req.username, req.password)
+        hasil = await masuk.masuk_dengan_sandi(
+            req.platform, req.username, req.password, jendela=_di_lokal()
+        )
     except masuk.MasukGagal as error:
         raise HTTPException(400, str(error)) from None
     account = _simpan_akun(
@@ -662,6 +664,94 @@ async def add_account_masuk(
         hasil["session_id"], {"nama_akun": hasil.get("nama_akun", ""), "sumber": "sandi"},
     )
     return {"id": account.id, "platform": account.platform, "nama_akun": hasil.get("nama_akun", "")}
+
+
+def _di_lokal() -> bool:
+    """True saat backend berjalan di laptop (DEBUG), yang punya layar."""
+    return os.getenv("DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+# Server tujuan tombol "Kirim ke server". Diambil dari setelan, TIDAK dari
+# permintaan: kalau alamatnya bisa diisi dari luar, session ID bisa dikirim
+# ke server mana pun.
+SERVER_TUJUAN = os.getenv(
+    "AUTOUPLOAD_SERVER_URL", "https://backend-production-bf483.up.railway.app"
+).rstrip("/")
+
+
+class KirimRequest(BaseModel):
+    """Akun SITUS di server (bukan akun sosmed); dipakai sekali untuk login."""
+
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=200)
+
+
+@router.get("/lokal")
+def info_lokal() -> dict:
+    """Halaman memakai ini untuk menampilkan fitur khusus localhost."""
+    return {"lokal": _di_lokal(), "server": SERVER_TUJUAN if _di_lokal() else ""}
+
+
+@router.post("/accounts/{account_id}/kirim-ke-server")
+async def kirim_ke_server(
+    account_id: int,
+    req: KirimRequest,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
+    """Salin satu akun dari backend LOKAL ke server, lalu periksa di sana.
+
+    Gunanya: login sosmed yang butuh captcha dikerjakan di laptop (jendela
+    terlihat, IP rumah yang lebih dipercaya), hasilnya dipakai di server.
+    Session ID dikirim langsung backend-ke-backend lewat HTTPS dan tidak
+    pernah lewat peramban. Token lokal tidak berlaku di server (kunci
+    tanda tangannya beda), jadi backend lokal login ke server dengan akun
+    situs yang diberikan - password itu hanya dipakai sekali, tidak disimpan.
+    """
+    if not _di_lokal():
+        raise HTTPException(404, "Hanya tersedia di backend lokal.")
+    account = _milik(
+        db.query(SocialAccount).filter(SocialAccount.id == account_id), SocialAccount, pemilik
+    ).first()
+    if not account or not account.session_id:
+        raise HTTPException(404, "Akun tidak ditemukan atau tidak punya Session ID.")
+
+    import httpx
+
+    async with httpx.AsyncClient(base_url=SERVER_TUJUAN, timeout=httpx.Timeout(300.0, connect=20.0)) as c:
+        r = await c.post("/api/auth/login", json={"username": req.username, "password": req.password})
+        if r.status_code != 200:
+            raise HTTPException(400, "Login ke server gagal: username atau password situs salah.")
+        token = r.json().get("token", "")
+        kepala = {"Authorization": f"Bearer {token}"}
+        r = await c.post(
+            "/api/sosmed/accounts",
+            headers=kepala,
+            json={
+                "platform": account.platform,
+                "display_name": account.display_name or account.platform,
+                "session_name": account.session_name or "ssid",
+                "session_id": buka(account.session_id),
+                "extra": {k: v for k, v in (account.extra or {}).items() if k == "nama_akun"},
+            },
+        )
+        if r.status_code != 200:
+            detail = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}).get("detail")
+            raise HTTPException(400, f"Server menolak menyimpan akunnya: {detail or r.status_code}")
+        id_server = r.json().get("id")
+        periksa = {}
+        try:
+            v = await c.post(f"/api/sosmed/accounts/{id_server}/verify", headers=kepala)
+            periksa = v.json() if v.status_code == 200 else {}
+        except httpx.HTTPError:
+            periksa = {}
+    return {
+        "ok": True,
+        "id_server": id_server,
+        "periksa_ok": periksa.get("ok"),
+        "periksa_pesan": periksa.get("message", "Belum diperiksa di server."),
+        "nama_akun": periksa.get("nama_akun", ""),
+    }
 
 
 @router.post("/accounts/{account_id}/verify")

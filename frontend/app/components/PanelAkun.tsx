@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import styles from "../auto-upload/page.module.css";
 import LogoSosmed, { WARNA, type PlatformId } from "./LogoSosmed";
-import { apiFetch } from "./auth";
+import { akunSekarang, apiFetch } from "./auth";
 import { useDialog } from "./Dialog";
 import { PLATFORM, type Akun, type Platform } from "./sosmed";
 
@@ -49,6 +49,11 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
   const [metode, setMetode] = useState<"ssid" | "sandi">("ssid");
   const [namaPengguna, setNamaPengguna] = useState("");
   const [sandi, setSandi] = useState("");
+  // Backend lokal (laptop) punya layar: login sandi membuka jendela terlihat
+  // tempat captcha dikerjakan sendiri, dan tiap akun bisa dikirim ke server.
+  const [lokal, setLokal] = useState<{ lokal: boolean; server: string }>({ lokal: false, server: "" });
+  const [mengirim, setMengirim] = useState<number | null>(null);
+  const [infoAkun, setInfoAkun] = useState("");
 
   const muatAkun = useCallback(async () => {
     try {
@@ -68,6 +73,57 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
   useEffect(() => {
     void muatAkun();
   }, [muatAkun]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await apiFetch("/api/sosmed/lokal", { cache: "no-store" });
+        if (res.ok) setLokal(await res.json());
+      } catch {
+        // server lama tanpa endpoint ini: anggap bukan lokal
+      }
+    })();
+  }, []);
+
+  /** Salin satu akun dari backend lokal ke server (hanya di localhost). */
+  async function kirimKeServer(p: Platform, a: Akun) {
+    const situs = akunSekarang();
+    const sandiSitus = await dialog.tanya({
+      judul: `Kirim ${p.nama}${a.nama_akun ? ` (${a.nama_akun})` : ""} ke server?`,
+      pesan:
+        `Sesi akun ini disalin ke ${lokal.server.replace(/^https?:\/\//, "")} atas nama @${situs}, ` +
+        "lalu langsung diperiksa di sana.",
+      label: `password akun situs @${situs}`,
+      petunjuk: "Dipakai sekali untuk masuk ke server, tidak disimpan.",
+      tombolYa: "Kirim",
+      sandi: true,
+    });
+    if (!sandiSitus) return;
+    setMengirim(a.id);
+    setGalatAkun("");
+    setInfoAkun("");
+    try {
+      const res = await apiFetch(`/api/sosmed/accounts/${a.id}/kirim-ke-server`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: situs, password: sandiSitus }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Gagal mengirim ke server.");
+      setInfoAkun(
+        `${p.nama} terkirim ke server. Pemeriksaan di server: ` +
+          (data.periksa_ok === true
+            ? `HIDUP${data.nama_akun ? ` — ${data.nama_akun}` : ""}.`
+            : data.periksa_ok === false
+              ? `gagal — ${data.periksa_pesan}`
+              : data.periksa_pesan)
+      );
+    } catch (err) {
+      setGalatAkun(err instanceof Error ? err.message : "Gagal mengirim ke server.");
+    } finally {
+      setMengirim(null);
+    }
+  }
 
   /** SEMUA akun tertaut milik satu platform, urut dari yang paling awal. */
   const akunSemua = (p: PlatformId) =>
@@ -251,9 +307,14 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
         </div>
         {metode === "sandi" && (
           <p className={styles.hint}>
-            Ketik username dan password akunnya; server login sekali lalu menyimpan cookie
-            sesinya — password tidak disimpan. Akun dengan verifikasi dua langkah, atau
-            YouTube, tetap harus lewat SSID.
+            {lokal.lokal
+              ? "Ketik username dan password akunnya; jendela Chrome akan terbuka di layarmu " +
+                "dan login sendiri. Kalau muncul captcha atau kode verifikasi, kerjakan di jendela " +
+                "itu (ditunggu sampai 3 menit). Password tidak disimpan. Setelah tersimpan, tekan " +
+                "Kirim ke server supaya akunnya juga dipakai di situs."
+              : "Ketik username dan password akunnya; server login sekali lalu menyimpan cookie " +
+                "sesinya — password tidak disimpan. Akun dengan verifikasi dua langkah, atau " +
+                "YouTube, tetap harus lewat SSID."}
           </p>
         )}
 
@@ -374,6 +435,17 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                           >
                             {memeriksa === p.id ? "Memeriksa..." : "Periksa"}
                           </button>
+                          {lokal.lokal && (
+                            <button
+                              type="button"
+                              className={styles.btnSekunder}
+                              disabled={lagi || mengirim !== null}
+                              title="Salin sesi akun ini ke server"
+                              onClick={() => void kirimKeServer(p, a)}
+                            >
+                              {mengirim === a.id ? "Mengirim..." : "Kirim ke server"}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className={styles.btnBahaya}
@@ -415,6 +487,16 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                           >
                             Periksa
                           </button>
+                          {lokal.lokal && (
+                            <button
+                              type="button"
+                              className={styles.btnSekunder}
+                              disabled={lagi || mengirim !== null}
+                              onClick={() => void kirimKeServer(p, s)}
+                            >
+                              {mengirim === s.id ? "Mengirim..." : "Kirim ke server"}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className={styles.btnBahaya}
@@ -606,6 +688,7 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
             })}
         </div>
 
+        {infoAkun && <p className={styles.hint}>{infoAkun}</p>}
         {galatAkun && (
           <p className={styles.galat} role="alert">
             {galatAkun}

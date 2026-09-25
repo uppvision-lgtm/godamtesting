@@ -29,6 +29,8 @@ type Isi = {
   tombolBatal?: string;
   bahaya?: boolean;
   maxLength?: number;
+  /** Kotak isiannya password: disamarkan dan tidak dirapikan spasinya. */
+  sandi?: boolean;
   /** true = ada kotak isian (pengganti prompt); false = cuma ya/tidak. */
   pakaiIsian: boolean;
 };
@@ -92,8 +94,8 @@ export function useDialog() {
   const kirim = () => {
     if (!isi) return;
     if (isi.pakaiIsian) {
-      const bersih = nilai.trim();
-      if (!bersih) return; // tombol memang dimatikan, ini jaring pengaman
+      const bersih = isi.sandi ? nilai : nilai.trim();
+      if (!bersih.trim()) return; // tombol memang dimatikan, ini jaring pengaman
       tutup(bersih);
     } else {
       tutup("ya");
@@ -120,8 +122,9 @@ export function useDialog() {
             <input
               ref={inputRef}
               value={nilai}
-              maxLength={isi.maxLength ?? 60}
-              autoComplete="off"
+              type={isi.sandi ? "password" : "text"}
+              maxLength={isi.maxLength ?? (isi.sandi ? 200 : 60)}
+              autoComplete={isi.sandi ? "current-password" : "off"}
               onChange={(e) => setNilai(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {

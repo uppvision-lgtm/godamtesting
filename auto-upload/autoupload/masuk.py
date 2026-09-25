@@ -58,6 +58,9 @@ TANDA_TANTANGAN = (
 
 BATAS_DETIK = 75.0
 TUNGGU_HASIL_DETIK = 30.0
+# Dengan jendela terlihat (localhost) pemakainya sendiri yang mengerjakan
+# captcha / kode verifikasi di jendela itu, jadi ditunggu jauh lebih lama.
+TUNGGU_JENDELA_DETIK = 180.0
 
 
 class MasukGagal(Exception):
@@ -275,8 +278,14 @@ def _susun_session_id(platform: str, cookies: dict[str, dict]) -> str:
     return "|".join(cookies[n]["value"] for n in dipakai)
 
 
-async def masuk_dengan_sandi(platform: str, nama: str, sandi: str) -> dict:
-    """Login lalu kembalikan {session_id, nama_akun}. Melempar MasukGagal."""
+async def masuk_dengan_sandi(platform: str, nama: str, sandi: str, jendela: bool = False) -> dict:
+    """Login lalu kembalikan {session_id, nama_akun}. Melempar MasukGagal.
+
+    jendela=True (hanya di localhost, yang punya layar): peramban dibuka
+    TERLIHAT dan tantangan tidak lagi berarti gagal - captcha atau kode
+    verifikasi dikerjakan pemakainya sendiri di jendela itu, lalu cookie
+    sesinya diambil begitu muncul. Captcha tidak pernah dijawab oleh kode.
+    """
     if platform in TIDAK_DIDUKUNG:
         raise MasukGagal(TIDAK_DIDUKUNG[platform])
     if platform not in PENGISI:
@@ -298,7 +307,7 @@ async def masuk_dengan_sandi(platform: str, nama: str, sandi: str) -> dict:
             # jatuh ke Chromium - dan untuk X itu berarti gagal dengan pesan
             # yang menyebutnya. Mode headless lama (extra_args X) tidak
             # dipakai di sini: ia juga menghasilkan halaman kosong.
-            luncur = {"headless": True, "args": STEALTH_ARGS}
+            luncur = {"headless": not jendela, "args": STEALTH_ARGS}
             try:
                 peramban = await pw.chromium.launch(channel="chrome", **luncur)
                 chrome_asli = True
@@ -320,13 +329,14 @@ async def masuk_dengan_sandi(platform: str, nama: str, sandi: str) -> dict:
 
                 # Tunggu salah satu: cookie sesi muncul (berhasil), tantangan
                 # (2FA/captcha), atau pesan salah sandi.
-                habis = time.monotonic() + TUNGGU_HASIL_DETIK
+                batas_tunggu = TUNGGU_JENDELA_DETIK if jendela else TUNGGU_HASIL_DETIK
+                habis = time.monotonic() + batas_tunggu
                 while True:
                     await page.wait_for_timeout(1_000)
                     cookies = {c["name"]: c for c in await konteks.cookies()}
                     if _cookie_wajib_ada(cookies, platform):
                         break
-                    if await _tampak_tantangan(page):
+                    if not jendela and await _tampak_tantangan(page):
                         raise MasukGagal(
                             f"{platform.title()} meminta langkah tambahan (kode verifikasi "
                             "dua langkah, captcha, atau pemeriksaan keamanan) yang tidak "
@@ -346,7 +356,7 @@ async def masuk_dengan_sandi(platform: str, nama: str, sandi: str) -> dict:
                     if time.monotonic() >= habis:
                         raise MasukGagal(
                             f"{platform.title()} tidak memberi sesi dalam "
-                            f"{TUNGGU_HASIL_DETIK:.0f} detik. Bisa jadi ada langkah tambahan "
+                            f"{batas_tunggu:.0f} detik. Bisa jadi ada langkah tambahan "
                             "yang tidak terdeteksi. Coba lagi, atau pakai SSID."
                         )
                 session_id = _susun_session_id(platform, cookies)
