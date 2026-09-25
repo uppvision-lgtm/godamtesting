@@ -72,6 +72,12 @@ HARUS_BERTAHAN: dict[str, str] = {
     "threads": "/settings",
 }
 
+# Potongan alamat yang berarti akunnya ditangguhkan / dinonaktifkan platform.
+TANDA_DITANGGUHKAN = (
+    "/accounts/suspended", "/accounts/disabled", "/account/suspended",
+    "/checkpoint/disabled", "/account/access", "account_suspended",
+)
+
 # Judul halaman yang berarti belum masuk. Diperiksa huruf kecil semua.
 JUDUL_LOGIN = ("log in", "login", "sign in", "masuk", "sign up")
 
@@ -343,6 +349,24 @@ async def _periksa_inti(platform: str, session_id: str) -> dict:
             "ok": False,
             "pesan": _pesan_gagal(platform, error),
             "url": "",
+            "nama": "",
+        }
+
+    # Akun yang DITANGGUHKAN atau dinonaktifkan platformnya. Sesinya memang
+    # masih masuk (tidak ada formulir login), jadi tanpa pemeriksaan ini akun
+    # yang tidak bisa dipakai sama sekali tampil hijau - diamati langsung:
+    # topmengudara berakhir di instagram.com/accounts/suspended/ dan dinyatakan
+    # "Beranda terbuka", lengkap dengan nama palsu "Instagram user".
+    ditangguhkan = next((t for t in TANDA_DITANGGUHKAN if t in akhir), "")
+    if ditangguhkan:
+        return {
+            "ok": False,
+            "pesan": (
+                f"Akun ini DITANGGUHKAN oleh {PLATFORM_NAMA.get(platform, platform.title())} "
+                "(bukan masalah Session ID). Buka aplikasinya di HP untuk melihat alasannya "
+                "atau mengajukan banding."
+            ),
+            "url": akhir,
             "nama": "",
         }
 

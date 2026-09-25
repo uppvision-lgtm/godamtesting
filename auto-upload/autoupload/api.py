@@ -783,7 +783,11 @@ async def verify_account(
             "verify_message": hasil["pesan"],
             # Nama yang tidak terbaca kali ini tidak menghapus nama yang sudah
             # diketahui (mis. dari login lewat perangkat).
-            "nama_akun": hasil.get("nama", "") or extra.get("nama_akun", ""),
+            # ...kecuali akunnya ditangguhkan: nama yang tersimpan saat itu
+            # berasal dari halaman penangguhan ("Instagram user"), bukan akun.
+            "nama_akun": ""
+            if "DITANGGUHKAN" in hasil["pesan"]
+            else (hasil.get("nama", "") or extra.get("nama_akun", "")),
         }
     )
     account.extra = extra

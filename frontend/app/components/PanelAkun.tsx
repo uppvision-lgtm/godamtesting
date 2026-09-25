@@ -557,7 +557,9 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                             {s.verified === true
                               ? s.nama_akun || "aktif"
                               : s.verified === false
-                                ? "sesi mati"
+                                ? (s.verify_message || "").includes("DITANGGUHKAN")
+                                  ? "akun ditangguhkan"
+                                  : "sesi mati"
                                 : "belum diperiksa"}
                           </span>
                           <button
