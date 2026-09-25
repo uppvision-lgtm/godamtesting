@@ -104,6 +104,11 @@ class SesiLogin:
         # terikat satu loop, sedangkan dua loop berbeda menyentuhnya di sini.
         self._jpeg_b64 = ""
         self._versi = 0
+        # Kapan WS terakhir aktif; sesi yang WS-nya tak pernah datang atau
+        # sudah lama putus ditutup cepat supaya slot tidak tersandera login
+        # yang ditinggalkan (tab ditutup sebelum selesai).
+        self._ws_ada = False
+        self._ws_terakhir = time.monotonic()
 
     # -- dijalankan di thread Playwright --
 
@@ -187,6 +192,14 @@ class SesiLogin:
                 if self.status == "running":
                     self.status = "error"
                     self.pesan = "Waktu login habis. Tutup lalu coba lagi."
+                await self._matikan()
+                return
+            # WS belum pernah tersambung 40 dtk, atau sudah putus 40 dtk:
+            # tab-nya kemungkinan ditutup. Lepaskan slotnya.
+            if not self._ws_ada and time.monotonic() - self.dibuat > 40:
+                await self._matikan()
+                return
+            if self._ws_ada and time.monotonic() - self._ws_terakhir > 40 and self.status == "running":
                 await self._matikan()
                 return
             try:
@@ -343,12 +356,15 @@ async def ws(websocket: WebSocket, token: str) -> None:
         await websocket.close(code=4401)
         return
     await websocket.accept()
+    s._ws_ada = True
+    s._ws_terakhir = time.monotonic()
 
     async def terima():
         # Peristiwa masuk (klik/ketik/gulir/resize) diteruskan ke peramban.
         try:
             while s._hidup:
                 pesan = await websocket.receive_text()
+                s._ws_terakhir = time.monotonic()
                 data = json.loads(pesan)
                 if data.get("t") == "resize":
                     await _RUNTIME.run(s.ubah_ukuran(data.get("lebar"), data.get("tinggi")))
@@ -365,6 +381,7 @@ async def ws(websocket: WebSocket, token: str) -> None:
                 versi_terkirim = s._versi
                 await websocket.send_text(json.dumps({"t": "frame", "b64": s._jpeg_b64,
                                                        "w": s.lebar, "h": s.tinggi}))
+            s._ws_terakhir = time.monotonic()
             if s.status in ("done", "error"):
                 await websocket.send_text(json.dumps({
                     "t": "selesai", "status": s.status, "pesan": s.pesan,

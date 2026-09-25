@@ -79,14 +79,17 @@ export default function LoginSosmedPage() {
         if (!res.ok) throw new Error(data.detail || "Gagal membuka halaman login.");
         if (batal) return;
         ukuranServer.current = { w: data.lebar, h: data.tinggi };
-        // WebSocket harus langsung ke backend: proxy Next/Vercel tidak
-        // meneruskannya. Di situs: NEXT_PUBLIC_BACKEND_URL (Railway). Di laptop
-        // yang hanya punya NEXT_PUBLIC_API_URL: backend lokal.
-        const lokal = /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
-        const asal =
+        // WebSocket harus LANGSUNG ke backend: proxy Next/Vercel tidak
+        // meneruskan WebSocket (404). NEXT_PUBLIC_API_URL berisi alamat
+        // backend publik di situs (Railway) dan localhost:8000 di laptop -
+        // sama dengan yang dipakai unggahan langsung. BASIS_BACKEND dicoba
+        // dulu kalau kebetulan diisi.
+        const asal = (
           BASIS_BACKEND ||
-          (lokal ? process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000" : window.location.origin);
-        const basis = asal.replace(/\/$/, "").replace(/^http/, "ws");
+          process.env.NEXT_PUBLIC_API_URL ||
+          window.location.origin
+        ).replace(/\/$/, "");
+        const basis = asal.replace(/^http/, "ws");
         ws = new WebSocket(`${basis}/api/login-layar/${data.token}/ws?akses=${encodeURIComponent(ambilToken())}`);
         wsRef.current = ws;
         ws.onopen = () => {
