@@ -15,6 +15,11 @@ import { PLATFORM, type Akun, type Platform } from "./sosmed";
  * apa pun yang ditempel di halaman Kelola Akun langsung terlihat di Auto
  * Upload dan Auto Edit & Upload tanpa perlu ditempel ulang.
  */
+// Backend di PERANGKAT pengguna. Kalau pengguna menjalankannya, login
+// username & password dibuka di jendela Chrome komputernya sendiri - tempat
+// captcha bisa dikerjakan - bukan di server yang tidak punya layar.
+const PERANGKAT_URL = (process.env.NEXT_PUBLIC_PERANGKAT_URL || "http://localhost:8000").replace(/\/$/, "");
+
 type Props = {
   judul?: string;
   keterangan?: string;
@@ -53,6 +58,8 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
   // tempat captcha dikerjakan sendiri, dan tiap akun bisa dikirim ke server.
   const [lokal, setLokal] = useState<{ lokal: boolean; server: string }>({ lokal: false, server: "" });
   const [mengirim, setMengirim] = useState<number | null>(null);
+  // null = belum dicek, true = backend perangkat menjawab, false = tidak ada.
+  const [perangkat, setPerangkat] = useState<boolean | null>(null);
   const [infoAkun, setInfoAkun] = useState("");
 
   const muatAkun = useCallback(async () => {
@@ -84,6 +91,26 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
       }
     })();
   }, []);
+
+  const cekPerangkat = useCallback(async () => {
+    const henti = new AbortController();
+    const jam = window.setTimeout(() => henti.abort(), 2500);
+    try {
+      const res = await fetch(`${PERANGKAT_URL}/api/perangkat/status`, {
+        signal: henti.signal,
+        cache: "no-store",
+      });
+      setPerangkat(res.ok);
+    } catch {
+      setPerangkat(false);
+    } finally {
+      window.clearTimeout(jam);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (metode === "sandi") void cekPerangkat();
+  }, [metode, cekPerangkat]);
 
   /** Salin satu akun dari backend lokal ke server (hanya di localhost). */
   async function kirimKeServer(p: Platform, a: Akun) {
@@ -218,20 +245,50 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
     }
     setSibuk(p.id);
     setGalatAkun("");
+    setInfoAkun("");
     try {
-      const res = await apiFetch("/api/sosmed/accounts/masuk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          platform: p.id,
-          display_name: p.nama,
-          session_name: namaSesi.trim() || "ssid",
-          username: namaPengguna.trim(),
-          password: sandi,
-        }),
-      });
+      let res: Response;
+      if (perangkat) {
+        // 1. Login di PERANGKAT: jendela Chrome terbuka di layar pengguna.
+        setInfoAkun(
+          `Jendela login ${p.nama} dibuka di komputermu. Kalau ada captcha atau kode ` +
+            "verifikasi, kerjakan di jendela itu (ditunggu sampai 3 menit)."
+        );
+        const r1 = await fetch(`${PERANGKAT_URL}/api/perangkat/masuk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platform: p.id, username: namaPengguna.trim(), password: sandi }),
+        });
+        const d1 = await r1.json().catch(() => ({}));
+        if (!r1.ok) throw new Error(d1.detail || "Login di komputermu gagal.");
+        // 2. Sesinya disimpan ke akun pengguna di situs, seperti SSID.
+        res = await apiFetch("/api/sosmed/accounts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            platform: p.id,
+            display_name: p.nama,
+            session_name: namaSesi.trim() || "ssid",
+            session_id: d1.session_id,
+            extra: d1.nama_akun ? { nama_akun: d1.nama_akun } : {},
+          }),
+        });
+      } else {
+        res = await apiFetch("/api/sosmed/accounts/masuk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            platform: p.id,
+            display_name: p.nama,
+            session_name: namaSesi.trim() || "ssid",
+            username: namaPengguna.trim(),
+            password: sandi,
+          }),
+        });
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Gagal masuk.");
+      setInfoAkun(perangkat ? `${p.nama} berhasil ditautkan lewat komputermu.` : "");
       setNamaPengguna("");
       setSandi("");
       setBuka("");
@@ -321,7 +378,17 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
         </div>
         {metode === "sandi" && (
           <p className={styles.hint}>
-            {lokal.lokal
+            {perangkat
+              ? "Backend di komputermu terdeteksi: saat Masuk & simpan ditekan, jendela Chrome " +
+                "terbuka di layarmu dan login sendiri. Kalau muncul captcha atau kode verifikasi, " +
+                "kerjakan di jendela itu (ditunggu sampai 3 menit). Password tidak disimpan; " +
+                "sesinya langsung tersimpan ke akunmu di situs ini."
+              : perangkat === false && !lokal.lokal
+                ? "Backend di komputermu tidak terdeteksi, jadi login dijalankan di server tanpa " +
+                  "jendela - akun yang dimintai captcha akan gagal. Jalankan backend di komputermu " +
+                  "(port 8000, DEBUG=true) lalu pilih ulang tombol ini supaya login dibuka di " +
+                  "layarmu. Password tidak disimpan."
+              : lokal.lokal
               ? "Ketik username dan password akunnya; jendela Chrome akan terbuka di layarmu " +
                 "dan login sendiri. Kalau muncul captcha atau kode verifikasi, kerjakan di jendela " +
                 "itu (ditunggu sampai 3 menit). Password tidak disimpan. Setelah tersimpan, tekan " +
@@ -611,7 +678,11 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                               disabled={lagi || !namaPengguna.trim() || !sandi}
                               onClick={() => void masukSandi(p)}
                             >
-                              {lagi ? "Sedang masuk..." : "Masuk & simpan"}
+                              {lagi
+                                ? perangkat
+                                  ? "Menunggu jendela di komputermu..."
+                                  : "Sedang masuk..."
+                                : "Masuk & simpan"}
                             </button>
                             <button
                               type="button"

@@ -22,6 +22,7 @@ from celery_app import celery_app
 from comment_ai import normalize_tone
 from tasks import run_instagram_bot
 from live_session import router as live_login_router
+from perangkat_api import router as perangkat_router
 from presence import router as presence_router
 import video_edit
 from video_api import router as video_router
@@ -105,9 +106,16 @@ app.add_middleware(
     allow_credentials=False if local_debug else True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Situs publik yang memanggil backend di laptop pengguna (localhost)
+    # memicu preflight "Private Network Access" dari Chrome. Tanpa izin ini
+    # Starlette menolaknya 400 "Disallowed CORS private-network" dan login
+    # lewat perangkat (perangkat_api) tidak pernah sampai. Hanya mode lokal.
+    allow_private_network=local_debug,
 )
 
 app.include_router(live_login_router)
+app.include_router(perangkat_router)
+
 app.include_router(presence_router)
 app.include_router(video_router)
 app.include_router(auth_router)
