@@ -80,8 +80,12 @@ JUDUL_LOGIN = ("log in", "login", "sign in", "masuk", "sign up")
 # pengalih akun. Dibaca setelah sesinya dinyatakan sah, dan gagal membacanya
 # tidak membatalkan hasil — statusnya tetap hijau, hanya tanpa nama.
 NAMA_JS: dict[str, str] = {
+    # Hanya huruf, angka, titik, garis bawah - aturan username Instagram. Dulu
+    # "[^"]" menerima teks apa pun, dan halaman beranda juga memuat
+    # "username":"Instagram user" (label, bukan akun) sehingga akun yang baru
+    # ditautkan tampil "Aktif - Instagram user" alih-alih nama aslinya.
     "instagram": """() => {
-        const m = document.documentElement.innerHTML.match(/"username":"([^"]{2,30})"/);
+        const m = document.documentElement.innerHTML.match(/"username":"([A-Za-z0-9._]{2,30})"/);
         if (m) return m[1];
         const img = document.querySelector('img[alt$="profile picture"]');
         return img ? (img.alt || "").replace(/'s profile picture$/, "") : "";
@@ -112,7 +116,7 @@ NAMA_JS: dict[str, str] = {
     "threads": """() => {
         const a = document.querySelector('a[href^="/@"]');
         if (a) return a.getAttribute('href').slice(2);
-        const m = document.documentElement.innerHTML.match(/"username":"([^"]{2,30})"/);
+        const m = document.documentElement.innerHTML.match(/"username":"([A-Za-z0-9._]{2,30})"/);
         return m ? m[1] : "";
     }""",
     "youtube": """() => {

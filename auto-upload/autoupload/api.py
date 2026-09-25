@@ -781,7 +781,9 @@ async def verify_account(
             "verified": bool(hasil["ok"]),
             "verified_at": datetime.now(timezone.utc).isoformat(),
             "verify_message": hasil["pesan"],
-            "nama_akun": hasil.get("nama", ""),
+            # Nama yang tidak terbaca kali ini tidak menghapus nama yang sudah
+            # diketahui (mis. dari login lewat perangkat).
+            "nama_akun": hasil.get("nama", "") or extra.get("nama_akun", ""),
         }
     )
     account.extra = extra
@@ -790,7 +792,7 @@ async def verify_account(
         "ok": hasil["ok"],
         "message": hasil["pesan"],
         "url": hasil.get("url", ""),
-        "nama_akun": hasil.get("nama", ""),
+        "nama_akun": extra["nama_akun"],
     }
 
 
