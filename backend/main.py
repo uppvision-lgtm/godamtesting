@@ -131,6 +131,15 @@ if sosmed_router is not None:
     # paket itu tetap bisa dipakai berdiri sendiri tanpa sistem akun website.
     app.include_router(sosmed_router, dependencies=[Depends(pengguna_wajib)])
 
+    # Login lewat layar peramban server (tab baru di situs). Butuh paket
+    # autoupload, jadi dipasang di sini. Frame gambarnya sengaja tanpa login
+    # (dimuat lewat <img>, dijaga token acak sekali pakai); memulai, mengirim
+    # klik/ketik, membaca hasil, dan menutup wajib login.
+    import login_layar
+
+    app.dependency_overrides[login_layar._wajib_login] = pengguna_wajib
+    app.include_router(login_layar.router)
+
     # Paket autoupload tidak kenal sistem akun website ini, jadi ia memakai
     # dependensi kosong sebagai pemilik. Di sini dependensi itu DITIMPA dengan
     # username yang sedang masuk. Itulah yang memisahkan akun sosmed satu

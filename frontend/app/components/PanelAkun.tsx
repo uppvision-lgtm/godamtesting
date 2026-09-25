@@ -112,6 +112,17 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
     if (metode === "sandi") void cekPerangkat();
   }, [metode, cekPerangkat]);
 
+  useEffect(() => {
+    const dengar = (e: MessageEvent) => {
+      if (e.data && e.data.jenis === "login-sosmed-selesai") {
+        void muatAkun();
+        onBerubah?.();
+      }
+    };
+    window.addEventListener("message", dengar);
+    return () => window.removeEventListener("message", dengar);
+  }, [muatAkun, onBerubah]);
+
   /** Salin satu akun dari backend lokal ke server (hanya di localhost). */
   async function kirimKeServer(p: Platform, a: Akun) {
     const situs = akunSekarang();
@@ -238,6 +249,18 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
   }
 
   /** Buka beranda akunnya dengan Session ID ini; hijau kalau terbuka. */
+  /** Buka tab login lewat LAYAR PERAMBAN SERVER (jalur situs, tanpa backend
+   *  perangkat). Password diketik langsung di halaman platform di dalam tab. */
+  function bukaTabLogin(p: Platform) {
+    const nama = namaSesi.trim() || "ssid";
+    const url = `/login-sosmed?platform=${encodeURIComponent(p.id)}&sesi=${encodeURIComponent(nama)}`;
+    // Tab baru menyerupai jendela login: tanpa toolbar situs kita.
+    window.open(url, `login_${p.id}`, "width=460,height=900");
+    setBuka("");
+    setNamaSesi("");
+    setInfoAkun(`Jendela login ${p.nama} dibuka di tab baru. Setelah berhasil, akunnya muncul di sini.`);
+  }
+
   async function masukSandi(p: Platform) {
     if (!namaPengguna.trim() || !sandi) {
       setGalatAkun("Username dan password wajib diisi.");
@@ -384,10 +407,9 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                 "kerjakan di jendela itu (ditunggu sampai 3 menit). Password tidak disimpan; " +
                 "sesinya langsung tersimpan ke akunmu di situs ini."
               : perangkat === false && !lokal.lokal
-                ? "Backend di komputermu tidak terdeteksi, jadi login dijalankan di server tanpa " +
-                  "jendela - akun yang dimintai captcha akan gagal. Jalankan backend di komputermu " +
-                  "(port 8000, DEBUG=true) lalu pilih ulang tombol ini supaya login dibuka di " +
-                  "layarmu. Password tidak disimpan."
+                ? "Tekan Hubungkan/+ Akun, lalu \"Buka jendela login\": tab baru menampilkan halaman " +
+                  "login yang berjalan di server. Ketik username, password, dan kerjakan captcha " +
+                  "langsung di tab itu - situs ini tidak menyentuh passwordmu."
               : lokal.lokal
               ? "Ketik username dan password akunnya; jendela Chrome akan terbuka di layarmu " +
                 "dan login sendiri. Kalau muncul captcha atau kode verifikasi, kerjakan di jendela " +
@@ -627,6 +649,51 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                           YouTube tidak bisa dimasuki otomatis dengan password — Google
                           memblokir sign-in dari peramban otomatis. Pakai SSID untuk YouTube.
                         </p>
+                      ) : !perangkat ? (
+                        <>
+                          <p className={styles.ssidPetunjuk}>
+                            Tab baru akan terbuka berisi halaman login {p.nama} yang berjalan di
+                            server. Ketik username, password, dan kerjakan captcha langsung di sana —
+                            situs ini tidak menyentuh passwordmu. Setelah berhasil, akunnya otomatis
+                            muncul di daftar ini.
+                          </p>
+                          <label className={styles.ssidLabel}>
+                            <span>
+                              nama akun
+                              <em className={styles.opsional}>
+                                {" "}
+                                untuk membedakan beberapa akun di platform yang sama
+                              </em>
+                            </span>
+                            <input
+                              value={namaSesi}
+                              spellCheck={false}
+                              placeholder="mis. akun-2 (kosongkan untuk mengganti akun utama)"
+                              onChange={(e) => setNamaSesi(e.target.value)}
+                            />
+                          </label>
+                          <div className={styles.aksi}>
+                            <button
+                              type="button"
+                              className={styles.btnUtama}
+                              disabled={lagi}
+                              onClick={() => bukaTabLogin(p)}
+                            >
+                              Buka jendela login {p.nama}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnSekunder}
+                              onClick={() => {
+                                setBuka("");
+                                setNamaSesi("");
+                                setGalatAkun("");
+                              }}
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </>
                       ) : (
                         <>
                           <p className={styles.ssidPetunjuk}>
