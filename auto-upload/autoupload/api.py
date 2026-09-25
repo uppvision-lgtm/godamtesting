@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from autoupload import login
+from autoupload import login, masuk
 from autoupload.browser import session_names
 import hashlib
 
@@ -132,6 +132,16 @@ class AccountRequest(BaseModel):
     session_name: str = "default"
     session_id: str = ""                     # opsional: jalan pintas cookie
     extra: dict = Field(default_factory=dict)
+
+
+class MasukRequest(BaseModel):
+    """Login dengan username & password; password hanya lewat, tidak disimpan."""
+
+    platform: str
+    display_name: str = ""
+    session_name: str = "default"
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
 
 
 # ---------------------------------------------------------------- info
@@ -567,21 +577,20 @@ def list_accounts(
     ]
 
 
-@router.post("/accounts")
-def add_account(
-    req: AccountRequest,
-    db: Session = Depends(get_db),
-    pemilik: str = Depends(pemilik_saat_ini),
-) -> dict:
-    if req.platform not in PLATFORMS:
+def _simpan_akun(
+    db: Session, pemilik: str, platform: str, display_name: str,
+    session_name: str, session_id: str, extra: dict,
+) -> SocialAccount:
+    """Simpan satu akun; dipakai jalur SSID maupun jalur username & password."""
+    if platform not in PLATFORMS:
         raise HTTPException(400, f"Platform harus salah satu dari {PLATFORMS}")
     # Satu platform boleh punya BANYAK akun aktif sekaligus. Yang dinonaktifkan
     # hanya akun dengan nama sesi yang sama, supaya menekan "Ganti" pada satu
     # akun tetap mengganti akun itu - bukan menumpuk duplikat yang membuat
     # halaman dan pengunggah memakai baris berbeda.
-    sesi = (req.session_name or "default").strip().lower().replace(" ", "_")
+    sesi = (session_name or "default").strip().lower().replace(" ", "_")
     db.query(SocialAccount).filter(
-        SocialAccount.platform == req.platform,
+        SocialAccount.platform == platform,
         SocialAccount.session_name == sesi,
         SocialAccount.is_active.is_(True),
         SocialAccount.owner == pemilik,
@@ -590,7 +599,7 @@ def add_account(
     terpakai = (
         db.query(SocialAccount)
         .filter(
-            SocialAccount.platform == req.platform,
+            SocialAccount.platform == platform,
             SocialAccount.is_active.is_(True),
             SocialAccount.owner == pemilik,
         )
@@ -599,22 +608,60 @@ def add_account(
     if terpakai >= MAKS_AKUN_PER_PLATFORM:
         raise HTTPException(
             400,
-            f"{req.platform} sudah punya {terpakai} akun tertaut "
+            f"{platform} sudah punya {terpakai} akun tertaut "
             f"(batas {MAKS_AKUN_PER_PLATFORM}). Putuskan salah satunya dulu.",
         )
 
     account = SocialAccount(
         owner=pemilik,
-        platform=req.platform,
-        display_name=req.display_name,
+        platform=platform,
+        display_name=display_name,
         session_name=sesi,
-        session_id=sandikan(req.session_id.strip()),
-        extra=req.extra,
+        session_id=sandikan(session_id.strip()),
+        extra=extra,
     )
     db.add(account)
     db.commit()
     db.refresh(account)
+    return account
+
+
+@router.post("/accounts")
+def add_account(
+    req: AccountRequest,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
+    account = _simpan_akun(
+        db, pemilik, req.platform, req.display_name, req.session_name, req.session_id, req.extra
+    )
     return {"id": account.id, "platform": account.platform}
+
+
+@router.post("/accounts/masuk")
+async def add_account_masuk(
+    req: MasukRequest,
+    db: Session = Depends(get_db),
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
+    """Tautkan akun dengan username & password.
+
+    Server login sekali di peramban tanpa jendela, mengambil cookie sesinya,
+    lalu menyimpannya persis seperti Session ID yang ditempel - password
+    tidak disimpan. Kegagalan (2FA, captcha, sandi salah) dijawab 400 dengan
+    kalimat yang menyebut sebabnya.
+    """
+    if req.platform not in PLATFORMS:
+        raise HTTPException(400, f"Platform harus salah satu dari {PLATFORMS}")
+    try:
+        hasil = await masuk.masuk_dengan_sandi(req.platform, req.username, req.password)
+    except masuk.MasukGagal as error:
+        raise HTTPException(400, str(error)) from None
+    account = _simpan_akun(
+        db, pemilik, req.platform, req.display_name, req.session_name,
+        hasil["session_id"], {"nama_akun": hasil.get("nama_akun", ""), "sumber": "sandi"},
+    )
+    return {"id": account.id, "platform": account.platform, "nama_akun": hasil.get("nama_akun", "")}
 
 
 @router.post("/accounts/{account_id}/verify")

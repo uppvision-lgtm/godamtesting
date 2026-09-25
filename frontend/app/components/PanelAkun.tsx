@@ -43,6 +43,12 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
   const [namaSesi, setNamaSesi] = useState("");
   const [memeriksa, setMemeriksa] = useState<string>("");
   const [galatAkun, setGalatAkun] = useState("");
+  // Cara menautkan akun. "ssid": tempel cookie (bawaan). "sandi": ketik
+  // username & password, server yang login lalu mengambil cookienya sendiri;
+  // password tidak disimpan. Hasil akhirnya sama: satu baris akun ber-SSID.
+  const [metode, setMetode] = useState<"ssid" | "sandi">("ssid");
+  const [namaPengguna, setNamaPengguna] = useState("");
+  const [sandi, setSandi] = useState("");
 
   const muatAkun = useCallback(async () => {
     try {
@@ -135,6 +141,42 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
   }
 
   /** Buka beranda akunnya dengan Session ID ini; hijau kalau terbuka. */
+  async function masukSandi(p: Platform) {
+    if (!namaPengguna.trim() || !sandi) {
+      setGalatAkun("Username dan password wajib diisi.");
+      return;
+    }
+    setSibuk(p.id);
+    setGalatAkun("");
+    try {
+      const res = await apiFetch("/api/sosmed/accounts/masuk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform: p.id,
+          display_name: p.nama,
+          session_name: namaSesi.trim() || "ssid",
+          username: namaPengguna.trim(),
+          password: sandi,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Gagal masuk.");
+      setNamaPengguna("");
+      setSandi("");
+      setBuka("");
+      await muatAkun();
+      onBerubah?.();
+      if (data.id) await periksa(p.id, Number(data.id));
+    } catch (err) {
+      setGalatAkun(err instanceof Error ? err.message : "Gagal masuk.");
+    } finally {
+      // Password tidak pernah ditahan di halaman lebih lama dari perlu.
+      setSandi("");
+      setSibuk("");
+    }
+  }
+
   async function periksa(platform: PlatformId, id: number) {
     setMemeriksa(platform);
     try {
@@ -184,6 +226,36 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
             "Tempel Session ID dari cookie peramban tempat kamu sudah login. Tidak ada jendela " +
               "login yang perlu dibuka, dan satu tempelan berlaku sampai kamu keluar dari akun itu."}
         </p>
+
+        <div className={styles.aksi}>
+          <button
+            type="button"
+            className={metode === "ssid" ? styles.btnUtama : styles.btnSekunder}
+            onClick={() => {
+              setMetode("ssid");
+              setGalatAkun("");
+            }}
+          >
+            SSID
+          </button>
+          <button
+            type="button"
+            className={metode === "sandi" ? styles.btnUtama : styles.btnSekunder}
+            onClick={() => {
+              setMetode("sandi");
+              setGalatAkun("");
+            }}
+          >
+            Username &amp; Password
+          </button>
+        </div>
+        {metode === "sandi" && (
+          <p className={styles.hint}>
+            Ketik username dan password akunnya; server login sekali lalu menyimpan cookie
+            sesinya — password tidak disimpan. Akun dengan verifikasi dua langkah, atau
+            YouTube, tetap harus lewat SSID.
+          </p>
+        )}
 
         <div className={styles.daftarAkun}>
           {memuatAkun && [0, 1, 2].map((i) => <div key={i} className={styles.rangka} />)}
@@ -383,7 +455,88 @@ export default function PanelAkun({ judul = "Akun Sosmed", keterangan, lebar, on
                     </div>
                   )}
 
-                  {terbuka && (
+                  {terbuka && metode === "sandi" && (
+                    <div className={styles.ssidKotak}>
+                      {p.id === "youtube" ? (
+                        <p className={styles.ssidPetunjuk}>
+                          YouTube tidak bisa dimasuki otomatis dengan password — Google
+                          memblokir sign-in dari peramban otomatis. Pakai SSID untuk YouTube.
+                        </p>
+                      ) : (
+                        <>
+                          <p className={styles.ssidPetunjuk}>
+                            Masuk ke {p.nama} dengan username & password. Password hanya dipakai
+                            sekali untuk login, tidak disimpan.
+                          </p>
+                          <label className={styles.ssidLabel}>
+                            <span>
+                              nama akun
+                              <em className={styles.opsional}>
+                                {" "}
+                                untuk membedakan beberapa akun di platform yang sama
+                              </em>
+                            </span>
+                            <input
+                              value={namaSesi}
+                              spellCheck={false}
+                              placeholder="mis. akun-2 (kosongkan untuk mengganti akun utama)"
+                              onChange={(e) => setNamaSesi(e.target.value)}
+                            />
+                          </label>
+                          <label className={styles.ssidLabel}>
+                            <span>username</span>
+                            <input
+                              autoFocus
+                              value={namaPengguna}
+                              spellCheck={false}
+                              autoComplete="username"
+                              placeholder={p.id === "facebook" ? "email atau nomor telepon" : "username atau email"}
+                              onChange={(e) => setNamaPengguna(e.target.value)}
+                            />
+                          </label>
+                          <label className={styles.ssidLabel}>
+                            <span>password</span>
+                            <input
+                              type="password"
+                              value={sandi}
+                              autoComplete="current-password"
+                              placeholder="password akun"
+                              onChange={(e) => setSandi(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && namaPengguna.trim() && sandi)
+                                  void masukSandi(p);
+                              }}
+                            />
+                          </label>
+                          <div className={styles.aksi}>
+                            <button
+                              type="button"
+                              className={styles.btnUtama}
+                              disabled={lagi || !namaPengguna.trim() || !sandi}
+                              onClick={() => void masukSandi(p)}
+                            >
+                              {lagi ? "Sedang masuk..." : "Masuk & simpan"}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnSekunder}
+                              onClick={() => {
+                                setBuka("");
+                                setNamaPengguna("");
+                                setSandi("");
+                                setNamaSesi("");
+                                setGalatAkun("");
+                              }}
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {terbuka && metode === "ssid" && (
                     <div className={styles.ssidKotak}>
                       <p className={styles.ssidPetunjuk}>{p.petunjuk}</p>
                       <label className={styles.ssidLabel}>
