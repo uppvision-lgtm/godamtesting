@@ -16,13 +16,13 @@ tidak ada loop kedua dan tidak ada Chromium tambahan yang menganggur.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 # Thread + loop Playwright bersama, dan konfigurasi peramban yang sama dengan
@@ -48,34 +48,62 @@ PLATFORM_LAYAR = ("instagram", "threads", "twitter", "facebook", "tiktok")
 
 # Batas hidup satu sesi login, supaya peramban yang ditinggalkan tidak
 # menahan memori server selamanya.
-BATAS_HIDUP_DETIK = float(os.getenv("LOGIN_LAYAR_BATAS_DETIK", "420"))
-UA = (
+BATAS_HIDUP_DETIK = float(os.getenv("LOGIN_LAYAR_BATAS_DETIK", "600"))
+KUALITAS = int(os.getenv("LOGIN_LAYAR_KUALITAS", "82"))
+# Batas piksel kanvas (lebar*tinggi*kepadatan^2). Kontainer 954 MB: layar
+# retina penuh terlalu mahal untuk dikodekan berulang, jadi kepadatan
+# diturunkan sampai muat.
+BATAS_PIKSEL = int(os.getenv("LOGIN_LAYAR_BATAS_PIKSEL", str(2400 * 1500)))
+UA_DESKTOP = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 )
+UA_SELULER = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
+)
+
+
+def _ukuran_aman(lebar, tinggi, dpr):
+    """Batasi ukuran & kepadatan supaya muat di memori kontainer."""
+    lebar = max(320, min(int(lebar or 0), 1600))
+    tinggi = max(480, min(int(tinggi or 0), 1400))
+    # Kepadatan (supersample internal) dibatasi 1.5: screencast Chrome selalu
+    # mengeluarkan bingkai seukuran CSS apa pun kepadatannya, jadi 2x tidak
+    # menambah piksel bingkai - hanya menghaluskan teks - dan mahal di memori.
+    dpr = max(1.0, min(float(dpr or 1), 1.5))
+    while dpr > 1.0 and lebar * tinggi * dpr * dpr > BATAS_PIKSEL:
+        dpr = round(dpr - 0.25, 2)
+    return lebar, tinggi, max(1.0, dpr)
 
 _SESI: dict[str, "SesiLogin"] = {}
 
 
 class SesiLogin:
-    def __init__(self, platform: str, lebar: int, tinggi: int) -> None:
+    def __init__(self, pemilik, platform, lebar, tinggi, dpr, seluler):
         self.token = uuid.uuid4().hex
+        self.pemilik = pemilik
         self.platform = platform
-        self.lebar = lebar
-        self.tinggi = tinggi
+        self.lebar, self.tinggi, self.dpr = _ukuran_aman(lebar, tinggi, dpr)
+        self.seluler = bool(seluler)
         self.status = "starting"  # starting|running|done|error
         self.pesan = "Menyiapkan halaman login..."
         self.session_id = ""
         self.nama_akun = ""
-        self.jpeg: bytes | None = None
         self.dibuat = time.monotonic()
-        self.terakhir_dilihat = time.monotonic()
         self._hidup = True
         self._pw = None
         self._browser = None
         self._context = None
         self._page = None
+        self._cdp = None
         self._tugas: list[asyncio.Task] = []
+        # Bingkai JPEG (base64) terbaru dari screencast, plus penghitung versi.
+        # WebSocket (loop FastAPI) membandingkan versi; screencast (loop
+        # peramban) menaikkannya. Sengaja bukan asyncio.Event: primitif itu
+        # terikat satu loop, sedangkan dua loop berbeda menyentuhnya di sini.
+        self._jpeg_b64 = ""
+        self._versi = 0
 
     # -- dijalankan di thread Playwright --
 
@@ -86,35 +114,69 @@ class SesiLogin:
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(headless=True, args=browser_args())
             self._context = await self._browser.new_context(
-                viewport={"width": self.lebar, "height": self.tinggi}, user_agent=UA
+                viewport={"width": self.lebar, "height": self.tinggi},
+                device_scale_factor=self.dpr,     # retina: bingkai 2x tajam
+                is_mobile=self.seluler,
+                has_touch=self.seluler,
+                user_agent=UA_SELULER if self.seluler else UA_DESKTOP,
             )
             self._page = await self._context.new_page()
             self._page.set_default_timeout(15_000)
             await self._page.goto(
                 _au()[0].URL_MASUK[self.platform], wait_until="domcontentloaded", timeout=60_000
             )
+            # Screencast: Chrome mengirim bingkai HANYA saat layar berubah.
+            self._cdp = await self._context.new_cdp_session(self._page)
+            self._cdp.on("Page.screencastFrame", self._terima_bingkai)
+            await self._mulai_screencast()
             self.status = "running"
             self.pesan = "Silakan login di jendela ini."
-            self._tugas = [
-                asyncio.create_task(self._loop_gambar()),
-                asyncio.create_task(self._loop_pantau()),
-            ]
+            self._tugas = [asyncio.create_task(self._loop_pantau())]
         except Exception as exc:  # noqa: BLE001
             logger.exception("login-layar gagal disiapkan")
             self.status = "error"
             self.pesan = f"Gagal menyiapkan halaman: {type(exc).__name__}"
 
-    async def _loop_gambar(self) -> None:
-        # ~4 bidikan/detik selama tab masih menonton; berhenti kalau
-        # ditinggalkan supaya tidak membakar CPU peramban server.
-        while self._hidup:
-            try:
-                ditonton = (time.monotonic() - self.terakhir_dilihat) < 8
-                if ditonton and self._page is not None and not self._page.is_closed():
-                    self.jpeg = await self._page.screenshot(type="jpeg", quality=55, scale="css")
-            except Exception:  # noqa: BLE001
-                pass
-            await asyncio.sleep(0.25)
+    async def _mulai_screencast(self) -> None:
+        await self._cdp.send("Page.startScreencast", {
+            "format": "jpeg",
+            "quality": KUALITAS,
+            "maxWidth": int(self.lebar),
+            "maxHeight": int(self.tinggi),
+            "everyNthFrame": 1,
+        })
+
+    def _terima_bingkai(self, params: dict) -> None:
+        # Dipanggil di loop peramban. Simpan bingkai lalu akui, supaya Chrome
+        # mengirim yang berikutnya; tanpa ack, screencast berhenti.
+        self._jpeg_b64 = params.get("data", "")
+        self._versi += 1
+        sid = params.get("sessionId")
+        if sid is not None and self._cdp is not None:
+            asyncio.create_task(self._ack(sid))
+
+    async def _ack(self, sid: int) -> None:
+        try:
+            await self._cdp.send("Page.screencastFrameAck", {"sessionId": sid})
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def ubah_ukuran(self, lebar, tinggi) -> None:
+        """Samakan lebar/tinggi peramban server dengan tab (saat resize).
+
+        Kepadatan (dpr) TIDAK diubah di sini: mengubahnya butuh konteks baru,
+        sedangkan resize jendela hampir selalu hanya soal lebar/tinggi.
+        """
+        lebar, tinggi, _ = _ukuran_aman(lebar, tinggi, self.dpr)
+        if (lebar, tinggi) == (self.lebar, self.tinggi) or self._page is None:
+            return
+        self.lebar, self.tinggi = lebar, tinggi
+        try:
+            await self._page.set_viewport_size({"width": lebar, "height": tinggi})
+            await self._cdp.send("Page.stopScreencast")
+            await self._mulai_screencast()
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _loop_pantau(self) -> None:
         # Pantau: cookie sesi muncul (berhasil) atau umur sesi habis.
@@ -158,19 +220,26 @@ class SesiLogin:
     async def _teruskan(self, peristiwa: list[dict]) -> None:
         if self._page is None or self._page.is_closed():
             return
+        m = self._page.mouse
         for e in peristiwa:
             j = e.get("t")
             try:
                 if j == "move":
-                    await self._page.mouse.move(float(e["x"]), float(e["y"]))
+                    await m.move(float(e["x"]), float(e["y"]))
+                elif j == "down":
+                    await m.move(float(e["x"]), float(e["y"]))
+                    await m.down()
+                elif j == "up":
+                    await m.move(float(e["x"]), float(e["y"]))
+                    await m.up()
                 elif j == "click":
-                    await self._page.mouse.click(float(e["x"]), float(e["y"]))
+                    await m.click(float(e["x"]), float(e["y"]), click_count=int(e.get("n", 1)))
                 elif j == "wheel":
-                    await self._page.mouse.wheel(float(e.get("dx", 0)), float(e.get("dy", 0)))
+                    await m.wheel(float(e.get("dx", 0)), float(e.get("dy", 0)))
                 elif j == "text":
                     await self._page.keyboard.insert_text(str(e.get("v", "")))
                 elif j == "key":
-                    await self._page.keyboard.press(str(e.get("k", "")))
+                    await self._page.keyboard.press(str(e.get("k", ""))[:40])
             except Exception:  # noqa: BLE001 - satu peristiwa gagal tak boleh menjatuhkan sesi
                 continue
 
@@ -197,12 +266,22 @@ class SesiLogin:
 
 class MulaiBody(BaseModel):
     platform: str
-    lebar: int = Field(default=440, ge=320, le=2560)
-    tinggi: int = Field(default=780, ge=480, le=2560)
+    lebar: int = Field(default=1024, ge=320, le=1600)
+    tinggi: int = Field(default=760, ge=480, le=1400)
+    dpr: float = Field(default=1.5, ge=1.0, le=2.0)
+    seluler: bool = False
 
 
-class InputBody(BaseModel):
-    events: list[dict] = Field(default_factory=list, max_length=100)
+def _pemilik(pengguna) -> str:
+    return str((pengguna or {}).get("username") or "").strip().lower()
+
+
+def _baca_token(token: str):
+    try:
+        from auth_api import baca_token
+    except Exception:  # noqa: BLE001
+        return None
+    return baca_token(token) if token else None
 
 
 def _wajib_login():
@@ -211,7 +290,7 @@ def _wajib_login():
 
 
 @router.post("/start")
-async def mulai(body: MulaiBody, _=Depends(_wajib_login)) -> dict:
+async def mulai(body: MulaiBody, pengguna=Depends(_wajib_login)) -> dict:
     if body.platform not in PLATFORM_LAYAR:
         raise HTTPException(400, "Platform ini tidak bisa login lewat layar.")
     # Satu sesi login pada satu waktu: peramban server memakan memori, dan
@@ -219,11 +298,13 @@ async def mulai(body: MulaiBody, _=Depends(_wajib_login)) -> dict:
     aktif = [s for s in _SESI.values() if s.status in ("starting", "running")]
     if len(aktif) >= int(os.getenv("LOGIN_LAYAR_MAKS", "2")):
         raise HTTPException(429, "Sedang ada login lain berjalan. Coba lagi sebentar.")
-    sesi = SesiLogin(body.platform, body.lebar, body.tinggi)
+    sesi = SesiLogin(_pemilik(pengguna), body.platform,
+                     body.lebar, body.tinggi, body.dpr, body.seluler)
     _SESI[sesi.token] = sesi
     _bersihkan()
     await _RUNTIME.run(sesi.mulai())
-    return {"token": sesi.token, "lebar": sesi.lebar, "tinggi": sesi.tinggi, "status": sesi.status}
+    return {"token": sesi.token, "lebar": sesi.lebar, "tinggi": sesi.tinggi,
+            "dpr": sesi.dpr, "status": sesi.status}
 
 
 def _ambil(token: str) -> SesiLogin:
@@ -231,15 +312,6 @@ def _ambil(token: str) -> SesiLogin:
     if s is None:
         raise HTTPException(404, "Sesi login tidak ditemukan.")
     return s
-
-
-@router.get("/{token}/frame")
-async def frame(token: str) -> Response:
-    s = _ambil(token)
-    s.terakhir_dilihat = time.monotonic()
-    if not s.jpeg:
-        return Response(status_code=204)
-    return Response(content=s.jpeg, media_type="image/jpeg")
 
 
 @router.get("/{token}/status")
@@ -255,12 +327,58 @@ async def status(token: str, _=Depends(_wajib_login)) -> dict:
     }
 
 
-@router.post("/{token}/input")
-async def input_peristiwa(token: str, body: InputBody, _=Depends(_wajib_login)) -> dict:
-    s = _ambil(token)
-    if s.status == "running":
-        await _RUNTIME.run(s._teruskan(body.events))
-    return {"ok": True, "status": s.status}
+@router.websocket("/{token}/ws")
+async def ws(websocket: WebSocket, token: str) -> None:
+    """Alirkan bingkai layar ke tab dan terima klik/ketik dari tab.
+
+    Autentikasi lewat query ?akses=<token situs> (header sulit dari
+    WebSocket peramban): harus token yang sah, dan pemiliknya harus sama
+    dengan yang memulai sesi login ini.
+    """
+    s = _SESI.get(token)
+    akses = websocket.query_params.get("akses", "")
+    isi = _baca_token(akses)
+    pemilik = str((isi or {}).get("username") or "").strip().lower()
+    if s is None or not isi or (s.pemilik and pemilik != s.pemilik):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+
+    async def terima():
+        # Peristiwa masuk (klik/ketik/gulir/resize) diteruskan ke peramban.
+        try:
+            while s._hidup:
+                pesan = await websocket.receive_text()
+                data = json.loads(pesan)
+                if data.get("t") == "resize":
+                    await _RUNTIME.run(s.ubah_ukuran(data.get("lebar"), data.get("tinggi")))
+                elif s.status == "running":
+                    await _RUNTIME.run(s._teruskan([data]))
+        except (WebSocketDisconnect, Exception):  # noqa: BLE001
+            pass
+
+    tugas_terima = asyncio.create_task(terima())
+    versi_terkirim = -1
+    try:
+        while s._hidup:
+            if s._versi != versi_terkirim and s._jpeg_b64:
+                versi_terkirim = s._versi
+                await websocket.send_text(json.dumps({"t": "frame", "b64": s._jpeg_b64,
+                                                       "w": s.lebar, "h": s.tinggi}))
+            if s.status in ("done", "error"):
+                await websocket.send_text(json.dumps({
+                    "t": "selesai", "status": s.status, "pesan": s.pesan,
+                    "session_id": s.session_id, "nama_akun": s.nama_akun}))
+                break
+            await asyncio.sleep(0.03)
+    except (WebSocketDisconnect, Exception):  # noqa: BLE001
+        pass
+    finally:
+        tugas_terima.cancel()
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.post("/{token}/close")

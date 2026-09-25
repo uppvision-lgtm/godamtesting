@@ -1,16 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch } from "../components/auth";
+import { BASIS_BACKEND, ambilToken, apiFetch } from "../components/auth";
 
 /**
- * Tab login penuh: menampilkan LAYAR PERAMBAN SERVER dan meneruskan klik &
- * ketikan pengguna ke sana. Halaman login platform (Instagram, dst) berjalan
- * di server; di sini hanya gambarnya. Pengguna login dan mengerjakan captcha
- * langsung di halaman itu — password tidak pernah lewat situs ini.
- *
- * Dibuka lewat window.open dari Kelola Akun dengan query:
- *   ?platform=instagram&sesi=akun-2&nama=Instagram
+ * Tab login penuh: menampilkan LAYAR PERAMBAN SERVER dan meneruskan
+ * klik/ketik/gulir pengguna ke sana lewat WebSocket. Halaman login platform
+ * berjalan di server; password diketik langsung di sana, situs ini tidak
+ * pernah menyentuhnya. Ukuran peramban server mengikuti ukuran tab (dan
+ * kepadatan layar, retina 2x), jadi tajam dan responsif — termasuk setelah
+ * login saat platform beralih ke tampilan desktop.
  */
 
 type Status = "starting" | "running" | "done" | "error";
@@ -23,14 +22,19 @@ const NAMA_PLATFORM: Record<string, string> = {
   tiktok: "TikTok",
 };
 
+const TOMBOL_KHUSUS = new Set([
+  "Enter", "Backspace", "Tab", "Delete", "Escape",
+  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End",
+]);
+
 export default function LoginSosmedPage() {
-  const [pesan, setPesan] = useState("Menyiapkan halaman login…");
   const [status, setStatus] = useState<Status>("starting");
-  const [ukuran, setUkuran] = useState({ lebar: 440, tinggi: 780 });
-  const [frameUrl, setFrameUrl] = useState("");
-  const tokenRef = useRef("");
-  const antrean = useRef<Record<string, unknown>[]>([]);
-  const areaRef = useRef<HTMLDivElement>(null);
+  const [pesan, setPesan] = useState("Menyiapkan halaman login…");
+  const kanvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const ukuranServer = useRef({ w: 1024, h: 760 }); // piksel CSS peramban server
+  const seret = useRef(false);
 
   const q =
     typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
@@ -38,254 +42,303 @@ export default function LoginSosmedPage() {
   const sesi = q.get("sesi") || "ssid";
   const namaPlatform = NAMA_PLATFORM[platform] || platform;
 
-  // Koordinat layar di dalam <img> -> koordinat piksel peramban server.
-  const keServer = (e: { clientX: number; clientY: number }) => {
-    const el = areaRef.current;
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    const x = ((e.clientX - r.left) / r.width) * ukuran.lebar;
-    const y = ((e.clientY - r.top) / r.height) * ukuran.tinggi;
-    if (x < 0 || y < 0 || x > ukuran.lebar || y > ukuran.tinggi) return null;
-    return { x: Math.round(x), y: Math.round(y) };
-  };
-
-  const kirim = useCallback(async (events: Record<string, unknown>[]) => {
-    const tk = tokenRef.current;
-    if (!tk || !events.length) return;
-    try {
-      await apiFetch(`/api/login-layar/${tk}/input`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ events }),
-      });
-    } catch {
-      // satu paket gagal tidak fatal; peristiwa berikutnya menyusul
-    }
+  const kirim = useCallback((obj: Record<string, unknown>) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }, []);
 
-  // Mulai sesi sekali.
+  // Koordinat pointer di dalam kanvas -> piksel CSS peramban server.
+  const keServer = useCallback((e: { clientX: number; clientY: number }) => {
+    const el = kanvasRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * ukuranServer.current.w;
+    const y = ((e.clientY - r.top) / r.height) * ukuranServer.current.h;
+    if (x < 0 || y < 0 || x > ukuranServer.current.w || y > ukuranServer.current.h) return null;
+    return { x: Math.round(x), y: Math.round(y) };
+  }, []);
+
+  // Mulai sesi + buka WebSocket. Ukuran awal = ukuran wrapper x kepadatan layar.
   useEffect(() => {
     let batal = false;
+    let ws: WebSocket | null = null;
+
     void (async () => {
+      const wrap = wrapRef.current;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const lebar = Math.round(wrap ? wrap.clientWidth : Math.min(window.innerWidth, 1024));
+      const tinggi = Math.round(wrap ? wrap.clientHeight : window.innerHeight - 60);
+      const seluler = window.innerWidth < 720;
       try {
         const res = await apiFetch("/api/login-layar/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ platform, lebar: 440, tinggi: 780 }),
+          body: JSON.stringify({ platform, lebar, tinggi, dpr, seluler }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.detail || "Gagal membuka halaman login.");
         if (batal) return;
-        tokenRef.current = data.token;
-        setUkuran({ lebar: data.lebar, tinggi: data.tinggi });
-        setStatus("running");
-        setPesan(`Login ${namaPlatform} di bawah ini. Kalau ada captcha, kerjakan langsung di sini.`);
+        ukuranServer.current = { w: data.lebar, h: data.tinggi };
+        // WebSocket harus langsung ke backend: proxy Next/Vercel tidak
+        // meneruskannya. Di situs: NEXT_PUBLIC_BACKEND_URL (Railway). Di laptop
+        // yang hanya punya NEXT_PUBLIC_API_URL: backend lokal.
+        const lokal = /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+        const asal =
+          BASIS_BACKEND ||
+          (lokal ? process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000" : window.location.origin);
+        const basis = asal.replace(/\/$/, "").replace(/^http/, "ws");
+        ws = new WebSocket(`${basis}/api/login-layar/${data.token}/ws?akses=${encodeURIComponent(ambilToken())}`);
+        wsRef.current = ws;
+        ws.onopen = () => {
+          if (batal) return;
+          setStatus("running");
+          setPesan(`Login ${namaPlatform} di bawah. Kalau ada captcha, kerjakan langsung di sini.`);
+        };
+        ws.onmessage = (ev) => {
+          const m = JSON.parse(ev.data);
+          if (m.t === "frame") {
+            ukuranServer.current = { w: m.w, h: m.h };
+            gambar(m.b64, m.w, m.h);
+          } else if (m.t === "selesai") {
+            void selesaikan(m);
+          }
+        };
+        ws.onclose = () => {
+          if (!batal) setStatus((s) => (s === "done" ? s : "error"));
+        };
       } catch (err) {
-        setStatus("error");
-        setPesan(err instanceof Error ? err.message : "Gagal membuka halaman login.");
+        if (!batal) {
+          setStatus("error");
+          setPesan(err instanceof Error ? err.message : "Gagal membuka halaman login.");
+        }
       }
     })();
+
     return () => {
       batal = true;
-      const tk = tokenRef.current;
-      if (tk) void apiFetch(`/api/login-layar/${tk}/close`, { method: "POST" });
+      try {
+        ws?.close();
+      } catch {
+        /* abaikan */
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform, namaPlatform]);
 
-  // Tarik frame ~5x/detik selama berjalan.
-  useEffect(() => {
-    if (status !== "running") return;
-    let batal = false;
-    let alamatLama = "";
-    const timer = window.setInterval(async () => {
-      const tk = tokenRef.current;
-      if (!tk) return;
-      try {
-        const r = await apiFetch(`/api/login-layar/${tk}/frame`, { cache: "no-store" });
-        if (!r.ok || r.status === 204 || batal) return;
-        const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
-        setFrameUrl((lama) => {
-          if (lama) URL.revokeObjectURL(lama);
-          return url;
-        });
-        alamatLama = url;
-      } catch {
-        // dilewati; percobaan berikutnya menyusul
+  function gambar(b64: string, w: number, h: number) {
+    const c = kanvasRef.current;
+    if (!c) return;
+    const img = new Image();
+    img.onload = () => {
+      if (c.width !== img.width || c.height !== img.height) {
+        c.width = img.width;
+        c.height = img.height;
       }
-    }, 200);
-    return () => {
-      batal = true;
-      window.clearInterval(timer);
-      if (alamatLama) URL.revokeObjectURL(alamatLama);
+      // rasio kanvas mengikuti ukuran server supaya tidak gepeng
+      c.style.aspectRatio = `${w} / ${h}`;
+      const ctx = c.getContext("2d");
+      ctx?.drawImage(img, 0, 0);
     };
-  }, [status]);
+    img.src = "data:image/jpeg;base64," + b64;
+  }
 
-  // Kirim peristiwa terkumpul tiap 60  md (gerak mouse bisa sangat sering).
+  const selesaikan = useCallback(
+    async (m: { status: string; pesan: string; session_id: string; nama_akun: string }) => {
+      if (m.status !== "done" || !m.session_id) {
+        setStatus("error");
+        setPesan(m.pesan || "Login gagal.");
+        return;
+      }
+      setStatus("done");
+      setPesan("Login berhasil. Menyimpan…");
+      const simpan = await apiFetch("/api/sosmed/accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform,
+          display_name: namaPlatform,
+          session_name: sesi,
+          session_id: m.session_id,
+          extra: m.nama_akun ? { nama_akun: m.nama_akun } : {},
+        }),
+      });
+      if (simpan.ok) {
+        setPesan(`${namaPlatform}${m.nama_akun ? ` (${m.nama_akun})` : ""} tersimpan. Tab menutup…`);
+        try {
+          window.opener?.postMessage({ jenis: "login-sosmed-selesai", platform }, "*");
+        } catch {
+          /* opener beda origin */
+        }
+        setTimeout(() => window.close(), 1600);
+      } else {
+        const e = await simpan.json().catch(() => ({}));
+        setStatus("error");
+        setPesan(e.detail || "Login berhasil tapi gagal disimpan.");
+      }
+    },
+    [platform, sesi, namaPlatform]
+  );
+
+  // Beri tahu server saat ukuran tab berubah, supaya layarnya ikut menyesuaikan.
   useEffect(() => {
     if (status !== "running") return;
-    const timer = window.setInterval(() => {
-      if (antrean.current.length) {
-        const paket = antrean.current;
-        antrean.current = [];
-        void kirim(paket);
-      }
-    }, 60);
-    return () => window.clearInterval(timer);
+    let jam = 0;
+    const ro = new ResizeObserver(() => {
+      window.clearTimeout(jam);
+      jam = window.setTimeout(() => {
+        const wrap = wrapRef.current;
+        if (wrap) kirim({ t: "resize", lebar: Math.round(wrap.clientWidth), tinggi: Math.round(wrap.clientHeight) });
+      }, 250);
+    });
+    if (wrapRef.current) ro.observe(wrapRef.current);
+    return () => {
+      window.clearTimeout(jam);
+      ro.disconnect();
+    };
   }, [status, kirim]);
 
-  // Pantau status; saat done, simpan sesinya ke akun pengguna lalu tutup tab.
+  const masukanRef = useRef<HTMLInputElement>(null);
+  // Di HP, kanvas tidak memunculkan keyboard; kolom tersembunyi ini yang
+  // difokuskan, dan ketikannya diteruskan ke server.
+  const fokus = () => {
+    if (window.matchMedia("(pointer: coarse)").matches) masukanRef.current?.focus();
+    else kanvasRef.current?.focus();
+  };
+
+  // Tempel (Cmd/Ctrl+V): isi clipboard di komputer pengguna dikirim sebagai
+  // teks. Menekan Ctrl+V di server akan menempel clipboard SERVER yang kosong.
   useEffect(() => {
     if (status !== "running") return;
-    let batal = false;
-    const timer = window.setInterval(async () => {
-      const tk = tokenRef.current;
-      if (!tk) return;
-      try {
-        const r = await apiFetch(`/api/login-layar/${tk}/status`);
-        if (!r.ok || batal) return;
-        const d = await r.json();
-        if (d.status === "done" && d.session_id) {
-          window.clearInterval(timer);
-          setStatus("done");
-          setPesan("Login berhasil. Menyimpan…");
-          const simpan = await apiFetch("/api/sosmed/accounts", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              platform,
-              display_name: namaPlatform,
-              session_name: sesi,
-              session_id: d.session_id,
-              extra: d.nama_akun ? { nama_akun: d.nama_akun } : {},
-            }),
-          });
-          if (simpan.ok) {
-            setPesan(`${namaPlatform}${d.nama_akun ? ` (${d.nama_akun})` : ""} tersimpan. Tab menutup…`);
-            try {
-              window.opener?.postMessage({ jenis: "login-sosmed-selesai", platform }, "*");
-            } catch {
-              /* opener beda origin: diabaikan */
-            }
-            setTimeout(() => window.close(), 1800);
-          } else {
-            const e = await simpan.json().catch(() => ({}));
-            setStatus("error");
-            setPesan(e.detail || "Login berhasil tapi gagal disimpan.");
-          }
-        } else if (d.status === "error") {
-          window.clearInterval(timer);
-          setStatus("error");
-          setPesan(d.pesan || "Login gagal.");
-        }
-      } catch {
-        // dicoba lagi
+    const tempel = (e: ClipboardEvent) => {
+      const teks = e.clipboardData?.getData("text") || "";
+      if (teks) {
+        e.preventDefault();
+        kirim({ t: "text", v: teks });
       }
-    }, 1200);
-    return () => {
-      batal = true;
-      window.clearInterval(timer);
     };
-  }, [status, platform, sesi, namaPlatform]);
-
-  const fokuskan = () => areaRef.current?.focus();
+    window.addEventListener("paste", tempel);
+    return () => window.removeEventListener("paste", tempel);
+  }, [status, kirim]);
 
   return (
     <div
       style={{
-        minHeight: "100dvh",
+        height: "100dvh",
         background: "#0b0b0d",
         color: "#e8e8ea",
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
         fontFamily: "system-ui, sans-serif",
       }}
     >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 460,
-          padding: "10px 14px",
-          fontSize: 13,
-          lineHeight: 1.35,
-          color: status === "error" ? "#ff8f8f" : "#c9c9cf",
-          textAlign: "center",
-        }}
-      >
-        {pesan}
-        <div style={{ fontSize: 11, color: "#7d7d86", marginTop: 2 }}>
+      <div style={{ padding: "8px 14px", textAlign: "center", flexShrink: 0 }}>
+        <div style={{ fontSize: 13, color: status === "error" ? "#ff8f8f" : "#d7d7dc" }}>{pesan}</div>
+        <div style={{ fontSize: 11, color: "#7d7d86", marginTop: 1 }}>
           Login {namaPlatform} lewat server godamtesting — password tidak disimpan.
         </div>
       </div>
 
-      {status === "running" && (
-        <div
-          ref={areaRef}
-          tabIndex={0}
-          onMouseDown={fokuskan}
-          onClick={(e) => {
-            const p = keServer(e);
-            if (p) void kirim([{ t: "click", x: p.x, y: p.y }]);
-          }}
-          onMouseMove={(e) => {
-            const p = keServer(e);
-            if (p) antrean.current.push({ t: "move", x: p.x, y: p.y });
-          }}
-          onWheel={(e) => antrean.current.push({ t: "wheel", dx: e.deltaX, dy: e.deltaY })}
-          onKeyDown={(e) => {
-            const cetak = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
-            if (cetak) {
-              antrean.current.push({ t: "text", v: e.key });
-            } else if (["Enter", "Backspace", "Tab", "ArrowLeft", "ArrowRight", "Delete"].includes(e.key)) {
-              e.preventDefault();
-              antrean.current.push({ t: "key", k: e.key });
-            }
-          }}
-          style={{
-            width: "min(440px, 100vw)",
-            aspectRatio: `${ukuran.lebar} / ${ukuran.tinggi}`,
-            outline: "none",
-            borderRadius: 10,
-            overflow: "hidden",
-            background: "#fff",
-            boxShadow: "0 0 0 1px #2a2a2e, 0 10px 40px rgba(0,0,0,.5)",
-            cursor: "pointer",
-            touchAction: "none",
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          {frameUrl ? (
-            <img
-              src={frameUrl}
-              alt="layar login"
-              draggable={false}
-              style={{ width: "100%", height: "100%", display: "block", userSelect: "none" }}
-            />
-          ) : (
-            <div style={{ padding: 40, textAlign: "center", color: "#888" }}>Memuat…</div>
-          )}
-        </div>
-      )}
-
-      {status !== "running" && (
-        <button
-          type="button"
-          onClick={() => window.close()}
-          style={{
-            marginTop: 20,
-            padding: "10px 20px",
-            borderRadius: 8,
-            border: "none",
-            background: "#2f6fed",
-            color: "#fff",
-            fontSize: 14,
-            cursor: "pointer",
-          }}
-        >
-          Tutup
-        </button>
-      )}
+      <div
+        ref={wrapRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          margin: "0 auto",
+          width: "100%",
+          maxWidth: 1100,
+          display: "flex",
+          alignItems: "stretch",
+          justifyContent: "center",
+          padding: "0 8px 8px",
+        }}
+      >
+        {status === "running" && (
+          <input
+            ref={masukanRef}
+            aria-hidden="true"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            style={{ position: "fixed", opacity: 0, width: 1, height: 1, left: 0, top: 0 }}
+            onInput={(e) => {
+              const el = e.currentTarget;
+              if (el.value) kirim({ t: "text", v: el.value });
+              el.value = "";
+            }}
+            onKeyDown={(e) => {
+              if (TOMBOL_KHUSUS.has(e.key)) {
+                e.preventDefault();
+                kirim({ t: "key", k: e.key });
+              }
+            }}
+          />
+        )}
+        {status === "running" ? (
+          <canvas
+            ref={kanvasRef}
+            tabIndex={0}
+            onMouseDown={(e) => {
+              fokus();
+              const p = keServer(e);
+              if (p) {
+                seret.current = true;
+                kirim({ t: "down", x: p.x, y: p.y });
+              }
+            }}
+            onMouseUp={(e) => {
+              const p = keServer(e);
+              if (p && seret.current) kirim({ t: "up", x: p.x, y: p.y });
+              seret.current = false;
+            }}
+            onMouseMove={(e) => {
+              if (!seret.current) return;
+              const p = keServer(e);
+              if (p) kirim({ t: "move", x: p.x, y: p.y });
+            }}
+            onWheel={(e) => kirim({ t: "wheel", dx: e.deltaX, dy: e.deltaY })}
+            onKeyDown={(e) => {
+              const cetak = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+              if (cetak) {
+                kirim({ t: "text", v: e.key });
+              } else if (TOMBOL_KHUSUS.has(e.key)) {
+                e.preventDefault();
+                kirim({ t: "key", k: e.key });
+              }
+            }}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+              height: "auto",
+              borderRadius: 10,
+              background: "#fff",
+              boxShadow: "0 0 0 1px #2a2a2e, 0 10px 40px rgba(0,0,0,.5)",
+              outline: "none",
+              cursor: "default",
+              touchAction: "none",
+            }}
+          />
+        ) : (
+          <div style={{ margin: "auto", textAlign: "center" }}>
+            {status !== "starting" && (
+              <button
+                type="button"
+                onClick={() => window.close()}
+                style={{
+                  padding: "10px 22px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#2f6fed",
+                  color: "#fff",
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                Tutup
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
