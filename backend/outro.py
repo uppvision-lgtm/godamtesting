@@ -270,6 +270,8 @@ MASUK_BADGE = ("lenting", "turun", "putar", "zoom", "kiri", "kedip")
 MASUK_HANDLE = ("kiri", "atas", "pop", "fade", "kanan", "ketik")
 GERAK_LATAR = ("diam", "zoom", "geser")
 NAMA_FONT = tuple(FONT)
+# Font di luar undian gaya acak (dipakai mode DPP).
+FONT_LAIN = {"poppins-regular": ASET / "font" / "Poppins-Regular.ttf"}
 
 
 def pilih_gaya(seed: int) -> dict[str, Any]:
@@ -309,7 +311,7 @@ def _font(ukuran: int, nama: str = "poppins") -> Any:
     kunci = (nama, ukuran)
     if kunci in _FONT_CACHE:
         return _FONT_CACHE[kunci]
-    jalur = FONT.get(nama) or FONT["poppins"]
+    jalur = FONT.get(nama) or FONT_LAIN.get(nama) or FONT["poppins"]
     try:
         f = ImageFont.truetype(str(jalur), ukuran)
         try:
@@ -1403,11 +1405,11 @@ def render_dpp(job: dict[str, Any], folder: Path, ev: threading.Event, lapor: Ca
     pil_w, pil_h = int(w * 0.60), int(h * 0.05)
     pil_im, pil_titik = _pil_dpp(DPP_AJAKAN, pil_w, pil_h)
     pil_x, pil_y = (w - pil_w) // 2, tag_y + tag_im.height + int(h * 0.02)
-    ikon_s = int(w * 0.085)
-    pitch = int(h * 0.0505) if len(isi) <= 4 else int(h * 0.046)
+    ikon_s = int(w * 0.072)
+    pitch = int(h * 0.052) if len(isi) <= 4 else int(h * 0.048)
     baris_y0 = pil_y + pil_h + int(h * 0.035)
     baris = [(_ikon(k, ikon_s, {"ikon": "warna"}),
-              _teks_gambar(v, int(w * 0.043), (255, 255, 255, 255))) for k, v in isi]
+              _teks_gambar(v, int(w * 0.041), (255, 255, 255, 255), nama_font="poppins-regular")) for k, v in isi]
     # 16 tingkat ukuran logo dicache: mengubah ukuran PNG besar tiap frame
     # itulah yang dulu membuat render lambat.
     cache_logo: dict[tuple[int, int], Any] = {}
@@ -1480,7 +1482,7 @@ def render_dpp(job: dict[str, Any], folder: Path, ev: threading.Event, lapor: Ca
                 geser = int(-50 * (1 - a))
                 y = baris_y0 + i * pitch
                 _tempel(frame, ik, int(w * 0.225) + geser, y, a)
-                _tempel(frame, tx, int(w * 0.338) + geser, y + (ikon_s - tx.height) // 2, a)
+                _tempel(frame, tx, int(w * 0.325) + geser, y + (ikon_s - tx.height) // 2, a)
 
             # pil: cahayanya datang lebih dulu, garis pilnya menyusul
             if t >= DPP_T_PIL:
