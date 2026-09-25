@@ -50,6 +50,10 @@ PLATFORM_LAYAR = ("instagram", "threads", "twitter", "facebook", "tiktok")
 # menahan memori server selamanya.
 BATAS_HIDUP_DETIK = float(os.getenv("LOGIN_LAYAR_BATAS_DETIK", "600"))
 KUALITAS = int(os.getenv("LOGIN_LAYAR_KUALITAS", "82"))
+# Selang minimum antar-bingkai yang dikirim WS, detik. 1/60 = 60 fps.
+# Screencast tetap berbasis-perubahan: ini hanya melepas pembatas, bukan
+# memaksa bingkai saat layar diam.
+SELANG_KIRIM = 1.0 / int(os.getenv("LOGIN_LAYAR_FPS", "60"))
 # Batas piksel kanvas (lebar*tinggi*kepadatan^2). Kontainer 954 MB: layar
 # retina penuh terlalu mahal untuk dikodekan berulang, jadi kepadatan
 # diturunkan sampai muat.
@@ -387,7 +391,7 @@ async def ws(websocket: WebSocket, token: str) -> None:
                     "t": "selesai", "status": s.status, "pesan": s.pesan,
                     "session_id": s.session_id, "nama_akun": s.nama_akun}))
                 break
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(SELANG_KIRIM)
     except (WebSocketDisconnect, Exception):  # noqa: BLE001
         pass
     finally:
