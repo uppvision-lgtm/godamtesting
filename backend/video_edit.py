@@ -1654,6 +1654,97 @@ def _tanpa_cookie(perintah: list[str]) -> list[str]:
     return bersih
 
 
+# Potongan yang ditinggalkan yt-dlp: "source.f<id>.mp4" (satu jalur saja,
+# belum digabung), ".part", ".ytdl". Bukan video sumber yang utuh.
+_POTONGAN_YTDLP = re.compile(r"^source\.f[\w-]+\.\w+$|\.(part|ytdl|temp)$")
+
+
+def _pilih_berkas_sumber(folder: Path) -> Path | None:
+    """Berkas hasil unduhan yang utuh, bukan potongan satu jalur.
+
+    Dulu diambil berkas pertama menurut abjad. Kalau percobaan yang gagal
+    meninggalkan potongan video-saja "source.f<id>v.mp4", potongan itu
+    menang atas "source.mp4" yang lengkap ("f" < "m"), dan hasil editnya bisu.
+    """
+    semua = [p for p in folder.glob("source.*") if p.is_file()]
+    utuh = [p for p in semua if not _POTONGAN_YTDLP.search(p.name)]
+    calon = utuh or semua
+    if not calon:
+        return None
+    for berkas in sorted(calon, key=lambda p: p.stat().st_size, reverse=True):
+        try:
+            if probe(berkas)["has_audio"]:
+                return berkas
+        except VideoError:
+            continue
+    return max(calon, key=lambda p: p.stat().st_size)
+
+
+def _susulkan_audio(
+    video: Path,
+    perintah: list[str],
+    url: str,
+    pakai_cookie: bool,
+    log: Callable[[str], None] | None = None,
+) -> Path:
+    """Video sumber tanpa suara: ambil jalur audionya sendiri lalu gabungkan.
+
+    Kalau postingannya memang tanpa suara (atau audionya tak bisa diambil),
+    video aslinya dikembalikan apa adanya - bisu, tapi tidak menggagalkan job.
+    """
+    folder = video.parent
+    for lama in folder.glob("audio-susulan.*"):
+        lama.unlink(missing_ok=True)
+    pakai: list[str] = []
+    lewati = False
+    for i, bagian in enumerate(perintah):
+        if lewati:
+            lewati = False
+            continue
+        if bagian in ("-f", "-o", "--merge-output-format"):
+            lewati = True
+            continue
+        pakai.append(bagian)
+    pakai += ["-f", "ba/b[acodec!=none]", "-o", str(folder / "audio-susulan.%(ext)s")]
+    try:
+        hasil = _ytdlp_dengan_mundur(pakai, url, pakai_cookie, 180, log)
+    except subprocess.TimeoutExpired:
+        hasil = None
+    audio = next(iter(sorted(folder.glob("audio-susulan.*"))), None)
+    if hasil is None or hasil.returncode != 0 or audio is None:
+        if log:
+            if "instagram.com" in url.lower():
+                # Terbukti 27 Sep 2026 (reel Ddvp79eTigN): Instagram menandai
+                # postingan tertentu has_audio=false untuk negara server -
+                # lagunya dibatasi per wilayah - padahal di Indonesia bersuara.
+                log(
+                    "Peringatan: hasilnya TANPA SUARA. Instagram membisukan video ini "
+                    "untuk lokasi server (lagunya dibatasi per negara). Unduh videonya "
+                    "di HP/laptop lalu pakai unggah berkas."
+                )
+            else:
+                log("Peringatan: video sumber tidak punya suara, dan audionya tidak bisa diambil.")
+        return video
+    gabungan = folder / "source-bersuara.mp4"
+    mux = subprocess.run(
+        [FFMPEG_BIN, "-y", "-loglevel", "error", "-i", str(video), "-i", str(audio),
+         "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", str(gabungan)],
+        capture_output=True, text=True, timeout=300,
+    )
+    audio.unlink(missing_ok=True)
+    if mux.returncode != 0 or not gabungan.is_file():
+        logger.warning("Gagal menggabung audio susulan: %s", (mux.stderr or "")[-300:])
+        if log:
+            log("Peringatan: video sumber tidak punya suara, dan audionya gagal digabung.")
+        return video
+    tujuan_akhir = folder / "source.mp4"
+    video.unlink(missing_ok=True)
+    gabungan.replace(tujuan_akhir)
+    if log:
+        log("Audio video sumber diambil terpisah lalu digabungkan.")
+    return tujuan_akhir
+
+
 def _ytdlp_dengan_mundur(
     perintah: list[str],
     url: str,
@@ -1696,7 +1787,9 @@ def _ytdlp_dengan_mundur(
         # Kalau yang kedua ini pun kena 429, itulah kabar yang lebih berguna
         # untuk dibawa ke penantian di bawah - bukan galat cookie tadi.
         if log:
-            log("Session ID-nya ditolak; mencoba lagi tanpa cookie.")
+            baris = [b for b in keluaran(hasil).splitlines() if "ERROR" in b]
+            alasan = f" ({baris[-1].strip()[:160]})" if baris else ""
+            log(f"Session ID-nya ditolak{alasan}; mencoba lagi tanpa cookie.")
         logger.info("yt-dlp gagal dengan cookie, diulang tanpa cookie: %s", url)
         tanpa = _tanpa_cookie(perintah)
         kedua = jalankan(tanpa)
@@ -1762,6 +1855,15 @@ def download_source(
     def dari_cache() -> Path | None:
         for tersimpan in sorted(cache.glob("source.*")):
             if time.time() - tersimpan.stat().st_mtime < SOURCE_CACHE_SECONDS:
+                # Sumber bisu yang terlanjur tersimpan jangan dipakai ulang:
+                # justru itu yang membuat mencoba lagi tetap tanpa suara.
+                try:
+                    bisu = not probe(tersimpan)["has_audio"]
+                except VideoError:
+                    bisu = True
+                if bisu:
+                    tersimpan.unlink(missing_ok=True)
+                    continue
                 salinan = tujuan / tersimpan.name
                 shutil.copy2(tersimpan, salinan)
                 return salinan
@@ -1842,8 +1944,10 @@ def download_source(
         "--match-filter", f"duration <= {int(MAX_SOURCE_SECONDS)}",
         "--match-filter", "!duration",
         "--max-filesize", os.getenv("VIDEO_MAX_UNDUH_MB", "600") + "M",
-        # Utamakan mp4 h264+aac supaya ffmpeg tidak perlu kerja ekstra.
-        "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+        # Utamakan mp4+m4a supaya ffmpeg tidak perlu kerja ekstra. Setiap
+        # pilihan yang punya jalur audio terpisah dicoba SEBELUM berkas
+        # tunggal, supaya video tak pernah terambil tanpa suaranya.
+        "-f", "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b[ext=mp4]/b",
         "--merge-output-format", "mp4",
         "-o", str(keluaran),
     ]
@@ -1865,10 +1969,22 @@ def download_source(
 
     if log:
         log(f"Mengunduh video dari {url}")
+    terpilih: Path | None = None
     try:
         hasil = _ytdlp_dengan_mundur(
             perintah, url, berkas_cookie is not None, DOWNLOAD_TIMEOUT_SECONDS, log
         )
+        if hasil.returncode == 0:
+            terpilih = _pilih_berkas_sumber(tujuan)
+            if terpilih is not None:
+                try:
+                    bisu = not probe(terpilih)["has_audio"]
+                except VideoError:
+                    bisu = False
+                if bisu:
+                    terpilih = _susulkan_audio(
+                        terpilih, perintah, url, berkas_cookie is not None, log
+                    )
     except subprocess.TimeoutExpired as error:
         raise VideoError("Unduhan video melewati batas waktu") from error
     finally:
@@ -1906,7 +2022,7 @@ def download_source(
         )
         raise VideoError(f"Gagal mengunduh video: {detail[:300]}{tambahan}")
 
-    berkas = sorted(tujuan.glob("source.*"))
+    berkas = [terpilih] if terpilih is not None else []
     if not berkas:
         keluaran_ytdlp = f"{hasil.stdout}\n{hasil.stderr}"
         if "does not pass filter" in keluaran_ytdlp:
