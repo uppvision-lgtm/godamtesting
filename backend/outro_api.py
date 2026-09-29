@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 import outro
@@ -72,17 +72,29 @@ def hentikan(job_id: str, _: dict[str, Any] = Depends(developer_wajib)) -> dict[
 
 
 @router.get("/jobs/{job_id}/video")
-def video(job_id: str, _: dict[str, Any] = Depends(developer_wajib)) -> FileResponse:
+def video(job_id: str, _: dict[str, Any] = Depends(developer_wajib)) -> Response:
     job = outro.baca_job(job_id)
-    if job is None or not job.get("video"):
+    if job is None or not (job.get("video") or job.get("storage_path")):
         raise HTTPException(status_code=404, detail="Videonya belum ada.")
-    berkas = Path(job["video"])
-    if not berkas.is_file():
+    # Hasil kini tinggal di Supabase; salinan di disk hanya ada kalau
+    # pengunggahannya gagal.
+    ambil = outro.ambil_video(job_id)
+    if ambil is None:
         raise HTTPException(status_code=404, detail="Berkas videonya sudah tidak ada.")
+    isi, channel = ambil
     nama = "outro-" + "".join(
-        c for c in job.get("channel", "outro") if c.isalnum() or c in "-_ "
+        c for c in channel if c.isalnum() or c in "-_ "
     ).strip().replace(" ", "-")
-    return FileResponse(str(berkas), media_type="video/mp4", filename=f"{nama or 'outro'}.mp4")
+    # Header HTTP hanya aman untuk ASCII; nama channel bisa berisi huruf lain.
+    nama = nama.encode("ascii", "ignore").decode() or "outro"
+    nama_berkas = f"{nama}.mp4"
+    if isinstance(isi, Path):
+        return FileResponse(str(isi), media_type="video/mp4", filename=nama_berkas)
+    return Response(
+        content=isi,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'attachment; filename="{nama_berkas}"'},
+    )
 
 
 def _ringkas(job: dict[str, Any]) -> dict[str, Any]:
@@ -97,7 +109,7 @@ def _ringkas(job: dict[str, Any]) -> dict[str, Any]:
         "seed": job.get("seed"),
         "gaya": job.get("gaya", ""),
         "akun": job.get("akun", {}),
-        "punya_video": bool(job.get("video")),
+        "punya_video": bool(job.get("video") or job.get("storage_path")),
         "message": job.get("message", ""),
         "logs": job.get("logs", []),
         "created": job.get("created"),

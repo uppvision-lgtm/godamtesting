@@ -28,6 +28,7 @@ perintah ffmpeg membawa -threads (kontainer server 1 GB).
 from __future__ import annotations
 
 import colorsys
+import json
 import logging
 import math
 import os
@@ -40,6 +41,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+import storage
 from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR, ruang_media
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,111 @@ _batal: dict[str, threading.Event] = {}
 _kunci = threading.Lock()
 _sedang_jalan = threading.Lock()
 
+# Hasil outro disimpan di Supabase, bukan di volume backend (433 MB, dulu
+# penuh oleh hasil outro). Daftar pekerjaan yang selesai ikut disimpan
+# sebagai satu indeks di sana supaya riwayatnya bertahan melewati restart.
+# Backend di laptop (DEBUG) memakai bucket yang SAMA dengan server; tanpa
+# awalan sendiri, indeksnya akan menimpa riwayat outro milik server.
+_LOKAL = os.getenv("DEBUG", "").strip().lower() in ("1", "true", "yes")
+AWALAN_STORAGE = os.getenv("OUTRO_STORAGE_AWALAN", "outro-lokal" if _LOKAL else "outro").strip("/")
+INDEKS_STORAGE = f"{AWALAN_STORAGE}/indeks.json"
+INDEKS_MAKS = 50
+_indeks_dimuat = False
+_kunci_indeks = threading.Lock()
+
+
+def _ringkasan_simpan(job: dict[str, Any]) -> dict[str, Any]:
+    """Salinan job untuk indeks: tanpa jalur disk yang tak berlaku di proses lain."""
+    salinan = {k: v for k, v in job.items() if k != "video"}
+    salinan["logs"] = list(job.get("logs", []))[-20:]
+    return salinan
+
+
+def _muat_indeks() -> None:
+    """Sekali per proses: kembalikan riwayat outro dari Supabase ke memori."""
+    global _indeks_dimuat
+    if _indeks_dimuat:
+        return
+    with _kunci_indeks:
+        if _indeks_dimuat:
+            return
+        _indeks_dimuat = True
+        if not storage.enabled():
+            return
+        tujuan = outro_dir() / "indeks.json"
+        try:
+            tujuan.parent.mkdir(parents=True, exist_ok=True)
+            storage.download(INDEKS_STORAGE, tujuan)
+            daftar = json.loads(tujuan.read_text(encoding="utf-8"))
+        except Exception as error:  # noqa: BLE001 - belum ada indeks / Supabase mati
+            logger.info("Indeks outro belum bisa dimuat: %s", error)
+            return
+        finally:
+            tujuan.unlink(missing_ok=True)
+        with _kunci:
+            for job in daftar if isinstance(daftar, list) else []:
+                if isinstance(job, dict) and job.get("job_id") and job["job_id"] not in _jobs:
+                    _jobs[job["job_id"]] = job
+
+
+def _simpan_indeks() -> None:
+    """Tulis ulang indeks: job yang sudah tersimpan di Supabase, terbaru dulu."""
+    with _kunci:
+        tersimpan = [
+            _ringkasan_simpan(j) for j in _jobs.values() if j.get("storage_path")
+        ]
+    tersimpan.sort(key=lambda j: j.get("created", 0), reverse=True)
+    storage.upload(
+        INDEKS_STORAGE,
+        json.dumps(tersimpan[:INDEKS_MAKS], ensure_ascii=False).encode("utf-8"),
+        "application/json",
+    )
+
+
+def _kirim_ke_storage(job_id: str, hasil: Path) -> str:
+    """Unggah hasil ke Supabase; kembalikan jalurnya, atau "" kalau gagal."""
+    if not storage.enabled():
+        return ""
+    jalur = f"{AWALAN_STORAGE}/{job_id}/outro.mp4"
+    try:
+        storage.upload(jalur, hasil, "video/mp4")
+    except Exception as error:  # noqa: BLE001 - hasil tetap ada di disk
+        logger.warning("Outro %s gagal disimpan ke Supabase: %s", job_id, error)
+        return ""
+    return jalur
+
+
+def _catat_indeks() -> None:
+    try:
+        with _kunci_indeks:
+            _simpan_indeks()
+    except Exception as error:  # noqa: BLE001 - videonya sudah aman; indeks menyusul
+        logger.warning("Indeks outro gagal diperbarui: %s", error)
+
+
+def ambil_video(job_id: str) -> tuple[bytes | Path, str] | None:
+    """Berkas hasil (Path di disk) atau isinya dari Supabase, plus nama channel."""
+    job = baca_job(job_id)
+    if job is None:
+        return None
+    channel = str(job.get("channel") or "outro")
+    lokal = Path(job["video"]) if job.get("video") else None
+    if lokal is not None and lokal.is_file():
+        return lokal, channel
+    jalur = job.get("storage_path")
+    if not jalur or not storage.enabled():
+        return None
+    tujuan = outro_dir() / f"unduh-{job_id}.mp4"
+    try:
+        tujuan.parent.mkdir(parents=True, exist_ok=True)
+        storage.download(jalur, tujuan)
+        return tujuan.read_bytes(), channel
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Outro %s gagal diambil dari Supabase: %s", job_id, error)
+        return None
+    finally:
+        tujuan.unlink(missing_ok=True)
+
 
 def _catat(job_id: str, pesan: str, **ubahan: Any) -> None:
     with _kunci:
@@ -106,12 +213,14 @@ def _catat(job_id: str, pesan: str, **ubahan: Any) -> None:
 
 
 def baca_job(job_id: str) -> dict[str, Any] | None:
+    _muat_indeks()
     with _kunci:
         job = _jobs.get(job_id)
         return dict(job) if job else None
 
 
 def daftar_job(batas: int = 20) -> list[dict[str, Any]]:
+    _muat_indeks()
     with _kunci:
         semua = sorted(_jobs.values(), key=lambda j: j.get("created", 0), reverse=True)
         return [dict(j) for j in semua[:batas]]
@@ -221,8 +330,18 @@ def _jalankan(job_id: str) -> None:
                 # Bahan mentah tanpa audio tak dipakai lagi; dulu menumpuk
                 # di volume dan menggandakan pemakaian disk tiap outro.
                 mentah.unlink(missing_ok=True)
-            _catat(job_id, f"Video outro siap ({hasil.stat().st_size / 1_048_576:.1f} MB).",
-                   status="done", langkah="selesai", progress=100, video=str(hasil))
+            ukuran = hasil.stat().st_size / 1_048_576
+            _catat(job_id, "Menyimpan hasil ke Supabase ...", langkah="simpan", progress=96)
+            jalur = _kirim_ke_storage(job_id, hasil)
+            if jalur:
+                _catat(job_id, f"Video outro siap ({ukuran:.1f} MB).",
+                       status="done", langkah="selesai", progress=100, storage_path=jalur)
+                _catat_indeks()
+                shutil.rmtree(folder, ignore_errors=True)
+            else:
+                _catat(job_id, f"Video outro siap ({ukuran:.1f} MB). Supabase tidak bisa "
+                       "dipakai, jadi hasilnya hanya disimpan sementara di server (24 jam).",
+                       status="done", langkah="selesai", progress=100, video=str(hasil))
         except Dibatalkan as error:
             _catat(job_id, str(error), status="dibatalkan", langkah="berhenti")
         except OutroError as error:
