@@ -1361,6 +1361,18 @@ def _gelombang_dpp(draw: Any, w: int, h: int, t: float) -> None:
         draw.line(titik, fill=tepi, width=3)
 
 
+def _lebar_huruf(teks: str, ukuran: int, nama_font: str = "poppins") -> list[float]:
+    """Lebar tiap huruf teks melengkung. Spasi dilebarkan: di font kecil
+    (~16 px, nama dua baris) spasi aslinya ~4 px dan kata-katanya tampak
+    menempel ("PegununganBintang")."""
+    from PIL import Image, ImageDraw
+
+    f = _font(ukuran, nama_font)
+    ukur = ImageDraw.Draw(Image.new("L", (1, 1)))
+    return [max(ukur.textlength(c, font=f), ukuran * 0.42) if c == " " else ukur.textlength(c, font=f)
+            for c in teks]
+
+
 def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
                 ukuran: int, warna: tuple, nama_font: str = "poppins") -> tuple[float, float]:
     """Tulis teks melengkung mengikuti busur BAWAH lingkaran (bentuk senyum).
@@ -1373,12 +1385,17 @@ def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
 
     f = _font(ukuran, nama_font)
     ukur = ImageDraw.Draw(Image.new("L", (1, 1)))
-    lebar = [ukur.textlength(c, font=f) for c in teks]
+    lebar = _lebar_huruf(teks, ukuran, nama_font)
     total = sum(lebar)
     # sudut diukur dari sumbu +x, searah jarum jam (y layar ke bawah);
     # dasar lingkaran = 90 derajat. Teks dibaca kiri ke kanan = sudut menurun.
     a = math.pi / 2 + (total / 2) / r
     a_awal = a
+    # Semua huruf duduk di SATU garis dasar: pusat tinggi huruf kapital jatuh
+    # di pusat kotak. Dulu tiap huruf dipusatkan pada kotaknya sendiri, jadi
+    # huruf berekor bawah (p, g, j, y) terangkat dan "p" terbaca seperti "P".
+    x0h, y0h, x1h, y1h = ukur.textbbox((0, 0), "H", font=f, anchor="ls")
+    naik_kapital = -y0h
     for c, lc in zip(teks, lebar):
         a_tengah = a - (lc / 2) / r
         x = pusat[0] + r * math.cos(a_tengah)
@@ -1387,8 +1404,7 @@ def _teks_busur(kanvas: Any, teks: str, pusat: tuple[float, float], r: float,
         kw, kh = int(lc + ukuran), int(ukuran * 1.6)
         huruf = Image.new("RGBA", (kw, kh), (0, 0, 0, 0))
         d = ImageDraw.Draw(huruf)
-        x0, y0, x1, y1 = d.textbbox((0, 0), c, font=f)
-        d.text((kw / 2 - (x1 - x0) / 2 - x0, kh / 2 - (y1 - y0) / 2 - y0), c, font=f, fill=warna)
+        d.text((kw / 2, kh / 2 + naik_kapital / 2), c, font=f, fill=warna, anchor="ms")
         derajat = math.degrees(math.pi / 2 - a_tengah)
         huruf = huruf.rotate(derajat, resample=Image.BICUBIC, expand=True)
         kanvas.alpha_composite(huruf, (int(x - huruf.width / 2), int(y - huruf.height / 2)))
@@ -1411,6 +1427,79 @@ def _busur_garis(kanvas: Any, pusat: tuple[float, float], r: float,
     kanvas.alpha_composite(lap.resize(kanvas.size, Image.LANCZOS))
 
 
+# Aturan pecah dua baris nama channel di logo DPP. Angkanya ditulis dalam
+# satuan acuan (area nama selebar 680 px, font mulai 92 px) lalu diskalakan
+# ke area nama sungguhan di logo (~0,44 D, sekitar 265 px pada video 1080):
+# - nama selalu dicoba SATU baris dulu, font dikecilkan sampai muat;
+# - kalau font satu baris jatuh di bawah TWO_LINE_BELOW, dipecah dua baris,
+#   dan di mode dua baris font maksimumnya TWO_LINE_BELOW;
+# - minimal dua kata (satu kata panjang tidak dipecah, terus mengecil);
+# - pecahan dibatalkan kalau dua baris tidak menghasilkan font lebih besar.
+# Angka lebih besar (mis. 50) = lebih cepat terpecah; lebih kecil (34) = lebih lambat.
+TWO_LINE_BELOW = 42
+DPP_ACUAN_LEBAR = 680
+# Busur nama paling lebar ~87 derajat (0,44 D pada jari-jari 0,29 D): lebih
+# dari itu ujung-ujungnya naik menabrak huruf RAKYAT ("Kabupaten Aceh
+# Tenggara" pada batas lama 0,62 D).
+DPP_SUDUT_MAKS = 0.44 / 0.29
+DPP_FONT_MIN = 8
+
+
+def _lebar_teks(teks: str, ukuran: int) -> float:
+    """Lebar teks melengkung PERSIS seperti yang digambar _teks_busur."""
+    return sum(_lebar_huruf(teks, ukuran))
+
+
+def _font_pas(teks: str, lebar_boleh: float) -> float:
+    """Ukuran font (pecahan) yang membuat teks tepat selebar lebar_boleh.
+
+    Lebar teks sebanding lurus dengan ukuran font, jadi cukup diukur sekali.
+    Pecahan dipakai untuk MEMUTUSKAN; di ukuran logo (~16 px) selisih satu
+    piksel terlalu kasar - "Kepulauan Bangka Belitung" butuh 16,0 px, di bawah
+    ambang 16,4 px, tapi dengan bilangan bulat dua barisnya pun 16 px
+    sehingga pecahannya keliru dibatalkan.
+    """
+    per_px = _lebar_teks(teks, 100) / 100
+    return lebar_boleh / per_px if per_px > 0 else float(DPP_FONT_MIN)
+
+
+def _susun_nama_dpp(nama: str, diameter: int, r: float, mulai: int) -> list[tuple[str, float, int]]:
+    """[(teks, jari-jari, font)] - satu baris, atau dua baris bertumpuk."""
+    skala = diameter * 0.44 / DPP_ACUAN_LEBAR
+    ambang = TWO_LINE_BELOW * skala
+    satu = min(float(mulai), _font_pas(nama, DPP_SUDUT_MAKS * r))
+    kata = nama.split()
+
+    def jadi(f: float) -> int:
+        return max(DPP_FONT_MIN, int(f))
+
+    if satu >= ambang or len(kata) < 2:
+        return [(nama, r, jadi(satu))]
+    terbaik: tuple[float, float, str, str] | None = None
+    for i in range(1, len(kata)):
+        atas, bawah = " ".join(kata[:i]), " ".join(kata[i:])
+        # Baris atas lebih dekat ke pusat (busurnya lebih pendek untuk sudut
+        # yang sama), baris bawah lebih jauh; jari-jarinya bergantung pada
+        # font, jadi dihitung beberapa putaran sampai tenang.
+        f = ambang
+        for _ in range(6):
+            f = min(
+                ambang,
+                _font_pas(atas, DPP_SUDUT_MAKS * (r - f * 0.58)),
+                _font_pas(bawah, DPP_SUDUT_MAKS * (r + f * 0.58)),
+            )
+        # Font sama besar (sering: semuanya mentok di ambang) -> pilih yang
+        # panjang kedua barisnya paling seimbang, bukan yang pertama ketemu.
+        timpang = abs(_lebar_teks(atas, 100) - _lebar_teks(bawah, 100))
+        if terbaik is None or (round(f, 2), -timpang) > (round(terbaik[0], 2), -terbaik[1]):
+            terbaik = (f, timpang, atas, bawah)
+    if terbaik is None or terbaik[0] <= satu:
+        return [(nama, r, jadi(satu))]
+    f, _, atas, bawah = terbaik
+    u = jadi(f)
+    return [(atas, r - u * 0.58, u), (bawah, r + u * 0.58, u)]
+
+
 def _logo_dpp(nama_channel: str, diameter: int) -> Any:
     """Logo TV Rakyat asli dengan nama channel melengkung di bawah RAKYAT."""
     from PIL import Image
@@ -1424,32 +1513,30 @@ def _logo_dpp(nama_channel: str, diameter: int) -> Any:
     nama = " ".join(nama_channel.split())
     if not nama:
         return kanvas
-    # Jari-jari dan ukuran huruf diukur dari logo acuan "Aceh Barat":
-    # pusat teks berjarak ~0,30 tinggi logo dari pusat, tinggi huruf ~0,053.
-    ukuran = int(diameter * 0.066)
-    f_ukur = _font(ukuran)
-    from PIL import ImageDraw
-    lebar = ImageDraw.Draw(Image.new("L", (1, 1))).textlength(nama, font=f_ukur)
-    # Nama panjang disusutkan supaya busurnya paling lebar ~90 derajat: lebih
-    # dari itu ujung-ujungnya naik sampai menabrak huruf RAKYAT (teruji
-    # dengan "Kabupaten Aceh Tenggara" pada batas lama 0,62 D).
-    while lebar > diameter * 0.44 and ukuran > 12:
-        ukuran -= 2
-        f_ukur = _font(ukuran)
-        lebar = ImageDraw.Draw(Image.new("L", (1, 1))).textlength(nama, font=f_ukur)
     pusat = (diameter / 2, diameter / 2)
     # Sedikit lebih tinggi dari posisi "Aceh Barat" pada logo acuan (0,315 D):
     # ada garis di bawah teksnya, dan pada 0,315 D garis itu jatuh tepat di
     # cincin perak - abu di atas abu, tidak terlihat.
     r = diameter * 0.29
     warna = (232, 232, 232, 255)
-    a0, a1 = _teks_busur(kanvas, nama, pusat, r, ukuran, warna)
+    # Ukuran awal diukur dari logo acuan "Aceh Barat" (tinggi huruf ~0,053 D).
+    mulai = int(diameter * 0.066)
+    susunan = _susun_nama_dpp(nama, diameter, r, mulai)
+    rentang: list[tuple[float, float]] = []
+    for teks, radius, ukuran in susunan:
+        rentang.append(_teks_busur(kanvas, teks, pusat, radius, ukuran, warna))
     # Garis atas dan bawah yang mengapit nama, melengkung sejajar teksnya.
     # Rapat ke teks tapi tetap bercelah, dan panjangnya PERSIS selebar teks -
-    # berhenti di huruf pertama dan terakhir. Versi awal (celah 0,05 D dan
-    # ujung diperpanjang) dinilai pemilik jelek: garis atasnya menabrak
-    # RAKYAT dan garisnya menjulur jauh melewati tulisannya.
+    # berhenti di huruf pertama dan terakhir (dua baris: selebar baris yang
+    # paling lebar). Versi awal (celah 0,05 D dan ujung diperpanjang) dinilai
+    # pemilik jelek: garis atasnya menabrak RAKYAT dan menjulur jauh.
+    a0 = max(a for a, _ in rentang)
+    a1 = min(b for _, b in rentang)
+    ukuran = susunan[0][2]
     jarak = diameter * 0.038
+    if len(susunan) == 2:
+        # cukup untuk dua baris + separuh tinggi huruf + celah kecil
+        jarak = max(jarak, abs(susunan[1][1] - r) + ukuran * 0.36 + diameter * 0.008)
     tebal = max(2, int(diameter * 0.006))
     for radius in (r - jarak, r + jarak):
         _busur_garis(kanvas, pusat, radius, a0, a1, tebal, warna)
