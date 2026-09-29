@@ -40,7 +40,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR
+from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR, ruang_media
 
 logger = logging.getLogger(__name__)
 
@@ -175,15 +175,33 @@ def mulai_job(
     return job_id
 
 
+# Satu outro butuh ~2x ukuran hasilnya selama render (mentah + hasil).
+RUANG_OUTRO_MB = float(os.getenv("OUTRO_RUANG_MIN_MB", "40"))
+
+
 def _jalankan(job_id: str) -> None:
     ev = _batal[job_id]
     folder = outro_dir() / job_id
-    folder.mkdir(parents=True, exist_ok=True)
     with _sedang_jalan:
         try:
             job = baca_job(job_id) or {}
             if ev.is_set():
                 raise Dibatalkan("Dihentikan sebelum mulai.")
+            # Dulu mkdir ada DI LUAR try: saat disk penuh ia melempar OSError,
+            # thread mati diam-diam, dan job selamanya "Menunggu giliran".
+            try:
+                sisa = float(ruang_media().get("sisa_mb", RUANG_OUTRO_MB))
+            except Exception:  # noqa: BLE001 - pengukuran gagal bukan alasan menolak
+                sisa = RUANG_OUTRO_MB
+            if sisa < RUANG_OUTRO_MB:
+                raise OutroError(
+                    f"Penyimpanan server penuh (sisa {sisa:.0f} MB). "
+                    "Hubungi developer untuk membersihkan volume, lalu coba lagi."
+                )
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                raise OutroError(f"Tidak bisa menyiapkan folder outro: {error}") from error
             lapor = lambda p: _catat(job_id, f"Merender outro ... {p}%", progress=5 + int(p * 0.85))
             _catat(job_id, f"Merender outro ({job['gaya']}) ...",
                    status="running", langkah="render", progress=5)
@@ -199,6 +217,10 @@ def _jalankan(job_id: str) -> None:
                 hasil = tempel_audio_dpp(mentah, folder)
             else:
                 hasil = tempel_audio(mentah, folder, gaya["denting_detik"])
+            if mentah != hasil:
+                # Bahan mentah tanpa audio tak dipakai lagi; dulu menumpuk
+                # di volume dan menggandakan pemakaian disk tiap outro.
+                mentah.unlink(missing_ok=True)
             _catat(job_id, f"Video outro siap ({hasil.stat().st_size / 1_048_576:.1f} MB).",
                    status="done", langkah="selesai", progress=100, video=str(hasil))
         except Dibatalkan as error:
