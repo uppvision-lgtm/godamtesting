@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "../auto-upload/page.module.css";
 import LoginButton from "../components/LoginButton";
 import { PERAN_DEVELOPER, apiFetch, usePeran, useSudahHidrasi } from "../components/auth";
@@ -11,7 +11,9 @@ import { PERAN_DEVELOPER, apiFetch, usePeran, useSudahHidrasi } from "../compone
  *
  * Satu klik: latar bergerak dirender sendiri (gratis, tanpa AI/API/antre),
  * lalu renderer aplikasi menempelkan nama channel dan enam handle PERSIS di
- * atasnya. Hasilnya muncul di bawah dengan tombol unduh.
+ * atasnya. Bisa banyak sekaligus: tiap baris nama channel = satu outro, dan
+ * baris yang sama di kotak sosmed = akun untuk channel itu. Hasilnya muncul
+ * di bawah, satu kartu per outro, masing-masing dengan tombol unduh.
  */
 
 type Sosmed = { kunci: string; nama: string; ikon: string; contoh: string };
@@ -27,10 +29,15 @@ const SOSMED: Sosmed[] = [
 ];
 const KOSONG: Record<string, string> = Object.fromEntries(SOSMED.map((s) => [s.kunci, ""]));
 
+// Satu kiriman dibatasi supaya antrean render (satu per satu) tidak tertahan
+// berjam-jam oleh satu orang.
+const MAKS_SEKALIGUS = 50;
+
 type Mode = "biasa" | "dpp";
 
 type Job = {
   job_id: string;
+  channel?: string;
   mode?: Mode;
   status: "queued" | "running" | "done" | "error" | "dibatalkan";
   langkah: string;
@@ -42,14 +49,49 @@ type Job = {
   gaya?: string;
 };
 
+type Rencana = { channel: string; akun: Record<string, string> };
+
 const LANGKAH: Record<string, string> = {
   antre: "Menunggu giliran",
-  render: "1/2 · Merender outro",
-  audio: "2/2 · Menempel audio",
+  render: "Merender",
+  audio: "Menempel audio",
+  simpan: "Menyimpan",
   selesai: "Selesai",
   gagal: "Gagal",
   berhenti: "Dihentikan",
 };
+
+function aktif(j: Job): boolean {
+  return j.status === "queued" || j.status === "running";
+}
+
+/** Baris-baris isian, dirapikan; baris kosong tetap dihitung (penentu urutan). */
+function barisDari(teks: string): string[] {
+  const baris = teks.split("\n").map((b) => b.trim());
+  while (baris.length > 0 && baris[baris.length - 1] === "") baris.pop();
+  return baris;
+}
+
+/**
+ * Pasangkan tiap nama channel dengan akunnya. Baris ke-n di kotak sosmed milik
+ * channel baris ke-n. Kotak sosmed yang hanya berisi SATU baris dipakai untuk
+ * semua channel - akun yang sama untuk semuanya tidak perlu ditulis berulang.
+ */
+function susunRencana(channelTeks: string, akunTeks: Record<string, string>): Rencana[] {
+  const channel = barisDari(channelTeks);
+  const perSosmed = Object.fromEntries(SOSMED.map((s) => [s.kunci, barisDari(akunTeks[s.kunci] || "")]));
+  const hasil: Rencana[] = [];
+  channel.forEach((nama, i) => {
+    if (!nama) return;
+    const akun: Record<string, string> = {};
+    for (const s of SOSMED) {
+      const baris = perSosmed[s.kunci];
+      akun[s.kunci] = baris.length === 1 ? baris[0] : baris[i] || "";
+    }
+    hasil.push({ channel: nama.slice(0, 80), akun });
+  });
+  return hasil;
+}
 
 async function bacaGalat(r: Response, cadangan: string): Promise<string> {
   try {
@@ -58,6 +100,10 @@ async function bacaGalat(r: Response, cadangan: string): Promise<string> {
   } catch {
     return cadangan;
   }
+}
+
+function namaBerkas(channel: string): string {
+  return `outro-${channel.trim().replace(/\s+/g, "-") || "video"}.mp4`;
 }
 
 export default function AutoOutroPage() {
@@ -70,115 +116,169 @@ export default function AutoOutroPage() {
   const [mode, setMode] = useState<Mode>("biasa");
   const [channel, setChannel] = useState("");
   const [akun, setAkun] = useState<Record<string, string>>(KOSONG);
-  const [job, setJob] = useState<Job | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [galatJob, setGalatJob] = useState("");
-  const [mengirim, setMengirim] = useState(false);
-  const [videoUrl, setVideoUrl] = useState("");
-  const videoUrlRef = useRef("");
+  const [mengirim, setMengirim] = useState<{ ke: number; dari: number } | null>(null);
+  const [videoUrl, setVideoUrl] = useState<Record<string, string>>({});
+  const videoUrlRef = useRef<Record<string, string>>({});
+  const diambilRef = useRef<Set<string>>(new Set());
 
-  // Pantau pekerjaan selama masih berjalan.
+  const rencana = useMemo(() => susunRencana(channel, akun), [channel, akun]);
+  const jumlahChannel = barisDari(channel).length;
+
+  // Kotak sosmed yang jumlah barisnya tidak cocok dengan jumlah channel -
+  // hampir pasti salah urut, jadi diberi tahu sebelum dikirim.
+  const tidakCocok = useMemo(
+    () =>
+      SOSMED.filter((s) => {
+        const n = barisDari(akun[s.kunci] || "").length;
+        return n > 1 && n !== jumlahChannel;
+      }).map((s) => s.nama),
+    [akun, jumlahChannel],
+  );
+
+  const adaAktif = jobs.some(aktif);
+
+  // Pantau semua outro kiriman ini lewat SATU permintaan daftar.
   useEffect(() => {
-    if (!job || !["queued", "running"].includes(job.status)) return;
+    if (!adaAktif) return;
     let batal = false;
     const timer = setInterval(async () => {
       try {
-        const r = await apiFetch(`/api/outro/jobs/${job.job_id}`);
+        const r = await apiFetch(`/api/outro/jobs?batas=200`);
         if (!r.ok || batal) return;
-        const j = (await r.json()) as Job;
-        if (!batal) setJob(j);
+        const data = (await r.json()) as { jobs: Job[] };
+        const terbaru = new Map(data.jobs.map((j) => [j.job_id, j]));
+        if (!batal) setJobs((lama) => lama.map((j) => terbaru.get(j.job_id) || j));
       } catch {
-        // dicoba lagi pada detik berikutnya
+        // dicoba lagi pada putaran berikutnya
       }
     }, 2000);
     return () => {
       batal = true;
       clearInterval(timer);
     };
-  }, [job]);
+  }, [adaAktif]);
 
-  // Begitu pekerjaan SELESAI, tarik videonya sebagai blob supaya bisa diputar
-  // dan diunduh tanpa menempelkan token di alamat. Sengaja efek terpisah dari
-  // pemantauan: dulu pengambilannya di dalam putaran pantau, dan saat status
-  // berubah jadi "done" efek itu langsung dibersihkan - videonya keburu batal
-  // sebelum sempat terpasang. Di sini ia berjalan setelah status jadi "done".
+  // Outro yang SELESAI ditarik videonya sebagai blob, satu per satu, supaya
+  // bisa diputar dan diunduh tanpa menempelkan token di alamat.
   useEffect(() => {
-    if (!job || job.status !== "done" || !job.punya_video) return;
-    let batal = false;
+    const perlu = jobs.filter(
+      (j) => j.status === "done" && j.punya_video && !diambilRef.current.has(j.job_id),
+    );
+    if (perlu.length === 0) return;
+    for (const j of perlu) diambilRef.current.add(j.job_id);
     void (async () => {
-      try {
-        const v = await apiFetch(`/api/outro/jobs/${job.job_id}/video`);
-        if (!v.ok || batal) return;
-        const blob = await v.blob();
-        if (batal) return;
-        if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
-        const url = URL.createObjectURL(blob);
-        videoUrlRef.current = url;
-        setVideoUrl(url);
-      } catch {
-        // tombol unduh langsung tetap disediakan sebagai cadangan
+      for (const j of perlu) {
+        try {
+          const v = await apiFetch(`/api/outro/jobs/${j.job_id}/video`);
+          if (!v.ok) {
+            diambilRef.current.delete(j.job_id);
+            continue;
+          }
+          const url = URL.createObjectURL(await v.blob());
+          videoUrlRef.current[j.job_id] = url;
+          setVideoUrl((lama) => ({ ...lama, [j.job_id]: url }));
+        } catch {
+          diambilRef.current.delete(j.job_id);
+        }
       }
     })();
+  }, [jobs]);
+
+  // Blob dilepas saat halaman ditinggalkan.
+  useEffect(() => {
+    const simpanan = videoUrlRef.current;
     return () => {
-      batal = true;
+      for (const url of Object.values(simpanan)) URL.revokeObjectURL(url);
     };
-  }, [job]);
+  }, []);
 
   const jalankan = useCallback(async () => {
-    if (!channel.trim() || mengirim) return;
-    setMengirim(true);
+    if (rencana.length === 0 || mengirim) return;
+    if (rencana.length > MAKS_SEKALIGUS) {
+      setGalatJob(`Maksimal ${MAKS_SEKALIGUS} channel sekali kirim (sekarang ${rencana.length}).`);
+      return;
+    }
     setGalatJob("");
-    setVideoUrl("");
-    try {
-      const r = await apiFetch("/api/outro/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: channel.trim(), akun, mode }),
-      });
-      if (!r.ok) {
-        setGalatJob(await bacaGalat(r, "Gagal memulai."));
-        return;
+    const baru: Job[] = [];
+    const galat: string[] = [];
+    for (let i = 0; i < rencana.length; i++) {
+      const r0 = rencana[i];
+      setMengirim({ ke: i + 1, dari: rencana.length });
+      try {
+        const r = await apiFetch("/api/outro/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: r0.channel, akun: r0.akun, mode }),
+        });
+        if (!r.ok) {
+          galat.push(`${r0.channel}: ${await bacaGalat(r, "gagal memulai")}`);
+          continue;
+        }
+        const j = await r.json();
+        const job: Job = {
+          job_id: j.job_id,
+          channel: r0.channel,
+          status: "queued",
+          langkah: "antre",
+          progress: 0,
+          punya_video: false,
+          message: "Menunggu giliran.",
+          logs: [],
+          seed: j.seed,
+          gaya: j.gaya,
+          mode: j.mode,
+        };
+        baru.push(job);
+        // Kartunya langsung muncul satu per satu, tidak menunggu semua terkirim.
+        setJobs((lama) => [...lama, job]);
+      } catch {
+        galat.push(`${r0.channel}: backend tidak merespons`);
       }
-      const j = await r.json();
-      setJob({
-        job_id: j.job_id,
-        status: "queued",
-        langkah: "antre",
-        progress: 0,
-        punya_video: false,
-        message: "Menunggu giliran.",
-        logs: [],
-        seed: j.seed,
-        gaya: j.gaya,
-        mode: j.mode,
-      });
-    } catch {
-      setGalatJob("Backend tidak merespons.");
-    } finally {
-      setMengirim(false);
     }
-  }, [channel, akun, mode, mengirim]);
+    setMengirim(null);
+    if (galat.length > 0) setGalatJob(galat.join(" · "));
+  }, [rencana, mode, mengirim]);
 
-  async function hentikan() {
-    if (!job) return;
-    try {
-      await apiFetch(`/api/outro/jobs/${job.job_id}/stop`, { method: "POST" });
-    } catch {
-      // status berikutnya menunjukkan hasilnya
-    }
+  async function hentikanSemua() {
+    await Promise.all(
+      jobs.filter(aktif).map((j) =>
+        apiFetch(`/api/outro/jobs/${j.job_id}/stop`, { method: "POST" }).catch(() => undefined),
+      ),
+    );
+  }
+
+  function unduhSemua() {
+    // Satu per satu dengan jeda: peramban menolak banyak unduhan serentak.
+    const siapUnduh = jobs.filter((j) => videoUrl[j.job_id]);
+    siapUnduh.forEach((j, i) => {
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = videoUrl[j.job_id];
+        a.download = namaBerkas(j.channel || "");
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, i * 400);
+    });
   }
 
   function kosongkan() {
     setChannel("");
     setAkun(KOSONG);
-    setJob(null);
+    setJobs([]);
     setGalatJob("");
-    if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
-    videoUrlRef.current = "";
-    setVideoUrl("");
+    for (const url of Object.values(videoUrlRef.current)) URL.revokeObjectURL(url);
+    videoUrlRef.current = {};
+    diambilRef.current = new Set();
+    setVideoUrl({});
   }
 
-  const sedangJalan = !!job && ["queued", "running"].includes(job.status);
-  const bisaJalan = channel.trim().length > 0 && !sedangJalan;
+  const bisaJalan = rencana.length > 0 && !mengirim;
+  const selesai = jobs.filter((j) => j.status === "done").length;
+  const gagal = jobs.filter((j) => j.status === "error").length;
+  const siapUnduh = jobs.filter((j) => videoUrl[j.job_id]).length;
 
   return (
     <div className={styles.page}>
@@ -220,7 +320,7 @@ export default function AutoOutroPage() {
                   type="button"
                   className={mode === "biasa" ? styles.btnUtama : styles.btnSekunder}
                   onClick={() => setMode("biasa")}
-                  disabled={sedangJalan}
+                  disabled={!!mengirim}
                 >
                   Biasa
                 </button>
@@ -228,16 +328,16 @@ export default function AutoOutroPage() {
                   type="button"
                   className={mode === "dpp" ? styles.btnUtama : styles.btnSekunder}
                   onClick={() => setMode("dpp")}
-                  disabled={sedangJalan}
+                  disabled={!!mengirim}
                 >
                   DPP
                 </button>
               </div>
               {mode === "biasa" ? (
                 <p className={styles.hint}>
-                  Isi nama channel dan akun tiap sosmed, lalu tekan sekali. Tiap kali ditekan,
-                  gayanya berbeda — palet, latar, bentuk logo, tata letak, animasi — tapi logo,
-                  nama TV, dan keenam sosmed selalu ada dan ditulis persis. Gratis, tanpa batas.
+                  Isi nama channel dan akun tiap sosmed, lalu tekan sekali. Tiap outro gayanya
+                  berbeda — palet, latar, bentuk logo, tata letak, animasi — tapi logo, nama TV,
+                  dan sosmednya selalu ditulis persis. Gratis, tanpa batas.
                 </p>
               ) : (
                 <p className={styles.hint}>
@@ -251,45 +351,85 @@ export default function AutoOutroPage() {
                 <div className={styles.blok}>
                   <div className={styles.blokHead}>
                     <h3>Nama channel</h3>
+                    <span className={styles.jumlahHuruf}>{rencana.length} outro</span>
                   </div>
-                  <div className={styles.row}>
-                    <label>
-                      <span>{mode === "dpp" ? "Nama channel — ditulis di logo" : "Nama channel"}</span>
-                      <input
-                        type="text"
-                        value={channel}
-                        onChange={(e) => setChannel(e.target.value)}
-                        placeholder={mode === "dpp" ? "Aceh Barat" : "TV Rakyat"}
-                        maxLength={80}
-                        disabled={sedangJalan}
-                      />
-                    </label>
-                  </div>
+                  <p className={styles.hint}>
+                    Satu baris = satu channel = satu video outro. Bisa banyak sekaligus (maks{" "}
+                    {MAKS_SEKALIGUS}).
+                  </p>
+                  <textarea
+                    className={styles.naskah}
+                    value={channel}
+                    onChange={(e) => setChannel(e.target.value)}
+                    placeholder={mode === "dpp" ? "Aceh Barat\nAceh Besar\nKab. Siak" : "TV Rakyat\nTV Nusantara"}
+                    rows={Math.min(10, Math.max(3, jumlahChannel + 1))}
+                    disabled={!!mengirim}
+                  />
                 </div>
 
                 <div className={styles.blok}>
                   <div className={styles.blokHead}>
                     <h3>Nama akun tiap sosmed</h3>
                   </div>
-                  <p className={styles.hint}>Yang dikosongkan tidak ditampilkan di outronya.</p>
-                  {SOSMED.map((s) => (
-                    <div key={s.kunci} className={styles.row}>
-                      <label>
-                        <span>
-                          {s.ikon} {s.nama}
-                        </span>
-                        <input
-                          type="text"
-                          value={akun[s.kunci] || ""}
-                          onChange={(e) => setAkun((lama) => ({ ...lama, [s.kunci]: e.target.value }))}
-                          placeholder={s.contoh}
-                          maxLength={80}
-                          disabled={sedangJalan}
-                        />
-                      </label>
-                    </div>
-                  ))}
+                  <p className={styles.hint}>
+                    Baris ke-1 untuk channel baris ke-1, baris ke-2 untuk channel ke-2, dan
+                    seterusnya. Isi <b>satu baris saja</b> kalau akunnya sama untuk semua channel.
+                    Baris kosong = sosmed itu tidak ditampilkan di outro channel tersebut.
+                  </p>
+                  {SOSMED.map((s) => {
+                    const n = barisDari(akun[s.kunci] || "").length;
+                    return (
+                      <div key={s.kunci} className={styles.row}>
+                        <label>
+                          <span>
+                            {s.ikon} {s.nama}
+                            {n > 0 && (
+                              <>
+                                {" "}
+                                · {n === 1 && jumlahChannel > 1 ? "sama untuk semua" : `${n} baris`}
+                              </>
+                            )}
+                          </span>
+                          <textarea
+                            className={styles.naskah}
+                            value={akun[s.kunci] || ""}
+                            onChange={(e) => setAkun((lama) => ({ ...lama, [s.kunci]: e.target.value }))}
+                            placeholder={s.contoh}
+                            rows={Math.min(8, Math.max(1, n))}
+                            disabled={!!mengirim}
+                          />
+                        </label>
+                      </div>
+                    );
+                  })}
                 </div>
+
+                {tidakCocok.length > 0 && (
+                  <p className={styles.galat}>
+                    Jumlah baris {tidakCocok.join(", ")} tidak sama dengan jumlah channel (
+                    {jumlahChannel}). Cek urutannya di pratinjau di bawah.
+                  </p>
+                )}
+
+                {rencana.length > 1 && (
+                  <div className={styles.rincianKotak}>
+                    {rencana.map((r, i) => {
+                      const isi = SOSMED.filter((s) => r.akun[s.kunci]).map(
+                        (s) => `${s.ikon} ${r.akun[s.kunci]}`,
+                      );
+                      return (
+                        <div key={i} className={styles.rincianBaris}>
+                          <span className={styles.rincianNilai}>
+                            <b>
+                              {i + 1}. {r.channel}
+                            </b>{" "}
+                            — {isi.length > 0 ? isi.join("  ") : "tanpa sosmed"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {galatJob && <p className={styles.galat}>{galatJob}</p>}
                 <div className={styles.aksi}>
@@ -297,17 +437,26 @@ export default function AutoOutroPage() {
                     type="button"
                     className={styles.btnUtama}
                     onClick={jalankan}
-                    disabled={!bisaJalan || mengirim}
+                    disabled={!bisaJalan}
                     title={bisaJalan ? "Buat outro" : "Isi nama channel dulu"}
                   >
-                    {mengirim ? "Memulai…" : "Buat Outro"}
+                    {mengirim
+                      ? `Mengirim ${mengirim.ke}/${mengirim.dari}…`
+                      : rencana.length > 1
+                        ? `Buat ${rencana.length} Outro`
+                        : "Buat Outro"}
                   </button>
-                  {sedangJalan ? (
-                    <button type="button" className={styles.btnBahaya} onClick={hentikan}>
-                      Hentikan
+                  {adaAktif ? (
+                    <button type="button" className={styles.btnBahaya} onClick={hentikanSemua}>
+                      Hentikan semua
                     </button>
                   ) : (
-                    <button type="button" className={styles.btnSekunder} onClick={kosongkan}>
+                    <button
+                      type="button"
+                      className={styles.btnSekunder}
+                      onClick={kosongkan}
+                      disabled={!!mengirim}
+                    >
                       Kosongkan
                     </button>
                   )}
@@ -318,72 +467,83 @@ export default function AutoOutroPage() {
             <section className={`${styles.panel} ${styles.panelLebar}`}>
               <div className={styles.panelHead}>
                 <h2>Hasil</h2>
-                {job && (
-                  <span
-                    className={`${styles.badge} ${
-                      job.status === "done"
-                        ? styles.sasaranOk
-                        : job.status === "error"
-                          ? styles.sasaranGagal
-                          : ""
-                    }`}
-                  >
-                    {LANGKAH[job.langkah] || job.langkah}
+                {jobs.length > 0 && (
+                  <span className={`${styles.badge} ${!adaAktif && gagal === 0 ? styles.sasaranOk : ""}`}>
+                    {selesai}/{jobs.length} selesai{gagal > 0 ? ` · ${gagal} gagal` : ""}
                   </span>
                 )}
               </div>
-              {!job ? (
+              {jobs.length === 0 ? (
                 <p className={styles.hint}>Videonya akan muncul di sini setelah tombol ditekan.</p>
               ) : (
                 <>
-                  {sedangJalan && (
-                    <div className={styles.progresBatang}>
-                      <div className={styles.progresIsi} style={{ width: `${job.progress}%` }} />
+                  {siapUnduh > 1 && (
+                    <div className={styles.aksi}>
+                      <button type="button" className={styles.btnUtama} onClick={unduhSemua}>
+                        Unduh semua ({siapUnduh})
+                      </button>
                     </div>
                   )}
-                  <p className={job.status === "error" ? styles.galat : styles.hint}>{job.message}</p>
-                  {job.mode === "dpp" ? (
-                    <p className={styles.hint}>Mode DPP — meniru outro TV Rakyat.</p>
-                  ) : (
-                    job.gaya && (
-                      <p className={styles.hint}>
-                        Gaya #{job.seed}: {job.gaya}
-                      </p>
-                    )
-                  )}
-
-                  {videoUrl && (
-                    <div className={styles.rincianKotak}>
-                      <video
-                        src={videoUrl}
-                        controls
-                        autoPlay
-                        loop
-                        muted
-                        playsInline
-                        style={{ width: "100%", maxWidth: 300, borderRadius: 12, background: "#000" }}
-                      />
-                      <div className={styles.aksi}>
-                        <a
-                          className={styles.btnUtama}
-                          href={videoUrl}
-                          download={`outro-${channel.trim().replace(/\s+/g, "-") || "video"}.mp4`}
-                        >
-                          Unduh video
-                        </a>
-                      </div>
-                    </div>
-                  )}
-
-                  {job.logs.length > 0 && (
-                    <div className={styles.rincianKotak}>
-                      {job.logs.slice(-10).map((baris, i) => (
-                        <div key={i} className={styles.rincianBaris}>
-                          <span className={styles.rincianNilai}>{baris}</span>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
+                      gap: 12,
+                    }}
+                  >
+                    {jobs.map((j) => (
+                      <div key={j.job_id} className={styles.rincianKotak}>
+                        <div className={styles.blokHead}>
+                          <h3 style={{ overflowWrap: "anywhere" }}>{j.channel}</h3>
+                          <span
+                            className={`${styles.badge} ${
+                              j.status === "done"
+                                ? styles.sasaranOk
+                                : j.status === "error"
+                                  ? styles.sasaranGagal
+                                  : ""
+                            }`}
+                          >
+                            {LANGKAH[j.langkah] || j.langkah}
+                          </span>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        {aktif(j) && (
+                          <div className={styles.progresBatang}>
+                            <div className={styles.progresIsi} style={{ width: `${j.progress}%` }} />
+                          </div>
+                        )}
+                        {videoUrl[j.job_id] ? (
+                          <>
+                            <video
+                              src={videoUrl[j.job_id]}
+                              controls
+                              loop
+                              muted
+                              playsInline
+                              preload="metadata"
+                              style={{ width: "100%", borderRadius: 10, background: "#000" }}
+                            />
+                            <a
+                              className={styles.btnUtama}
+                              href={videoUrl[j.job_id]}
+                              download={namaBerkas(j.channel || "")}
+                            >
+                              Unduh
+                            </a>
+                          </>
+                        ) : (
+                          <p className={j.status === "error" ? styles.galat : styles.hint}>
+                            {j.status === "done" ? "Mengambil video…" : j.message}
+                          </p>
+                        )}
+                        {j.mode !== "dpp" && j.gaya && j.status === "done" && (
+                          <p className={styles.hint}>
+                            Gaya #{j.seed}: {j.gaya}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </>
               )}
             </section>

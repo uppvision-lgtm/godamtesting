@@ -101,7 +101,7 @@ _sedang_jalan = threading.Lock()
 _LOKAL = os.getenv("DEBUG", "").strip().lower() in ("1", "true", "yes")
 AWALAN_STORAGE = os.getenv("OUTRO_STORAGE_AWALAN", "outro-lokal" if _LOKAL else "outro").strip("/")
 INDEKS_STORAGE = f"{AWALAN_STORAGE}/indeks.json"
-INDEKS_MAKS = 50
+INDEKS_MAKS = 200  # cukup untuk satu kiriman banyak channel sekaligus
 _indeks_dimuat = False
 _kunci_indeks = threading.Lock()
 

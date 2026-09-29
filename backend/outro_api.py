@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -41,8 +41,13 @@ class OutroBody(BaseModel):
 
 
 @router.get("/jobs")
-def daftar(_: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
-    return {"jobs": [_ringkas(j) for j in outro.daftar_job()]}
+def daftar(
+    batas: int = Query(default=20, ge=1, le=200),
+    _: dict[str, Any] = Depends(developer_wajib),
+) -> dict[str, Any]:
+    # Halaman membuat banyak outro sekaligus lalu memantau semuanya lewat
+    # satu permintaan ini, bukan satu permintaan per outro.
+    return {"jobs": [_ringkas(j) for j in outro.daftar_job(batas)]}
 
 
 @router.post("/jobs")
