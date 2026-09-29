@@ -47,6 +47,8 @@ type Job = {
   logs: string[];
   seed?: number;
   gaya?: string;
+  created?: number;
+  updated?: number;
 };
 
 type Rencana = { channel: string; akun: Record<string, string> };
@@ -122,6 +124,12 @@ export default function AutoOutroPage() {
   const [videoUrl, setVideoUrl] = useState<Record<string, string>>({});
   const videoUrlRef = useRef<Record<string, string>>({});
   const diambilRef = useRef<Set<string>>(new Set());
+  // Video yang gagal diambil dicoba lagi dengan jeda memanjang. Dulu yang
+  // gagal tidak pernah dicoba lagi begitu semua outro selesai (pemantauan
+  // berhenti), jadi kartunya tertahan di "Mengambil video..." selamanya.
+  const gagalRef = useRef<Record<string, { coba: number; lagi: number }>>({});
+  const [detak, setDetak] = useState(0);
+  const [cobaVideo, setCobaVideo] = useState<Record<string, number>>({});
 
   const rencana = useMemo(() => susunRencana(channel, akun), [channel, akun]);
   const jumlahChannel = barisDari(channel).length;
@@ -139,52 +147,83 @@ export default function AutoOutroPage() {
 
   const adaAktif = jobs.some(aktif);
 
+  const perbarui = useCallback(async () => {
+    try {
+      const r = await apiFetch(`/api/outro/jobs?batas=200`);
+      if (!r.ok) return;
+      const data = (await r.json()) as { jobs: Job[] };
+      const terbaru = new Map(data.jobs.map((j) => [j.job_id, j]));
+      setJobs((lama) => lama.map((j) => terbaru.get(j.job_id) || j));
+    } catch {
+      // dicoba lagi pada putaran berikutnya
+    }
+  }, []);
+
   // Pantau semua outro kiriman ini lewat SATU permintaan daftar.
   useEffect(() => {
     if (!adaAktif) return;
-    let batal = false;
-    const timer = setInterval(async () => {
-      try {
-        const r = await apiFetch(`/api/outro/jobs?batas=200`);
-        if (!r.ok || batal) return;
-        const data = (await r.json()) as { jobs: Job[] };
-        const terbaru = new Map(data.jobs.map((j) => [j.job_id, j]));
-        if (!batal) setJobs((lama) => lama.map((j) => terbaru.get(j.job_id) || j));
-      } catch {
-        // dicoba lagi pada putaran berikutnya
-      }
-    }, 2000);
+    const timer = setInterval(perbarui, 2000);
+    return () => clearInterval(timer);
+  }, [adaAktif, perbarui]);
+
+  // Chrome memperlambat pewaktu tab yang tidak terlihat (pindah tab, jendela
+  // tertutup jendela lain) sampai sekali per MENIT, dan menunda memuat video
+  // di tab itu. Saat kembali, halaman tampak macet sampai giliran berikutnya.
+  // Maka begitu tab terlihat lagi, status dan video langsung disusul.
+  useEffect(() => {
+    function saatTerlihat() {
+      if (document.visibilityState !== "visible") return;
+      for (const g of Object.values(gagalRef.current)) g.lagi = 0;
+      void perbarui();
+      setDetak((d) => d + 1);
+    }
+    document.addEventListener("visibilitychange", saatTerlihat);
+    window.addEventListener("focus", saatTerlihat);
     return () => {
-      batal = true;
-      clearInterval(timer);
+      document.removeEventListener("visibilitychange", saatTerlihat);
+      window.removeEventListener("focus", saatTerlihat);
     };
-  }, [adaAktif]);
+  }, [perbarui]);
 
   // Outro yang SELESAI ditarik videonya sebagai blob, satu per satu, supaya
   // bisa diputar dan diunduh tanpa menempelkan token di alamat.
   useEffect(() => {
+    const sekarang = Date.now();
     const perlu = jobs.filter(
-      (j) => j.status === "done" && j.punya_video && !diambilRef.current.has(j.job_id),
+      (j) =>
+        j.status === "done" &&
+        j.punya_video &&
+        !diambilRef.current.has(j.job_id) &&
+        (gagalRef.current[j.job_id]?.lagi ?? 0) <= sekarang,
     );
     if (perlu.length === 0) return;
     for (const j of perlu) diambilRef.current.add(j.job_id);
     void (async () => {
       for (const j of perlu) {
+        let ok = false;
         try {
           const v = await apiFetch(`/api/outro/jobs/${j.job_id}/video`);
-          if (!v.ok) {
-            diambilRef.current.delete(j.job_id);
-            continue;
+          if (v.ok) {
+            const url = URL.createObjectURL(await v.blob());
+            videoUrlRef.current[j.job_id] = url;
+            setVideoUrl((lama) => ({ ...lama, [j.job_id]: url }));
+            delete gagalRef.current[j.job_id];
+            ok = true;
           }
-          const url = URL.createObjectURL(await v.blob());
-          videoUrlRef.current[j.job_id] = url;
-          setVideoUrl((lama) => ({ ...lama, [j.job_id]: url }));
         } catch {
+          // ditangani di bawah
+        }
+        if (!ok) {
+          const coba = (gagalRef.current[j.job_id]?.coba ?? 0) + 1;
+          const jeda = Math.min(30000, 2000 * 2 ** (coba - 1));
+          gagalRef.current[j.job_id] = { coba, lagi: Date.now() + jeda };
+          setCobaVideo((lama) => ({ ...lama, [j.job_id]: coba }));
           diambilRef.current.delete(j.job_id);
+          setTimeout(() => setDetak((d) => d + 1), jeda);
         }
       }
     })();
-  }, [jobs]);
+  }, [jobs, detak]);
 
   // Blob dilepas saat halaman ditinggalkan.
   useEffect(() => {
@@ -272,8 +311,28 @@ export default function AutoOutroPage() {
     for (const url of Object.values(videoUrlRef.current)) URL.revokeObjectURL(url);
     videoUrlRef.current = {};
     diambilRef.current = new Set();
+    gagalRef.current = {};
+    setCobaVideo({});
     setVideoUrl({});
   }
+
+  // Server merender SATU per SATU; tanpa keterangan ini antrean panjang
+  // (34 channel ~ 6 menit) terlihat seperti macet.
+  const antre = jobs
+    .filter((j) => j.status === "queued")
+    .sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
+  const posisiAntre = new Map(antre.map((j, i) => [j.job_id, i + 1]));
+  const sedangRender = jobs.find((j) => j.status === "running");
+  const waktuSelesai = jobs
+    .filter((j) => j.status === "done" && j.updated)
+    .map((j) => j.updated as number)
+    .sort((a, b) => a - b);
+  const rataDetik =
+    waktuSelesai.length >= 2
+      ? Math.max(3, (waktuSelesai[waktuSelesai.length - 1] - waktuSelesai[0]) / (waktuSelesai.length - 1))
+      : 12;
+  const sisaDetik = Math.round((antre.length + (sedangRender ? 1 : 0)) * rataDetik);
+  const sisaTeks = sisaDetik >= 60 ? `±${Math.ceil(sisaDetik / 60)} menit lagi` : `±${sisaDetik} detik lagi`;
 
   const bisaJalan = rencana.length > 0 && !mengirim;
   const selesai = jobs.filter((j) => j.status === "done").length;
@@ -477,6 +536,28 @@ export default function AutoOutroPage() {
                 <p className={styles.hint}>Videonya akan muncul di sini setelah tombol ditekan.</p>
               ) : (
                 <>
+                  {adaAktif && (
+                    <>
+                      <div className={styles.progresBatang}>
+                        <div
+                          className={styles.progresIsi}
+                          style={{ width: `${Math.round((selesai / Math.max(1, jobs.length)) * 100)}%` }}
+                        />
+                      </div>
+                      <p className={styles.hint}>
+                        {sedangRender ? (
+                          <>
+                            Sedang dirender: <b>{sedangRender.channel}</b> ({sedangRender.progress}%)
+                          </>
+                        ) : (
+                          "Menunggu giliran di server"
+                        )}
+                        {" · "}
+                        {antre.length} antre · {sisaTeks}. Dirender satu per satu; boleh
+                        ditinggal, hasilnya tetap tersimpan.
+                      </p>
+                    </>
+                  )}
                   {siapUnduh > 1 && (
                     <div className={styles.aksi}>
                       <button type="button" className={styles.btnUtama} onClick={unduhSemua}>
@@ -533,7 +614,13 @@ export default function AutoOutroPage() {
                           </>
                         ) : (
                           <p className={j.status === "error" ? styles.galat : styles.hint}>
-                            {j.status === "done" ? "Mengambil video…" : j.message}
+                            {j.status === "done"
+                              ? (cobaVideo[j.job_id] ?? 0) > 0
+                                ? `Mengambil video… (coba lagi ke-${cobaVideo[j.job_id]})`
+                                : "Mengambil video…"
+                              : j.status === "queued" && posisiAntre.has(j.job_id)
+                                ? `Antrean ke-${posisiAntre.get(j.job_id)}`
+                                : j.message}
                           </p>
                         )}
                         {j.mode !== "dpp" && j.gaya && j.status === "done" && (
