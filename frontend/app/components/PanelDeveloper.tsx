@@ -33,6 +33,16 @@ type Ringkasan = {
   job_per_status: Record<string, number>;
 };
 
+/** Password sementara yang kuat dan mudah dibacakan: tanpa huruf/angka yang
+ *  mirip (0/O, 1/l/I), dipisah strip, mis. "Kuat-7mQx-4Rtp". */
+function sandiAcak(): string {
+  const huruf = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const acak = new Uint32Array(12);
+  crypto.getRandomValues(acak);
+  const k = Array.from(acak, (n) => huruf[n % huruf.length]);
+  return `Godam-${k.slice(0, 4).join("")}-${k.slice(4, 8).join("")}-${k.slice(8).join("")}`;
+}
+
 function waktu(nilai: string | null): string {
   if (!nilai) return "belum pernah";
   const d = new Date(nilai);
@@ -54,6 +64,7 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
   const [memuat, setMemuat] = useState(true);
   const [galat, setGalat] = useState("");
   const [sibuk, setSibuk] = useState("");
+  const [info, setInfo] = useState("");
   const dialog = useDialog();
 
   // Sengaja tidak memasang keadaan apa pun sebelum permintaan dikirim:
@@ -109,6 +120,64 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
       await muat();
     } catch (err) {
       setGalat(err instanceof Error ? err.message : "Gagal mengubah peran.");
+    } finally {
+      setSibuk("");
+    }
+  }
+
+  /** Setel password baru untuk akun yang pemiliknya lupa password.
+   *
+   *  Password lama tidak pernah bisa dilihat (yang tersimpan hanya hash-nya),
+   *  jadi yang dilakukan adalah menggantinya. Isian awalnya password acak yang
+   *  kuat; boleh diganti. Setelah berhasil, password disalin ke clipboard
+   *  supaya bisa langsung dikirim ke pemiliknya.
+   */
+  async function resetSandi(u: Akun) {
+    const baru = await dialog.tanya({
+      judul: `Reset password @${u.username}`,
+      pesan:
+        "Password lamanya tidak bisa dilihat, hanya bisa diganti. Semua perangkat yang " +
+        "masih masuk ke akun ini akan keluar. Berikan password baru ini ke pemiliknya " +
+        "dan minta ia menggantinya sendiri lewat menu akun.",
+      label: "Password baru",
+      nilaiAwal: sandiAcak(),
+      petunjuk: "Minimal 8 huruf, campur huruf dengan angka atau simbol.",
+      tombolYa: "Setel password",
+      maxLength: 200,
+    });
+    if (baru === null) return;
+    const sandi = baru.trim();
+    setSibuk(u.username);
+    setGalat("");
+    setInfo("");
+    try {
+      const res = await apiFetch(
+        `/api/admin/users/${encodeURIComponent(u.username)}/password`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password_baru: sandi }),
+        }
+      );
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const pesan = Array.isArray(d.detail)
+          ? "Password minimal 8 huruf."
+          : d.detail || "Gagal mengganti password.";
+        throw new Error(pesan);
+      }
+      const pesan = `Password @${u.username} sudah diganti menjadi: ${sandi}`;
+      setInfo(`${pesan}.`);
+      // Disalin tanpa ditunggu: izin clipboard bisa menggantung (peramban
+      // menunggu jendela difokuskan), dan barisnya dulu tertahan di "...".
+      void Promise.race([
+        navigator.clipboard.writeText(sandi).then(() => true),
+        new Promise<boolean>((selesai) => setTimeout(() => selesai(false), 1500)),
+      ])
+        .then((ok) => ok && setInfo(`${pesan} (sudah disalin).`))
+        .catch(() => undefined);
+    } catch (err) {
+      setGalat(err instanceof Error ? err.message : "Gagal mengganti password.");
     } finally {
       setSibuk("");
     }
@@ -180,6 +249,7 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
         )}
 
         {galat && <p className={styles.galat} role="alert">{galat}</p>}
+        {info && <p className={styles.info} role="status">{info}</p>}
 
         {memuat ? (
           <div className={styles.rangkaBungkus}>
@@ -229,6 +299,17 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
                                 ? "Cabut dev"
                                 : "Jadikan dev"}
                           </button>
+                          {u.peran !== "developer" && (
+                            <button
+                              type="button"
+                              className={styles.peranBtn}
+                              disabled={sibuk === u.username}
+                              title={`Setel password baru untuk @${u.username}`}
+                              onClick={() => void resetSandi(u)}
+                            >
+                              Reset sandi
+                            </button>
+                          )}
                           <button
                             type="button"
                             className={styles.hapusAkunBtn}
@@ -250,7 +331,8 @@ export default function PanelDeveloper({ onTutup }: { onTutup: () => void }) {
 
         <p className={styles.catatan}>
           Yang ditampilkan hanya pemakaian. Password, isian formulir, dan Session ID
-          milik akun lain tidak bisa dilihat dari sini. Menghapus akun membuang
+          milik akun lain tidak bisa dilihat dari sini; password yang lupa hanya
+          bisa diganti lewat &quot;Reset sandi&quot;. Menghapus akun membuang
           seluruh isinya dan tidak bisa dibatalkan; akunmu sendiri dihapus lewat
           menu akun, bukan dari sini.
         </p>

@@ -18,11 +18,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 import db
 import video_edit as ve
 import video_tasks as vt
-from auth_api import PERAN_DEVELOPER, TABEL, developer_wajib
+from auth_api import MIN_PASSWORD, PERAN_DEVELOPER, TABEL, developer_wajib
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -277,3 +278,63 @@ def ubah_peran(
     auth_api._sesi_cache.pop(username, None)
     logger.info("Peran %s diubah jadi %s oleh %s", username, peran, pengguna["username"])
     return {"ok": True, "username": username, "peran": peran}
+
+
+class ResetSandiBody(BaseModel):
+    password_baru: str = Field(min_length=MIN_PASSWORD, max_length=200)
+
+
+@router.post("/users/{username}/password")
+def reset_password(
+    username: str, body: ResetSandiBody, pengguna: dict[str, Any] = Depends(developer_wajib)
+) -> dict[str, Any]:
+    """Setel password baru untuk akun orang lain yang lupa passwordnya.
+
+    Developer tidak pernah MELIHAT password lama (yang tersimpan hanya hash-nya);
+    yang bisa dilakukan hanyalah menggantinya lalu memberikan password baru ke
+    pemiliknya. Nomor sesi dinaikkan, jadi perangkat mana pun yang masih masuk
+    dengan password lama langsung keluar.
+
+    Akun developer lain sengaja tidak bisa direset dari sini: kalau bisa, satu
+    developer dapat mengambil alih akun developer lainnya.
+    """
+    import auth_api
+
+    username = str(username or "").strip().lower()
+    if username == pengguna["username"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Password akunmu sendiri diganti lewat menu akun (Ganti password).",
+        )
+    if not db.enabled():
+        raise HTTPException(status_code=503, detail="Database belum dikonfigurasi.")
+    try:
+        baris = db.select(
+            TABEL, {"username": f"eq.{username}", "select": "id,peran,sesi", "limit": "1"}
+        )
+    except db.DbError as error:
+        raise HTTPException(status_code=502, detail=f"Gagal membaca akun: {error}") from error
+    if not baris:
+        raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
+    akun = baris[0]
+    if str(akun.get("peran") or "") == PERAN_DEVELOPER:
+        raise HTTPException(
+            status_code=403,
+            detail="Password akun developer lain tidak bisa direset dari sini. "
+            "Cabut dulu peran dev-nya kalau memang perlu.",
+        )
+    auth_api._tolak_kalau_lemah(body.password_baru, username)
+    auth_api._tolak_kalau_bocor(body.password_baru)
+    sesi_baru = int(akun.get("sesi") or 0) + 1
+    try:
+        db.update(
+            TABEL,
+            {"id": f"eq.{akun['id']}"},
+            {"password_hash": auth_api.hash_password(body.password_baru), "sesi": sesi_baru},
+        )
+    except db.DbError as error:
+        raise HTTPException(status_code=502, detail=f"Gagal menyimpan password: {error}") from error
+    # Cache sesi memegang nomor lama; dibuang supaya token lama langsung ditolak.
+    auth_api._sesi_cache.pop(username, None)
+    logger.info("Password %s direset oleh developer %s", username, pengguna["username"])
+    return {"ok": True, "username": username}
