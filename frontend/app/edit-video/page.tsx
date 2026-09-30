@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
 import { bacaForm, muatFormDariServer, simpanForm } from "../components/formStore";
 import LoginButton from "../components/LoginButton";
-import { apiFetch, apiUnggah, idTamu, useAkun, useSudahHidrasi } from "../components/auth";
+import { apiFetch, apiUnggah, idTamu, urlApi, useAkun, useSudahHidrasi } from "../components/auth";
 import { useDialog } from "../components/Dialog";
 
 /**
@@ -39,10 +39,7 @@ const BATAS_AWAL = { aset: 48, sumber: 48 };
 // Unggahan besar dikirim langsung ke backend, bukan lewat proxy halaman:
 // fungsi serverless Vercel membatasi badan permintaan sekitar 4 MB. Kalau
 // NEXT_PUBLIC_API_URL tidak diisi (mode lokal), tetap lewat proxy.
-const API_LANGSUNG = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-function urlUnggah(path: string): string {
-  return API_LANGSUNG ? `${API_LANGSUNG}${path}` : path;
-}
+const urlUnggah = urlApi;
 
 /** Id template dari namanya, dengan akhiran acak supaya dua nama mirip tidak bertabrakan. */
 function idBaru(nama: string): string {
@@ -1329,11 +1326,10 @@ export default function EditVideoPage() {
       if (ids.length === 0) return;
       try {
         navigator.sendBeacon(
-          "/api/video/jobs/cleanup",
+          urlApi("/api/video/jobs/cleanup"),
           // sendBeacon tidak bisa memasang header, jadi id tamu ikut di badan.
-          new Blob([JSON.stringify({ job_ids: ids, guest_id: idTamu() })], {
-            type: "application/json",
-          })
+          // Blob TANPA tipe: lintas-asal, application/json ditolak peramban.
+          new Blob([JSON.stringify({ job_ids: ids, guest_id: idTamu() })])
         );
       } catch {
         // tidak apa-apa; pembersihan berkala di server tetap jalan
@@ -1366,7 +1362,7 @@ export default function EditVideoPage() {
   function berkasJob(j: JobStatus): string {
     if (j.status !== "done") return "";
     if (j.url && /\/jobs\/[^/]+\/output\.mp4/.test(j.url)) return j.url;
-    return j.output ? `/api/video/jobs/${j.job_id}/file` : "";
+    return j.output ? urlApi(`/api/video/jobs/${j.job_id}/file`) : "";
   }
 
   async function mulaiRender() {

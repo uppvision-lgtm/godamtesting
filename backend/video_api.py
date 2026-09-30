@@ -1193,6 +1193,17 @@ class BersihkanBody(BaseModel):
     guest_id: str = ""
 
 
+async def _bersihkan_longgar(request: Request) -> BersihkanBody:
+    """Badan JSON apa pun tipe kontennya: dikirim sendBeacon lintas-asal saat
+    tab ditutup, yang hanya boleh tanpa Content-Type (lihat presence.py)."""
+    import json
+
+    try:
+        return BersihkanBody.model_validate(json.loads(await request.body() or b"{}"))
+    except Exception as error:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="Badan permintaan tidak sah.") from error
+
+
 @router.delete("/jobs/{job_id}")
 def hapus_job(
     job_id: str, pengguna: dict[str, Any] | None = Depends(identitas)
@@ -1265,7 +1276,8 @@ def ulangi_job(
 
 @router.post("/jobs/cleanup")
 def bersihkan_job(
-    body: BersihkanBody, pengguna: dict[str, Any] | None = Depends(identitas)
+    body: BersihkanBody = Depends(_bersihkan_longgar),
+    pengguna: dict[str, Any] | None = Depends(identitas),
 ) -> dict[str, int]:
     """Buang hasil render yang sudah tidak ditampilkan lagi.
 

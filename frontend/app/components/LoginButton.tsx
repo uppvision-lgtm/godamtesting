@@ -12,6 +12,7 @@ import {
   hapusSesi,
   peranSekarang,
   simpanSesi,
+  urlApi,
 } from "./auth";
 import PanelDeveloper from "./PanelDeveloper";
 
@@ -234,7 +235,7 @@ export default function LoginButton() {
     }
     setSibuk(true);
     try {
-      const res = await fetch(`/api/auth/${mode === "masuk" ? "login" : "register"}`, {
+      const res = await fetch(urlApi(`/api/auth/${mode === "masuk" ? "login" : "register"}`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password }),

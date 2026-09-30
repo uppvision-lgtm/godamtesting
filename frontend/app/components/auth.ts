@@ -112,6 +112,24 @@ export function idTamu(): string {
 }
 
 /**
+ * Alamat backend. Situs ini statis (Cloudflare Pages) dan tidak punya proxy
+ * /api lagi: semua permintaan langsung ke backend Railway. Proxy lama di
+ * Vercel adalah fungsi serverless - setiap status, video, dan koneksi
+ * penghitung pengunjung memakan kuota paket gratis sampai situsnya dihentikan
+ * ("This deployment is temporarily paused", 30 Sep 2026).
+ */
+export const API_BASE = (
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  ""
+).replace(/\/$/, "");
+
+/** "/api/..." jadi alamat lengkap backend; alamat lain dibiarkan. */
+export function urlApi(path: string): string {
+  return API_BASE && path.startsWith("/api/") ? `${API_BASE}${path}` : path;
+}
+
+/**
  * `fetch` yang membawa identitas: token login kalau sudah masuk, atau id tamu
  * kalau belum.
  */
@@ -124,7 +142,7 @@ export function apiFetch(input: string, init: RequestInit = {}): Promise<Respons
     const tamu = idTamu();
     if (tamu) headers.set("X-Guest-Id", tamu);
   }
-  return fetch(input, { ...init, headers });
+  return fetch(urlApi(input), { ...init, headers });
 }
 
 /**
@@ -159,7 +177,7 @@ export function apiUnggah(
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const tujuan = (basis || BASIS_BACKEND).replace(/\/$/, "");
+    const tujuan = (basis || BASIS_BACKEND || API_BASE).replace(/\/$/, "");
     xhr.open("POST", tujuan ? `${tujuan}${url}` : url);
     const token = ambilToken();
     if (token) {

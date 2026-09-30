@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "../auto-comment/page.module.css";
 import { bacaForm, muatFormDariServer, simpanForm } from "./formStore";
-import { apiFetch, useAkun } from "./auth";
+import { apiFetch, urlApi, useAkun } from "./auth";
 import type { Akun } from "./sosmed";
 
 type BotResult = {
@@ -111,9 +111,7 @@ function isTerminal(status: string): boolean {
 }
 
 // Semua permintaan lewat proxy Next (path relatif), diteruskan ke backend.
-function apiUrl(path: string): string {
-  return path;
-}
+const apiUrl = urlApi;
 
 export default function AutoKomen({ platform }: { platform: PlatformKomen }) {
   const info = INFO_PLATFORM[platform];

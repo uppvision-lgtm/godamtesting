@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { urlApi } from "./auth";
 
 export type PresenceStats = {
   /** Jumlah tab yang sedang membuka website ini saat ini juga. */
@@ -64,7 +65,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     // ===== JALUR CADANGAN: polling biasa =====
     const ping = async () => {
       try {
-        const res = await fetch("/api/presence/ping", {
+        const res = await fetch(urlApi("/api/presence/ping"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ visitor_id: visitorId }),
@@ -88,7 +89,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
         mulaiPolling();
         return;
       }
-      sumber = new EventSource(`/api/presence/stream?v=${encodeURIComponent(visitorId)}`);
+      sumber = new EventSource(urlApi(`/api/presence/stream?v=${encodeURIComponent(visitorId)}`));
       sumber.onmessage = (event) => {
         gagalBeruntun = 0;
         try {
@@ -114,9 +115,12 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
       sumber?.close();
       sumber = null;
       try {
+        // Blob TANPA tipe: sendBeacon lintas-asal dengan tipe application/json
+        // ditolak peramban (butuh preflight). Tanpa Content-Type, backend
+        // tetap membacanya sebagai JSON.
         navigator.sendBeacon(
-          "/api/presence/leave",
-          new Blob([JSON.stringify({ visitor_id: visitorId })], { type: "application/json" })
+          urlApi("/api/presence/leave"),
+          new Blob([JSON.stringify({ visitor_id: visitorId })])
         );
       } catch {
         // abaikan

@@ -26,7 +26,7 @@ import time
 import uuid
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -62,6 +62,20 @@ _recent: dict[str, float] = {}
 
 class PingRequest(BaseModel):
     visitor_id: str = Field(min_length=1, max_length=100)
+
+
+async def _ping_longgar(request: Request) -> PingRequest:
+    """Badan JSON apa pun tipe kontennya.
+
+    Frontend kini statis dan beda asal dengan backend. sendBeacon lintas-asal
+    hanya boleh tanpa Content-Type atau text/plain (application/json butuh
+    preflight dan ditolak peramban), sedangkan FastAPI hanya membaca JSON dari
+    permintaan bertipe application/json.
+    """
+    try:
+        return PingRequest.model_validate(json.loads(await request.body() or b"{}"))
+    except Exception as error:  # noqa: BLE001 - badan rusak = permintaan tidak sah
+        raise HTTPException(status_code=422, detail="visitor_id wajib ada.") from error
 
 
 def _purge_expired(now: float) -> None:
@@ -137,7 +151,7 @@ async def ping(request: PingRequest) -> dict[str, int]:
 
 
 @router.post("/leave")
-async def leave(request: PingRequest) -> dict[str, int]:
+async def leave(request: PingRequest = Depends(_ping_longgar)) -> dict[str, int]:
     """Dipanggil saat tab ditutup supaya angkanya langsung turun."""
     _recent.pop(request.visitor_id.strip(), None)
     return _stats()
