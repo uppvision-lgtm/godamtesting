@@ -320,14 +320,29 @@ export default function AutoKomen({ platform }: { platform: PlatformKomen }) {
       return;
     }
 
+    let queueTicket = "";
+    try {
+      const queueResponse = await apiFetch("/api/resource-queue/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: `Auto Komen ${info.nama} (${bots.length} bot)`, jumlah: bots.length }),
+      });
+      const queueData = await queueResponse.json().catch(() => ({}));
+      if (!queueResponse.ok) throw new Error(queueData.detail || "Tidak bisa masuk antrean server.");
+      queueTicket = queueData.ticket_id;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tidak bisa masuk antrean server.");
+      return;
+    }
+
     setStarting(true);
     setBots((current) =>
       current.map((bot) => ({
         ...bot,
         error: "",
         token: "",
-        status: "starting",
-        message: "Menyiapkan browser...",
+        status: "queued",
+        message: "Menunggu giliran di antrean server...",
         logs: [],
         result: null,
         frameUrl: "",
@@ -335,18 +350,23 @@ export default function AutoKomen({ platform }: { platform: PlatformKomen }) {
     );
 
     for (const bot of bots) {
+      let diterima = false;
       try {
         const res = await apiFetch(apiUrl("/api/live/start"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...bot.values, platform }),
+          body: JSON.stringify({ ...bot.values, platform, queue_ticket: queueTicket }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Gagal memulai.");
+        diterima = true;
         setBots((current) =>
           current.map((item) => (item.id === bot.id ? { ...item, token: data.token } : item))
         );
       } catch (err) {
+        if (!diterima) {
+          void apiFetch(`/api/resource-queue/tickets/${queueTicket}/skip`, { method: "POST" });
+        }
         const text = err instanceof Error ? err.message : "Gagal memulai.";
         setBots((current) =>
           current.map((item) =>

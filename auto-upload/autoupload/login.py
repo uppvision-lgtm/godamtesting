@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import resource_queue
 
 from autoupload.browser import (
     STEALTH_ARGS,
@@ -57,6 +58,8 @@ _state: dict[str, dict] = {}
 _lock = threading.Lock()
 # key -> threading.Event used to signal "user finished logging in"
 _finish_events: dict[str, threading.Event] = {}
+_queue_cancel: dict[str, threading.Event] = {}
+_queue_tickets: dict[str, tuple[str, str]] = {}
 
 
 def status(platform: str) -> dict:
@@ -64,6 +67,7 @@ def status(platform: str) -> dict:
     return {
         "platform": platform,
         "running": st.get("running", False),
+        "queued": st.get("queued", False),
         "message": st.get("message", ""),
         "has_session": bool(session_names(platform)),
         "saved_at": st.get("saved_at"),
@@ -97,7 +101,18 @@ def _has_live_browser(platform: str) -> bool:
 
 def cancel(platform: str) -> dict:
     """Batalkan login yang nyangkut: tutup browser & reset state."""
-    subprocess.run(["pkill", "-f", f"browser_profiles/{platform}"], capture_output=True)
+    queued = _state.get(platform, {}).get("queued", False)
+    cancel_event = _queue_cancel.get(platform)
+    ticket_owner = _queue_tickets.get(platform)
+    if queued and cancel_event:
+        cancel_event.set()
+        if ticket_owner:
+            try:
+                resource_queue.kurangi_tiket(ticket_owner[0], ticket_owner[1])
+            except Exception:
+                pass
+    else:
+        subprocess.run(["pkill", "-f", f"browser_profiles/{platform}"], capture_output=True)
     with _lock:
         _state[platform] = {
             "running": False,
@@ -106,16 +121,18 @@ def cancel(platform: str) -> dict:
             "session_name": "default",
         }
     ev = _finish_events.get(platform)
-    if ev:
+    if ev and not queued:
         ev.set()
     return {"ok": True, "message": _state[platform]["message"]}
 
 
-def start(platform: str, session_name: str = "default") -> dict:
+def start(platform: str, session_name: str = "default", owner: str = "tamu") -> dict:
     if platform not in LOGIN_URLS:
         return {"ok": False, "error": f"Browser login tidak tersedia untuk '{platform}'"}
     session_name = (session_name or "default").strip().lower().replace(" ", "_") or "default"
     with _lock:
+        if _state.get(platform, {}).get("queued"):
+            return {"ok": False, "error": f"Login '{platform}' masih menunggu giliran."}
         # Per-platform lock: one login per platform, but different platforms
         # can log in at the same time.
         if _state.get(platform, {}).get("running"):
@@ -137,18 +154,34 @@ def start(platform: str, session_name: str = "default") -> dict:
                 ["pkill", "-f", f"browser_profiles/{platform}"], capture_output=True
             )
             time.sleep(1.5)
+        try:
+            ticket = resource_queue.buat_tiket(owner, f"Login akun {platform.title()}")
+        except resource_queue.ResourceQueueError as error:
+            return {"ok": False, "error": str(error)}
+        finish_event = threading.Event()
+        cancel_event = threading.Event()
+        _finish_events[platform] = finish_event
+        _queue_cancel[platform] = cancel_event
+        _queue_tickets[platform] = (ticket, owner)
         _state[platform] = {
             "running": True,
-            "message": "Browser dibuka...",
+            "queued": True,
+            "message": "Menunggu giliran di antrean server...",
             "saved_at": None,
             "session_name": session_name,
         }
-    thread = threading.Thread(target=_run_login, args=(platform, session_name), daemon=True)
+    thread = threading.Thread(
+        target=_run_login_dengan_antrean,
+        args=(platform, session_name, ticket, owner, cancel_event, finish_event),
+        daemon=True,
+    )
     thread.start()
     return {"ok": True}
 
 
 def finish(platform: str) -> dict:
+    if _state.get(platform, {}).get("queued"):
+        return {"ok": False, "error": "Login masih menunggu giliran antrean server."}
     event = _finish_events.get(platform)
     if not event:
         return {"ok": False, "error": "Tidak ada login yang berjalan"}
@@ -161,10 +194,42 @@ def finish(platform: str) -> dict:
     return {"ok": not st.get("running", False), "message": st.get("message", "")}
 
 
-def _run_login(platform: str, session_name: str) -> None:
+def _run_login_dengan_antrean(
+    platform: str,
+    session_name: str,
+    ticket: str,
+    owner: str,
+    cancel_event: threading.Event,
+    finish_event: threading.Event,
+) -> None:
+    try:
+        with resource_queue.giliran(ticket, cancel_event):
+            if cancel_event.is_set():
+                return
+            with _lock:
+                _state[platform] = {
+                    **_state.get(platform, {}),
+                    "queued": False,
+                    "message": "Browser dibuka...",
+                }
+            _run_login(platform, session_name, finish_event)
+    except resource_queue.ResourceQueueCancelled:
+        return
+    except Exception as error:  # noqa: BLE001
+        with _lock:
+            _state[platform] = {
+                "running": False,
+                "queued": False,
+                "message": f"Gagal: {type(error).__name__}: {error}",
+                "saved_at": None,
+                "session_name": session_name,
+            }
+
+
+def _run_login(platform: str, session_name: str, event: threading.Event | None = None) -> None:
     from playwright.sync_api import sync_playwright
 
-    event = threading.Event()
+    event = event or threading.Event()
     _finish_events[platform] = event
 
     def _set(msg: str) -> None:

@@ -38,6 +38,7 @@ from browser_config import (
     frame_quality,
     viewport,
 )
+import resource_queue
 
 logger = logging.getLogger("live")
 import jatah_tamu
@@ -62,16 +63,6 @@ def _modul_bot(platform: str):
             detail=f"platform harus salah satu dari: {', '.join(PLATFORM_KOMENTAR)}",
         )
     return importlib.import_module(nama)
-
-# Batas browser yang boleh jalan bersamaan. Default 0 = tanpa batas: berapa pun
-# bot yang diminta akan dijalankan. Setiap sesi memakan satu Chromium (±300MB
-# di server), jadi kalau suatu saat server terasa berat, batas bisa dipasang
-# lagi lewat env LIVE_MAX_SESSIONS (mis. 5) tanpa mengubah kode.
-# Bawaannya 3, bukan tanpa batas. Tiap sesi memakai satu tab pada Chromium
-# bersama, dan di kontainer 954 MB beberapa tab instagram.com sudah cukup
-# untuk membuat kernel membunuh perambannya. Naikkan lewat LIVE_MAX_SESSIONS
-# kalau servernya memang lebih besar; 0 berarti tanpa batas seperti dulu.
-MAX_CONCURRENT_SESSIONS = max(0, int(os.getenv("LIVE_MAX_SESSIONS", "3")))
 
 # 1 Chromium dipakai bersama semua bot (tiap bot = 1 tab/context). Hasil ukur
 # lokal 5 bot: 5 browser terpisah 1392MB/21 proses vs 1 browser + 5 tab
@@ -205,6 +196,7 @@ class StartRequest(BaseModel):
     max_posts: int = 3
     # Nada komentar yang dipilih user di form: positif (default) | netral | negatif
     tone: str = "positif"
+    queue_ticket: str = ""
 
 
 def _akun_tertaut(
@@ -259,8 +251,8 @@ def _akun_tertaut(
 class LiveSession:
     def __init__(self, token: str) -> None:
         self.token = token
-        self.status = "starting"  # starting|running|completed|error
-        self.message = "Menyiapkan browser..."
+        self.status = "queued"  # queued|starting|running|completed|error
+        self.message = "Menunggu giliran di antrean server..."
         self.logs: list[str] = []
         self.result: dict | None = None
         ukuran = viewport()
@@ -280,6 +272,9 @@ class LiveSession:
         self._closing: asyncio.Task | None = None
         self._capture_task: asyncio.Task | None = None
         self._job_task: asyncio.Task | None = None
+        self.queue_ticket = ""
+        self.queue_owner = "tamu"
+        self._queue_cancel = threading.Event()
 
     def is_browser_alive(self) -> bool:
         """True selama Chromium sesi ini benar-benar berjalan.
@@ -292,7 +287,7 @@ class LiveSession:
         if self._page is not None:
             return not self._page.is_closed()
         # Belum punya tab tapi masih "starting" = Chromium sedang dibuka.
-        return self.status == "starting" and self._running
+        return self.status in ("starting", "running") and self._running
 
     def add_log(self, text: str) -> None:
         self.logs.append(text)
@@ -311,23 +306,51 @@ class LiveSession:
         platform: str = "instagram",
     ) -> None:
         """Dipanggil dari loop FastAPI; browsernya dibuka di thread khusus."""
-        bot = _modul_bot(platform)
         await _RUNTIME.run(
-            self._start_di_thread_browser(
-                username,
-                session_id,
-                pesan=f"Session dipasang. Membuka @{target} ...",
-                awal=[
-                    f"Session diterima untuk akun {username} ({platform})",
-                    f"Tone komentar: {tone}",
-                    f"Menuju channel @{target}",
-                ],
-                buat_job=lambda: self._run_job(
-                    username, target, comment_count, max_posts, tone, proses=bot._process_posts
-                ),
-                pasang_cookie=bot._add_session_cookie,
+            self._run_with_queue(
+                self.queue_ticket, username, session_id, target,
+                comment_count, max_posts, tone, platform,
             )
         )
+
+    async def _run_with_queue(
+        self,
+        ticket: str,
+        username: str,
+        session_id: str,
+        target: str,
+        comment_count: int,
+        max_posts: int,
+        tone: str,
+        platform: str,
+    ) -> None:
+        try:
+            async with resource_queue.giliran_async(ticket, self._queue_cancel):
+                if self._queue_cancel.is_set():
+                    raise resource_queue.ResourceQueueCancelled("Pekerjaan antrean dibatalkan.")
+                self.status = "starting"
+                bot = _modul_bot(platform)
+                await self._start_di_thread_browser(
+                    username,
+                    session_id,
+                    pesan=f"Session dipasang. Membuka @{target} ...",
+                    awal=[
+                        f"Session diterima untuk akun {username} ({platform})",
+                        f"Tone komentar: {tone}",
+                        f"Menuju channel @{target}",
+                    ],
+                    buat_job=lambda: self._run_job(
+                        username, target, comment_count, max_posts, tone,
+                        proses=bot._process_posts,
+                    ),
+                    pasang_cookie=bot._add_session_cookie,
+                )
+                if self._job_task is not None:
+                    await self._job_task
+        except Exception as exc:
+            self.status = "error"
+            self.message = f"Antrean server gagal: {type(exc).__name__}: {exc}"
+            self.add_log(self.message)
 
     async def _start_di_thread_browser(
         self,
@@ -535,6 +558,15 @@ class LiveSession:
 
     async def _close_di_thread_browser(self) -> None:
         self._running = False
+        if self.queue_ticket:
+            try:
+                self._queue_cancel.set()
+                if self.status == "queued":
+                    await asyncio.to_thread(
+                        resource_queue.kurangi_tiket, self.queue_ticket, self.queue_owner, 1
+                    )
+            except Exception:
+                pass
         for task in (self._capture_task, self._job_task):
             if task is None:
                 continue
@@ -596,27 +628,31 @@ async def start_live(
         )
     tone = normalize_tone(tone_input)
 
-    if MAX_CONCURRENT_SESSIONS:
-        aktif = active_session_count()
-        if aktif >= MAX_CONCURRENT_SESSIONS:
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    f"Maksimal {MAX_CONCURRENT_SESSIONS} bot berjalan bersamaan. "
-                    "Tunggu salah satu selesai lalu coba lagi."
-                ),
-            )
     token = uuid.uuid4().hex
+    owner = str(pengguna.get("username") or "tamu")
+    try:
+        ticket = request.queue_ticket.strip()
+        if ticket:
+            if not resource_queue.tiket_milik(ticket, owner):
+                raise HTTPException(status_code=403, detail="Tiket antrean tidak sah.")
+        else:
+            ticket = resource_queue.buat_tiket(owner, f"Auto Komen {platform.title()}")
+    except resource_queue.ResourceQueueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     session = LiveSession(token)
+    session.queue_ticket = ticket
+    session.queue_owner = owner
     _SESSIONS[token] = session
-    await session.start(
-        nama_akun,
-        sesi,
-        request.target.strip(),
-        request.comment_count,
-        request.max_posts,
-        tone,
-        platform,
+    asyncio.create_task(
+        session.start(
+            nama_akun,
+            sesi,
+            request.target.strip(),
+            request.comment_count,
+            request.max_posts,
+            tone,
+            platform,
+        )
     )
     return {"token": token, "width": session.width, "height": session.height}
 

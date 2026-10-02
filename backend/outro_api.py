@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 import outro
+import resource_queue
 from auth_api import developer_wajib
 
 router = APIRouter(prefix="/api/outro", tags=["outro"])
@@ -38,6 +39,7 @@ class OutroBody(BaseModel):
     # "biasa": gaya acak bersumbu (bawaan). "dpp": meniru outro TV Rakyat
     # apa adanya - nama channel ditulis melengkung di logo, sosmed dari isian.
     mode: Literal["biasa", "dpp"] = "biasa"
+    queue_ticket: str | None = Field(default=None, max_length=64)
 
 
 @router.get("/jobs")
@@ -51,9 +53,16 @@ def daftar(
 
 
 @router.post("/jobs")
-def buat(body: OutroBody, _: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
+def buat(body: OutroBody, pengguna: dict[str, Any] = Depends(developer_wajib)) -> dict[str, Any]:
     try:
-        job_id = outro.mulai_job(body.channel, body.akun, body.seed, mode=body.mode)
+        ticket = body.queue_ticket or resource_queue.buat_tiket(
+            str(pengguna.get("username") or "developer"), "Auto Outro"
+        )
+        if not resource_queue.tiket_milik(ticket, str(pengguna.get("username") or "developer")):
+            raise HTTPException(status_code=403, detail="Tiket antrean tidak sah.")
+        job_id = outro.mulai_job(
+            body.channel, body.akun, body.seed, mode=body.mode, ticket_id=ticket
+        )
     except outro.OutroError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     job = outro.baca_job(job_id) or {}

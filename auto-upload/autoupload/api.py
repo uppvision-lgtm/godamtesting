@@ -35,6 +35,7 @@ from autoupload.platforms import REGISTRY
 from autoupload.rahasia import buka, sandikan
 from autoupload.service import _buang_media, bersihkan_riwayat, create_post, run_post
 from autoupload.verify import periksa_sesi
+import resource_queue
 
 log = logging.getLogger("autoupload")
 
@@ -124,6 +125,7 @@ class UploadRequest(BaseModel):
     # Kirim ke banyak akun sekaligus, satu baris per akun. Kalau diisi,
     # `platforms` dan `account_ids` diabaikan.
     items: list[ItemUpload] = Field(default_factory=list)
+    queue_ticket: str = ""
 
 
 class AccountRequest(BaseModel):
@@ -228,8 +230,10 @@ async def upload_media(
         raise HTTPException(400, "File kosong")
 
     if suffix in VIDEO_EXT and suffix not in VIDEO_LANGSUNG:
-        dest = await asyncio.to_thread(_jadikan_mp4, dest)
-        size = dest.stat().st_size
+        ticket = resource_queue.buat_tiket(pemilik or "tamu", "Siapkan video Auto Upload")
+        async with resource_queue.giliran_async(ticket):
+            dest = await asyncio.to_thread(_jadikan_mp4, dest)
+            size = dest.stat().st_size
 
     return {
         "media_path": str(dest),
@@ -351,6 +355,10 @@ async def upload(
         if run_at <= datetime.now(timezone.utc):
             run_at = None                     # sudah lewat -> jalankan sekarang
 
+    ticket = req.queue_ticket.strip()
+    if ticket and not resource_queue.tiket_milik(ticket, pemilik or "tamu"):
+        raise HTTPException(403, "Tiket antrean tidak sah.")
+
     post = create_post(
         db,
         owner=pemilik,
@@ -366,7 +374,9 @@ async def upload(
     # milik platformnya, bukan proses di laptop ini. Jadi kalau laptop mati
     # nanti, postingan tetap terbit pada waktunya.
     if req.tunggu:
-        results = await run_post(post.id)
+        ticket = ticket or resource_queue.buat_tiket(pemilik or "tamu", "Auto Upload")
+        async with resource_queue.giliran_async(ticket):
+            results = await run_post(post.id)
         db.expire_all()
         status = db.query(Post).filter(Post.id == post.id).first().status
         return {"post_id": post.id, "status": status, "results": results}
@@ -375,18 +385,20 @@ async def upload(
     # selama itu membuatnya mustahil lewat proxy Vercel yang memutus di 60
     # detik, dan membuat menutup tab berarti kehilangan hasilnya. Jadi
     # jobnya dilepas ke latar belakang dan halaman menanyakan statusnya.
-    asyncio.create_task(_jalankan_di_latar(post.id))
+    ticket = ticket or resource_queue.buat_tiket(pemilik or "tamu", "Auto Upload")
+    asyncio.create_task(_jalankan_di_latar(post.id, ticket))
     return {"post_id": post.id, "status": "processing", "results": []}
 
 
-async def _jalankan_di_latar(post_id: int) -> None:
+async def _jalankan_di_latar(post_id: int, ticket: str) -> None:
     """Jalankan satu post, dan pastikan galatnya tidak hilang diam-diam.
 
     Task latar yang melempar hanya menghasilkan peringatan asyncio yang tidak
     terbaca siapa pun, dan barisnya akan menggantung di "processing".
     """
     try:
-        await run_post(post_id)
+        async with resource_queue.giliran_async(ticket):
+            await run_post(post_id)
     except Exception:  # noqa: BLE001
         log.exception("Post #%s gagal di latar belakang", post_id)
         db = SessionLocal()
@@ -774,7 +786,9 @@ async def verify_account(
     if not account.session_id:
         raise HTTPException(400, "Akun ini tidak punya Session ID untuk diperiksa")
 
-    hasil = await periksa_sesi(account.platform, buka(account.session_id))
+    ticket = resource_queue.buat_tiket(pemilik or "tamu", f"Periksa akun {account.platform}")
+    async with resource_queue.giliran_async(ticket):
+        hasil = await periksa_sesi(account.platform, buka(account.session_id))
     extra = dict(account.extra or {})
     extra.update(
         {
@@ -828,9 +842,13 @@ def login_sessions() -> list[dict]:
 
 
 @router.post("/login/{platform}/start")
-def login_start(platform: str, session_name: str = "default") -> dict:
+def login_start(
+    platform: str,
+    session_name: str = "default",
+    pemilik: str = Depends(pemilik_saat_ini),
+) -> dict:
     """Buka jendela browser supaya user bisa login manual."""
-    result = login.start(platform, session_name)
+    result = login.start(platform, session_name, pemilik)
     if not result.get("ok"):
         raise HTTPException(400, result.get("error", "gagal membuka browser"))
     return login.status(platform)

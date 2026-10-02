@@ -21,6 +21,7 @@ import logging
 import os
 import time
 import uuid
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -29,6 +30,7 @@ from pydantic import BaseModel, Field
 # fitur live lain di server ini.
 from live_session import _RUNTIME
 from browser_config import browser_args
+import resource_queue
 
 # Paket autoupload dimuat MALAS: sys.path-nya disiapkan main.py (letaknya
 # beda di laptop dan di image server), dan router ini hanya dipasang kalau
@@ -90,8 +92,8 @@ class SesiLogin:
         self.platform = platform
         self.lebar, self.tinggi, self.dpr = _ukuran_aman(lebar, tinggi, dpr)
         self.seluler = bool(seluler)
-        self.status = "starting"  # starting|running|done|error
-        self.pesan = "Menyiapkan halaman login..."
+        self.status = "queued"  # queued|starting|running|done|error
+        self.pesan = "Menunggu giliran di antrean server..."
         self.session_id = ""
         self.nama_akun = ""
         self.dibuat = time.monotonic()
@@ -113,6 +115,7 @@ class SesiLogin:
         # yang ditinggalkan (tab ditutup sebelum selesai).
         self._ws_ada = False
         self._ws_terakhir = time.monotonic()
+        self._tutup_event = threading.Event()
 
     # -- dijalankan di thread Playwright --
 
@@ -145,6 +148,7 @@ class SesiLogin:
             logger.exception("login-layar gagal disiapkan")
             self.status = "error"
             self.pesan = f"Gagal menyiapkan halaman: {type(exc).__name__}"
+            await self._matikan()
 
     async def _mulai_screencast(self) -> None:
         await self._cdp.send("Page.startScreencast", {
@@ -277,6 +281,7 @@ class SesiLogin:
             except Exception:  # noqa: BLE001
                 pass
         self._context = self._browser = self._pw = self._page = None
+        self._tutup_event.set()
 
 
 # ---------------------------------------------------------------- endpoint
@@ -310,18 +315,30 @@ def _wajib_login():
 async def mulai(body: MulaiBody, pengguna=Depends(_wajib_login)) -> dict:
     if body.platform not in PLATFORM_LAYAR:
         raise HTTPException(400, "Platform ini tidak bisa login lewat layar.")
-    # Satu sesi login pada satu waktu: peramban server memakan memori, dan
-    # login yang ditinggalkan membersihkan dirinya lewat batas umur.
-    aktif = [s for s in _SESI.values() if s.status in ("starting", "running")]
-    if len(aktif) >= int(os.getenv("LOGIN_LAYAR_MAKS", "2")):
-        raise HTTPException(429, "Sedang ada login lain berjalan. Coba lagi sebentar.")
-    sesi = SesiLogin(_pemilik(pengguna), body.platform,
-                     body.lebar, body.tinggi, body.dpr, body.seluler)
+    pemilik = _pemilik(pengguna) or "tamu"
+    try:
+        ticket = resource_queue.buat_tiket(pemilik, f"Login akun {body.platform.title()}")
+    except resource_queue.ResourceQueueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    sesi = SesiLogin(pemilik, body.platform, body.lebar, body.tinggi, body.dpr, body.seluler)
     _SESI[sesi.token] = sesi
     _bersihkan()
-    await _RUNTIME.run(sesi.mulai())
+    asyncio.create_task(_jalankan_dengan_antrean(sesi, ticket))
     return {"token": sesi.token, "lebar": sesi.lebar, "tinggi": sesi.tinggi,
             "dpr": sesi.dpr, "status": sesi.status}
+
+
+async def _jalankan_dengan_antrean(sesi: SesiLogin, ticket: str) -> None:
+    try:
+        async with resource_queue.giliran_async(ticket, sesi._tutup_event):
+            if sesi._tutup_event.is_set():
+                return
+            await _RUNTIME.run(sesi.mulai())
+            await asyncio.to_thread(sesi._tutup_event.wait)
+    except Exception as error:  # noqa: BLE001
+        sesi.status = "error"
+        sesi.pesan = f"Antrean server gagal: {type(error).__name__}"
+        sesi._tutup_event.set()
 
 
 def _ambil(token: str) -> SesiLogin:

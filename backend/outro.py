@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import storage
+import resource_queue
 from video_edit import FFMPEG_BIN, FONT_BUNDLED, MEDIA_DIR, ruang_media
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,7 @@ def mulai_job(
     seed: int | None = None,
     logo_path: str | None = None,
     mode: str = "biasa",
+    ticket_id: str | None = None,
 ) -> str:
     channel = " ".join(str(channel or "").split())
     if not channel:
@@ -252,6 +254,7 @@ def mulai_job(
     if mode not in MODE_SAH:
         raise OutroError(f"Mode '{mode}' tidak dikenal.")
     job_id = uuid.uuid4().hex[:12]
+    ticket = ticket_id or resource_queue.buat_tiket("developer", "Auto Outro")
     if seed is None:
         # Dari 12 digit heksa job_id langsung. Dulu di-pad kanan menjadi UUID
         # lalu diambil 31 bit terendahnya - yang semuanya nol - sehingga tiap
@@ -280,7 +283,7 @@ def mulai_job(
             "updated": time.time(),
         }
     _batal[job_id] = threading.Event()
-    threading.Thread(target=_jalankan, args=(job_id,), name=f"outro-{job_id}", daemon=True).start()
+    threading.Thread(target=_jalankan, args=(job_id, ticket), name=f"outro-{job_id}", daemon=True).start()
     return job_id
 
 
@@ -288,10 +291,10 @@ def mulai_job(
 RUANG_OUTRO_MB = float(os.getenv("OUTRO_RUANG_MIN_MB", "40"))
 
 
-def _jalankan(job_id: str) -> None:
+def _jalankan(job_id: str, ticket: str) -> None:
     ev = _batal[job_id]
     folder = outro_dir() / job_id
-    with _sedang_jalan:
+    with resource_queue.giliran(ticket), _sedang_jalan:
         try:
             job = baca_job(job_id) or {}
             if ev.is_set():

@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 import storage
+import resource_queue
 import jatah_tamu
 import video_edit as ve
 import video_hook as vh
@@ -120,6 +121,7 @@ class BatchBody(BaseModel):
     # Warna tulisan berita khusus render ini. Kosong = ikut setelan tiap
     # template, yang memang berbeda-beda antar template.
     teks_warna: str | None = None
+    queue_ticket: str = ""
 
     @field_validator("teks_warna")
     @classmethod
@@ -792,7 +794,15 @@ async def unggah_aset(
         tujuan.unlink(missing_ok=True)
         raise
 
-    ukuran = _rapikan_gambar(tujuan) or _rapikan_video(tujuan) or ukuran
+    try:
+        ticket = resource_queue.buat_tiket(
+            _nama_akun(pengguna) or "tamu", "Siapkan aset video"
+        )
+        async with resource_queue.giliran_async(ticket):
+            ukuran = _rapikan_gambar(tujuan) or _rapikan_video(tujuan) or ukuran
+    except resource_queue.ResourceQueueError as error:
+        tujuan.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
     # Template tamu memang tidak disimpan permanen, jadi tidak perlu didorong.
     if storage.enabled() and not ve.is_tamu(_nama_akun(pengguna)):
@@ -837,7 +847,10 @@ def mulai_job(
         or _sesi_dari_akun(body.account_id, pengguna)
         or _sesi_instagram_otomatis(pengguna, body.url)
     )
-    vt.render_video.delay(job_id, body.url.strip(), body.template_id, body.texts, sesi)
+    ticket = resource_queue.buat_tiket(_nama_akun(pengguna) or "tamu", "Auto Edit Video")
+    vt.render_video.delay(
+        job_id, body.url.strip(), body.template_id, body.texts, sesi, queue_ticket=ticket
+    )
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -1033,10 +1046,28 @@ def mulai_banyak_job(
     # Dikirim hanya kalau memang diminta, supaya worker versi lama pun tetap
     # menerima panggilan yang bentuknya persis seperti sebelumnya.
     tambahan = {"teks_warna": body.teks_warna} if body.teks_warna else {}
+    ticket = body.queue_ticket.strip()
+    if ticket:
+        if not resource_queue.tiket_milik(ticket, pemilik or "tamu"):
+            raise HTTPException(status_code=403, detail="Tiket antrean tidak sah.")
+    else:
+        ticket = resource_queue.buat_tiket(
+            pemilik or "tamu", f"Auto Edit Video ({len(ids)} template)", len(ids)
+        )
     for tid in ids:
         job_id = vt.buat_job(url, tid, body.texts, owner=pemilik)
-        vt.render_video.delay(job_id, url, tid, body.texts, sesi, **tambahan)
-        jobs.append({"job_id": job_id, "template_id": tid, "status": "queued"})
+        try:
+            vt.render_video.delay(
+                job_id, url, tid, body.texts, sesi, queue_ticket=ticket, **tambahan
+            )
+            jobs.append({"job_id": job_id, "template_id": tid, "status": "queued"})
+        except Exception as error:  # noqa: BLE001 - broker failure affects this item only
+            pesan = f"Tidak bisa mengirim render ke worker: {type(error).__name__}: {error}"
+            vt.tulis_status(job_id, status="error", error=pesan, log=pesan)
+            resource_queue.kurangi_tiket(ticket, pemilik or "tamu")
+            jobs.append(
+                {"job_id": job_id, "template_id": tid, "status": "error", "error": pesan}
+            )
     return {"jobs": jobs}
 
 
@@ -1270,7 +1301,10 @@ def ulangi_job(
     _pastikan_antrean_muat(1)
     pemilik = _nama_akun(pengguna) or ""
     baru = vt.buat_job(sumber, template_id, status.get("texts") or {}, owner=pemilik)
-    vt.render_video.delay(baru, sumber, template_id, status.get("texts") or {}, "")
+    ticket = resource_queue.buat_tiket(pemilik or "tamu", "Auto Edit Video: ulangi")
+    vt.render_video.delay(
+        baru, sumber, template_id, status.get("texts") or {}, "", queue_ticket=ticket
+    )
     return {"job_id": baru, "template_id": template_id, "status": "queued"}
 
 

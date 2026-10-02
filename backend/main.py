@@ -26,10 +26,11 @@ from perangkat_api import router as perangkat_router
 from presence import router as presence_router
 import video_edit
 from video_api import router as video_router
-from auth_api import pengguna_wajib, router as auth_router
+from auth_api import identitas, pengguna_wajib, router as auth_router
 from forms_api import router as forms_router
 from admin_api import router as admin_router
 from outro_api import router as outro_router
+import resource_queue
 
 
 # ============================================================
@@ -122,6 +123,53 @@ app.include_router(auth_router)
 app.include_router(forms_router)
 app.include_router(admin_router)
 app.include_router(outro_router)
+
+
+class ResourceTicketRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=100)
+    jumlah: int = Field(default=1, ge=1, le=500)
+
+
+def _pemilik_antrean(pengguna: dict | None) -> str:
+    if not pengguna:
+        raise HTTPException(status_code=401, detail="Identitas pengguna tidak tersedia.")
+    return str(pengguna.get("username") or "tamu")
+
+
+@app.post("/api/resource-queue/tickets")
+def buat_tiket_antrean(
+    body: ResourceTicketRequest,
+    pengguna: dict | None = Depends(identitas),
+) -> dict[str, str | int]:
+    try:
+        ticket = resource_queue.buat_tiket(
+            _pemilik_antrean(pengguna), body.label, body.jumlah, reserved=True
+        )
+        return {"ticket_id": ticket, "position": resource_queue.status_antrean(_pemilik_antrean(pengguna))["waiting"]}
+    except resource_queue.ResourceQueueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/resource-queue/status")
+def status_antrean(
+    pengguna: dict | None = Depends(identitas),
+) -> dict:
+    try:
+        return resource_queue.status_antrean(_pemilik_antrean(pengguna))
+    except resource_queue.ResourceQueueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/resource-queue/tickets/{ticket_id}/skip")
+def lewati_item_antrean(
+    ticket_id: str,
+    pengguna: dict | None = Depends(identitas),
+) -> dict[str, bool]:
+    try:
+        ok = resource_queue.kurangi_tiket(ticket_id, _pemilik_antrean(pengguna), 1)
+        return {"ok": ok}
+    except resource_queue.ResourceQueueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 if sosmed_router is not None:
     # WAJIB login. Session ID sosmed setara password akun, dan router ini

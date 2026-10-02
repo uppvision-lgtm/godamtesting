@@ -27,7 +27,7 @@ MAKS_PANJANG_GALAT = int(os.getenv("AUTOUPLOAD_MAKS_GALAT", "240"))
 # Berapa akun yang diunggah BERSAMAAN. Tiap unggahan menjalankan satu
 # Chromium yang memakan ratusan megabyte, jadi mengerjakan seratus akun
 # sekaligus akan menghabiskan memori mesin apa pun. Sisanya mengantre.
-MAKS_PARALEL = max(1, int(os.getenv("AUTOUPLOAD_MAKS_PARALEL", "3")))
+MAKS_PARALEL = max(1, int(os.getenv("AUTOUPLOAD_MAKS_PARALEL", "1")))
 # Batas keras satu target. Karena target dikerjakan bergiliran, SATU yang
 # menggantung menyandera semua sisanya - selamanya, sebab tidak ada satu pun
 # langkah adapter yang punya batas menyeluruh. Diamati langsung: sembilan akun

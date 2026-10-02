@@ -16,6 +16,7 @@ from playwright.async_api import async_playwright
 from celery_app import celery_app
 from browser_config import browser_args, viewport
 from comment_ai import TONES, generate_comments as generate_ai_comments, normalize_tone
+import resource_queue
 
 
 logger = logging.getLogger(__name__)
@@ -1255,8 +1256,7 @@ async def _run_bot_async(
             await browser.close()
 
 
-@celery_app.task(bind=True, name="run_instagram_bot")
-def run_instagram_bot(
+def _run_instagram_bot(
     self: Any,
     username: str,
     target: str,
@@ -1295,3 +1295,23 @@ def run_instagram_bot(
     except Exception as error:
         logger.exception("Instagram bot task %s failed", self.request.id)
         return {"status": "error", "message": str(error)}
+
+
+@celery_app.task(bind=True, name="run_instagram_bot")
+def run_instagram_bot(
+    self: Any,
+    username: str,
+    target: str,
+    comment_count: int,
+    session_id: str = "",
+    tone: str = "positif",
+    queue_ticket: str = "",
+) -> dict[str, Any]:
+    """Run the legacy comment task only while holding the global RAM slot."""
+    ticket = queue_ticket or resource_queue.buat_tiket(username, "Auto Komen Instagram")
+    try:
+        with resource_queue.giliran(ticket):
+            return _run_instagram_bot(self, username, target, comment_count, session_id, tone)
+    except Exception as error:  # noqa: BLE001 - expose scheduler failures as task results
+        logger.exception("Global resource queue failed for Instagram bot %s", self.request.id)
+        return {"status": "error", "message": f"Antrean server gagal: {error}"}

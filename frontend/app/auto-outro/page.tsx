@@ -240,6 +240,19 @@ export default function AutoOutroPage() {
       return;
     }
     setGalatJob("");
+    let queueTicket = "";
+    try {
+      const antre = await apiFetch("/api/resource-queue/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: `Auto Outro (${rencana.length})`, jumlah: rencana.length }),
+      });
+      if (!antre.ok) throw new Error(await bacaGalat(antre, "Tidak bisa masuk antrean server."));
+      queueTicket = (await antre.json()).ticket_id;
+    } catch (error) {
+      setGalatJob(error instanceof Error ? error.message : "Tidak bisa masuk antrean server.");
+      return;
+    }
     const baru: Job[] = [];
     const galat: string[] = [];
     for (let i = 0; i < rencana.length; i++) {
@@ -249,10 +262,11 @@ export default function AutoOutroPage() {
         const r = await apiFetch("/api/outro/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel: r0.channel, akun: r0.akun, mode }),
+          body: JSON.stringify({ channel: r0.channel, akun: r0.akun, mode, queue_ticket: queueTicket }),
         });
         if (!r.ok) {
           galat.push(`${r0.channel}: ${await bacaGalat(r, "gagal memulai")}`);
+          void apiFetch(`/api/resource-queue/tickets/${queueTicket}/skip`, { method: "POST" });
           continue;
         }
         const j = await r.json();
@@ -274,6 +288,7 @@ export default function AutoOutroPage() {
         setJobs((lama) => [...lama, job]);
       } catch {
         galat.push(`${r0.channel}: backend tidak merespons`);
+        void apiFetch(`/api/resource-queue/tickets/${queueTicket}/skip`, { method: "POST" });
       }
     }
     setMengirim(null);

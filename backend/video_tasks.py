@@ -26,6 +26,7 @@ from typing import Any
 import redis
 
 import storage
+import resource_queue
 from celery.signals import worker_ready
 
 from celery_app import celery_app
@@ -540,8 +541,7 @@ def _bersihkan_setelah_gagal(job_id: str, folder: Path) -> None:
         logger.exception("Pembersihan job lama gagal")
 
 
-@celery_app.task(bind=True, name="render_video")
-def render_video(
+def _render_video(
     self: Any,
     job_id: str,
     url: str,
@@ -631,4 +631,30 @@ def render_video(
         pesan = f"{type(error).__name__}: {error}"
         tulis_status(job_id, status="error", error=pesan, log=f"Gagal: {pesan}")
         _bersihkan_setelah_gagal(job_id, folder)
+        return {"job_id": job_id, "status": "error", "error": pesan}
+
+
+@celery_app.task(bind=True, name="render_video")
+def render_video(
+    self: Any,
+    job_id: str,
+    url: str,
+    template_id: str,
+    texts: dict[str, str] | None = None,
+    session_id: str = "",
+    teks_warna: str = "",
+    queue_ticket: str = "",
+) -> dict[str, Any]:
+    """Serialize source downloads and renders with every other heavy job."""
+    status = baca_status(job_id)
+    ticket = queue_ticket or resource_queue.buat_tiket(
+        str(status.get("owner") or "tamu"), "Auto Edit Video"
+    )
+    try:
+        with resource_queue.giliran(ticket):
+            return _render_video(self, job_id, url, template_id, texts, session_id, teks_warna)
+    except Exception as error:  # noqa: BLE001 - surface scheduler failures in job status
+        pesan = f"Antrean server gagal: {type(error).__name__}: {error}"
+        tulis_status(job_id, status="error", error=pesan, log=pesan)
+        _bersihkan_setelah_gagal(job_id, job_path(job_id))
         return {"job_id": job_id, "status": "error", "error": pesan}

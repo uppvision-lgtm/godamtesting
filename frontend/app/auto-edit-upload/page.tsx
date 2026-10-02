@@ -331,6 +331,14 @@ export default function AutoEditUploadPage() {
     setKiriman([]);
     setCatatan([]);
     setTahap("render");
+    let queueTicket = "";
+    let jumlahTemplate = 0;
+    let renderRequestSent = false;
+    let renderResponseReceived = false;
+    let renderSubmitted = false;
+    let uploadRequestSent = false;
+    let uploadResponseReceived = false;
+    let uploadSubmitted = false;
     try {
       // 1. Render satu video per template yang DIPAKAI. Dua akun yang
       //    memilih template sama cukup dirender sekali.
@@ -340,7 +348,21 @@ export default function AutoEditUploadPage() {
       const url = link.trim();
       const tujuan = akunDipilih.filter((id) => akunSiap.some((a) => a.id === id));
       const templateUnik = [...new Set(tujuan.map((id) => templateAkun[id]))];
+      jumlahTemplate = templateUnik.length;
       catat(`Mulai edit: ${templateUnik.length} template untuk ${tujuan.length} akun`);
+      const reserve = await apiFetch("/api/resource-queue/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: `Auto Edit & Upload (${templateUnik.length} template)`,
+          jumlah: templateUnik.length + 1,
+        }),
+      });
+      const reserved = await reserve.json().catch(() => ({}));
+      if (!reserve.ok) throw new Error(reserved.detail || "Tidak bisa masuk antrean server.");
+      queueTicket = String(reserved.ticket_id || "");
+      if (!queueTicket) throw new Error("Server tidak mengembalikan tiket antrean.");
+      renderRequestSent = true;
       const res = await apiFetch("/api/video/jobs/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -348,13 +370,16 @@ export default function AutoEditUploadPage() {
           url,
           template_ids: templateUnik,
           texts,
+          queue_ticket: queueTicket,
           // Kosong = tiap template pakai warnanya sendiri.
           teks_warna: warnaOverride || "",
           account_id: url.includes("instagram.com") ? akunInstagram?.id ?? null : null,
         }),
       });
+      renderResponseReceived = true;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Gagal memulai edit.");
+      renderSubmitted = true;
       let daftar: JobStatus[] = (data.jobs || []).map(
         (j: { job_id: string; template_id: string; status: string }) => ({
           job_id: j.job_id,
@@ -418,6 +443,7 @@ export default function AutoEditUploadPage() {
         });
       if (items.length === 0) throw new Error("Tidak ada video siap untuk diunggah.");
 
+      uploadRequestSent = true;
       const ru = await apiFetch("/api/sosmed/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -426,10 +452,13 @@ export default function AutoEditUploadPage() {
           caption: caption.trim(),
           media_kind: "video",
           items,
+          queue_ticket: queueTicket,
         }),
       });
+      uploadResponseReceived = true;
       const du = await ru.json().catch(() => ({}));
       if (!ru.ok) throw new Error(du.detail || "Gagal memulai unggahan.");
+      uploadSubmitted = true;
       const postId = Number(du.post_id);
       catat(`Mengirim ke ${items.length} akun`);
       let semua: Kiriman[] = [{ template_id: "", post_id: postId, status: "processing", targets: [] }];
@@ -461,6 +490,20 @@ export default function AutoEditUploadPage() {
       setGalat(err instanceof Error ? err.message : "Terjadi galat.");
       setTahap("gagal");
     } finally {
+      let slotTakTerpakai = 0;
+      if (queueTicket && !renderSubmitted && (!renderRequestSent || renderResponseReceived)) {
+        slotTakTerpakai = jumlahTemplate + 1;
+      } else if (
+        queueTicket && renderSubmitted && !uploadSubmitted &&
+        (!uploadRequestSent || uploadResponseReceived)
+      ) {
+        slotTakTerpakai = 1;
+      }
+      for (let i = 0; i < slotTakTerpakai; i++) {
+        await apiFetch(`/api/resource-queue/tickets/${queueTicket}/skip`, { method: "POST" }).catch(
+          () => undefined
+        );
+      }
       berjalan.current = false;
     }
   }
