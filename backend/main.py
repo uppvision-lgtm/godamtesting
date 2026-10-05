@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -232,6 +233,20 @@ else:
         "Mode lokal: perbaikan storage dilewati supaya set layer percobaan "
         "tidak terdorong ke bucket bersama."
     )
+
+# Auto Outro dirender oleh thread di proses ini. Kalau proses sebelumnya mati
+# di tengah batch (OOM, deploy), job yang belum selesai dilanjutkan di sini
+# alih-alih membeku "Menunggu giliran" di halaman.
+def _lanjutkan_outro_tertunda() -> None:
+    try:
+        import outro
+
+        outro.lanjutkan_tertunda()
+    except Exception:  # noqa: BLE001 - tidak boleh menghalangi server hidup
+        logging.getLogger(__name__).exception("Outro tertunda gagal dilanjutkan")
+
+
+threading.Thread(target=_lanjutkan_outro_tertunda, name="outro-lanjutkan", daemon=True).start()
 
 # Penjaga volume selalu jalan, juga di lokal: ia hanya membuang berkas
 # kedaluwarsa di disk sendiri, tidak menyentuh bucket bersama selain ikut

@@ -119,6 +119,7 @@ export default function AutoOutroPage() {
   const [channel, setChannel] = useState("");
   const [akun, setAkun] = useState<Record<string, string>>(KOSONG);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const hilangRef = useRef(new Map<string, number>());
   const [galatJob, setGalatJob] = useState("");
   const [mengirim, setMengirim] = useState<{ ke: number; dari: number } | null>(null);
   const [videoUrl, setVideoUrl] = useState<Record<string, string>>({});
@@ -153,7 +154,30 @@ export default function AutoOutroPage() {
       if (!r.ok) return;
       const data = (await r.json()) as { jobs: Job[] };
       const terbaru = new Map(data.jobs.map((j) => [j.job_id, j]));
-      setJobs((lama) => lama.map((j) => terbaru.get(j.job_id) || j));
+      const hilang = hilangRef.current;
+      setJobs((lama) =>
+        lama.map((j) => {
+          const baru = terbaru.get(j.job_id);
+          if (baru) {
+            hilang.delete(j.job_id);
+            return baru;
+          }
+          if (!aktif(j)) return j;
+          // Server sudah menjawab tapi job ini tidak ada: proses backend mati
+          // dan job tidak bisa dilanjutkan. Tanpa ini kartunya "Menunggu giliran"
+          // selamanya. Beberapa putaran dulu, karena backend yang baru menyala
+          // butuh sebentar untuk memulihkan job yang tertunda.
+          const kali = (hilang.get(j.job_id) || 0) + 1;
+          hilang.set(j.job_id, kali);
+          if (kali < 15) return j;
+          return {
+            ...j,
+            status: "error",
+            langkah: "gagal",
+            message: "Terputus: server sempat mati dan outro ini tidak bisa dilanjutkan. Kirim ulang.",
+          };
+        }),
+      );
     } catch {
       // dicoba lagi pada putaran berikutnya
     }

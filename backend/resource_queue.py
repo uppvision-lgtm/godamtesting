@@ -300,6 +300,36 @@ def status_antrean(pemilik: str) -> dict[str, Any]:
     return {"active": aktif, "waiting": len(ids), "tickets": posisi}
 
 
+def pemilik_tiket(ticket: str) -> str:
+    """Nama pemilik tiket, atau string kosong kalau tiketnya sudah tidak ada."""
+    return str(_redis().hget(_ITEM + ticket, "owner") or "")
+
+
+def lepas_slot_mati(ticket: str) -> bool:
+    """Lepas slot yang dipegang tiket ini oleh proses yang sudah mati.
+
+    Hanya untuk pemanggil yang TAHU pemegangnya mati - mis. backend yang baru
+    menyala lagi dan menemukan job miliknya sendiri masih tercatat jalan.
+    Tanpa ini slot baru lepas setelah lease habis.
+    """
+    script = """
+    if string.sub(redis.call('get', KEYS[1]) or '', 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' then
+      redis.call('del', KEYS[1]); return 1
+    end
+    return 0
+    """
+    return bool(_redis().eval(script, 1, _ACTIVE, ticket))
+
+
+def pastikan_tiket(ticket: str, pemilik: str, label: str, jumlah: int) -> str:
+    """Pakai tiket lama kalau masih ada; kalau sudah dibuang, buat yang baru di belakang."""
+    client = _redis()
+    if client.exists(_ITEM + ticket):
+        client.hset(_ITEM + ticket, mapping={"claimed": 1, "heartbeat": time.time()})
+        return ticket
+    return buat_tiket(pemilik, label, jumlah)
+
+
 def tiket_milik(ticket: str, pemilik: str) -> bool:
     script = """
     if redis.call('hget', KEYS[1], 'owner') ~= ARGV[1] then return 0 end

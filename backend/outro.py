@@ -213,6 +213,87 @@ def _catat(job_id: str, pesan: str, **ubahan: Any) -> None:
     logger.info("outro %s: %s", job_id, pesan)
 
 
+# Job hidup sebagai thread di proses backend. Kalau proses mati (OOM saat batch
+# 30 outro, deploy), job yang belum selesai dulu lenyap dari memori dan kartunya
+# di halaman membeku "Menunggu giliran" selamanya. Kini tiap job yang belum
+# selesai dicatat di volume dan dilanjutkan saat backend menyala lagi.
+def _folder_tertunda() -> Path:
+    return outro_dir() / "tertunda"
+
+
+def _simpan_tertunda(job_id: str, ticket: str, pemilik: str) -> None:
+    with _kunci:
+        job = {k: v for k, v in (_jobs.get(job_id) or {}).items() if k != "logs"}
+    try:
+        folder = _folder_tertunda()
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{job_id}.json").write_text(
+            json.dumps({"job": job, "ticket": ticket, "pemilik": pemilik}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        logger.warning("Outro %s tidak bisa dicatat untuk dilanjutkan: %s", job_id, error)
+
+
+def _hapus_tertunda(job_id: str) -> None:
+    (_folder_tertunda() / f"{job_id}.json").unlink(missing_ok=True)
+
+
+def lanjutkan_tertunda() -> int:
+    """Jalankan ulang job yang terputus karena proses sebelumnya mati."""
+    folder = _folder_tertunda()
+    if not folder.is_dir():
+        return 0
+    _muat_indeks()
+    catatan: list[dict[str, Any]] = []
+    for berkas in sorted(folder.glob("*.json")):
+        try:
+            data = json.loads(berkas.read_text(encoding="utf-8"))
+            job_id = str(data["job"]["job_id"])
+        except (OSError, ValueError, KeyError, TypeError):
+            berkas.unlink(missing_ok=True)
+            continue
+        with _kunci:
+            sudah = (_jobs.get(job_id) or {}).get("status") == "done"
+        if sudah:  # selesai tepat sebelum mati; catatannya saja yang tertinggal
+            berkas.unlink(missing_ok=True)
+            continue
+        catatan.append(data)
+    per_tiket: dict[str, list[dict[str, Any]]] = {}
+    for data in catatan:
+        per_tiket.setdefault(str(data.get("ticket") or ""), []).append(data)
+    for ticket_lama, isi in per_tiket.items():
+        pemilik = str(isi[0].get("pemilik") or "developer")
+        try:
+            if ticket_lama:
+                resource_queue.lepas_slot_mati(ticket_lama)
+            ticket = resource_queue.pastikan_tiket(
+                ticket_lama, pemilik, f"Auto Outro ({len(isi)}, lanjutan)", len(isi)
+            )
+        except resource_queue.ResourceQueueError as error:
+            logger.warning("Outro tertunda belum bisa dilanjutkan: %s", error)
+            return 0
+        for data in isi:
+            job = dict(data["job"])
+            job_id = str(job["job_id"])
+            shutil.rmtree(outro_dir() / job_id, ignore_errors=True)
+            job.update(status="queued", langkah="antre", progress=0,
+                       message="Dilanjutkan setelah server dinyalakan ulang.",
+                       logs=["Server sempat mati; pekerjaan ini dilanjutkan otomatis."],
+                       updated=time.time())
+            with _kunci:
+                _jobs[job_id] = job
+            _batal[job_id] = threading.Event()
+            if ticket != ticket_lama:
+                _simpan_tertunda(job_id, ticket, pemilik)
+            threading.Thread(target=_jalankan, args=(job_id, ticket),
+                             name=f"outro-{job_id}", daemon=True).start()
+    jumlah = sum(len(isi) for isi in per_tiket.values())
+    if jumlah:
+        logger.info("%d outro yang terputus dilanjutkan", jumlah)
+    return jumlah
+
+
 def baca_job(job_id: str) -> dict[str, Any] | None:
     _muat_indeks()
     with _kunci:
@@ -283,6 +364,11 @@ def mulai_job(
             "updated": time.time(),
         }
     _batal[job_id] = threading.Event()
+    try:
+        pemilik = resource_queue.pemilik_tiket(ticket) or "developer"
+    except resource_queue.ResourceQueueError:
+        pemilik = "developer"
+    _simpan_tertunda(job_id, ticket, pemilik)
     threading.Thread(target=_jalankan, args=(job_id, ticket), name=f"outro-{job_id}", daemon=True).start()
     return job_id
 
@@ -292,6 +378,20 @@ RUANG_OUTRO_MB = float(os.getenv("OUTRO_RUANG_MIN_MB", "40"))
 
 
 def _jalankan(job_id: str, ticket: str) -> None:
+    try:
+        _jalankan_bergiliran(job_id, ticket)
+    except Exception as error:  # noqa: BLE001
+        # Gagal di antrean (tiket kedaluwarsa, Redis putus) terjadi DI LUAR try
+        # milik render; dulu thread mati diam-diam dan job beku "Menunggu giliran".
+        logger.exception("outro %s gagal mendapat giliran", job_id)
+        _catat(job_id, f"Gagal masuk antrean server: {error}", status="error", langkah="gagal")
+    finally:
+        _batal.pop(job_id, None)
+        if (baca_job(job_id) or {}).get("status") in ("done", "error", "dibatalkan"):
+            _hapus_tertunda(job_id)
+
+
+def _jalankan_bergiliran(job_id: str, ticket: str) -> None:
     ev = _batal[job_id]
     folder = outro_dir() / job_id
     with resource_queue.giliran(ticket), _sedang_jalan:
@@ -1772,6 +1872,8 @@ def bersihkan_lama(jam: float = 24.0) -> int:
     batas = time.time() - jam * 3600
     dibuang = 0
     for folder in akar.iterdir():
+        if folder == _folder_tertunda():
+            continue  # catatan job yang harus dilanjutkan, bukan hasil lama
         try:
             if folder.is_dir() and folder.stat().st_mtime < batas:
                 shutil.rmtree(folder, ignore_errors=True)
